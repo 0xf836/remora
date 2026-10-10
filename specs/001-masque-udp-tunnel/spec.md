@@ -8,6 +8,15 @@
 
 **Input**: User description: "Build Remora, a lightweight client-server application for tunneling UDP traffic using standards-compliant MASQUE CONNECT-UDP over HTTP/3 and QUIC. The client listens on a local UDP port and forwards datagrams through an authenticated MASQUE connection to a server, which relays them to an authorized UDP endpoint and returns responses. The primary use case is WireGuard-over-MASQUE, but Remora must remain application-agnostic. Prioritize secure operation, high bidirectional throughput, minimal additional packet loss and latency, efficient resource usage, connection recovery, and comprehensive diagnostics. Support multiple concurrent sessions. The initial release targets Linux and focuses exclusively on CONNECT-UDP, without VPN management, TUN interfaces, GUI, or unrelated functionality."
 
+## Clarifications
+
+### Session 2026-10-11
+
+- A1: Require observable session isolation and prevention of cross-client data leakage, discard identifiable stale traffic, and document inherent ambiguity after UDP endpoint-tuple reuse. Select implementation mechanisms and their resource/security trade-offs in architectural design; no fixed socket quarantine or duration is required.
+- A2: Preserve numeric targets as release acceptance criteria. Build an early authenticated end-to-end MVP and reproducible baseline benchmarks in the normal incremental implementation, measure as soon as the basic tunnel works, and use results to guide engineering. No separate feasibility prototype or dual-architecture measurements are required before implementation; ARM64 validation does not block initial x86_64 development.
+- Review R1: Define the documented transmission-commitment boundary. Closing a session discards cancellable application/native queues and prevents new commitment; transport-committed packets may complete only on their original association within bounded output residence and must never be reassigned or replayed into another session/connection. Local close cannot guarantee recall of already committed packets.
+- Review R5: Failure correlation must survive ordinary log suppression through bounded diagnostic status. Document retention/output limits and expose loss of diagnostic coverage explicitly; failed or overflowed diagnostic collection cannot be reported as a successful SC-010 check.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Securely Relay an Existing UDP Application (Priority: P1)
@@ -70,8 +79,11 @@ Close, overload, and recreate individual sessions while checking the others.
 3. **Given** configured admission, queue, and idle limits, **When** traffic exceeds them,
    **Then** resources remain bounded, admission or datagram drops are observable, and the process
    remains responsive (FR-012, FR-013, FR-021).
-4. **Given** an expired session whose local source tuple is later reused, **When** delayed old
-   responses arrive, **Then** those responses do not reach the new session (FR-010, FR-014).
+4. **Given** a closed or expired session and a recreated local sender association, **When** queued
+   old responses, delayed setup completions, or datagrams identifiable as belonging to an earlier
+   tunnel session arrive, **Then** they are discarded and do not reach the new session or another
+   client; tests also cover the documented behavior and limitations for externally indistinguishable
+   UDP replies after endpoint-tuple reuse (FR-010, FR-014).
 
 ---
 
@@ -178,6 +190,9 @@ Check status, diagnostics, counters, process behavior, and redaction with known 
 - Duplicated or reordered network traffic; Remora preserves payloads but promises neither reliable
   delivery nor ordering and does not deliberately duplicate or retransmit application datagrams.
 - Multiple local senders, shared destinations, idle expiry, source-port reuse, and delayed replies.
+  Identifiable stale traffic is discarded; the behavior and unavoidable ambiguity of delayed
+  external UDP replies after reuse or restart are documented and tested separately from session
+  routing and cross-client isolation guarantees.
 - Forged responses from a source other than the authorized destination for the session.
 - Untrusted, expired, or mismatched server identity and missing, invalid, or revoked credentials.
 - Forbidden addresses or ports, unauthorized loopback/private targets, and hostnames resolving to
@@ -189,6 +204,11 @@ Check status, diagnostics, counters, process behavior, and redaction with known 
 - Client network-address changes, server restart, prolonged outage, idle connection expiry, and
   permanently invalid configuration during recovery.
 - Admission saturation, malicious session churn, bursts, queue pressure, and diagnostic overload.
+  Ordinary log suppression must not erase bounded failure/session status; broken output or
+  exceeded terminal retention exposes explicit loss of diagnostic coverage.
+- Session close/expiry during partial socket progress: distinguish cancellable queues from
+  already committed transport output, preserve the original association and output deadline,
+  and never replay retained output into a replacement session/connection.
 - Invalid bindings, an already occupied port, insufficient permissions, and shutdown during setup.
 
 ## Requirements *(mandatory)*
@@ -225,9 +245,18 @@ Check status, diagnostics, counters, process behavior, and redaction with known 
   changed addresses, address aliases, and reconnects MUST NOT bypass this policy. Loopback or
   private destinations MAY be used only when explicitly permitted. Removing permission through
   the documented update procedure MUST close affected sessions.
-- **FR-010**: Responses MUST be associated with the correct local sender and session. Unrelated
-  senders, authenticated clients, expired sessions, and recreated sessions MUST NOT receive one
-  another's responses. Only responses from the session's authorized destination are eligible.
+- **FR-010**: Remora MUST isolate local senders, authenticated clients, and active tunnel sessions
+  and prevent cross-client data leakage through its routing, state reuse, or retained data.
+  Responses MUST be delivered only through their matching accepted sender/session association;
+  only responses from that session's authorized destination are eligible. Newly received or
+  still-cancellable traffic identifiable as belonging to another client or an expired/closed
+  session MUST be discarded; already committed transmission follows FR-014 and MUST NOT be
+  reassigned. For opaque external UDP replies that cannot be distinguished after endpoint-tuple
+  reuse or restart,
+  the architecture and operator documentation MUST state the realistic guarantees, mitigation
+  strategy, and unavoidable limitations. Such ambiguity MUST NOT excuse mixing active sessions,
+  reassigning identifiable stale data, or bypassing authentication or authorization. No specific
+  socket quarantine mechanism or duration is required by this specification.
 - **FR-011**: The server MUST support multiple client processes and multiple concurrent sessions
   per client. One local source-address/port pair on a configured listener and destination mapping
   MUST be isolated from other pairs; the initial acceptance scale is at least 32 active sessions.
@@ -237,9 +266,16 @@ Check status, diagnostics, counters, process behavior, and redaction with known 
 - **FR-013**: A session's failure, closure, idle expiry, or individual overload MUST NOT terminate
   unrelated sessions. Within global budgets, a continuously active session MUST NOT prevent
   another admitted session from making progress.
-- **FR-014**: Closed, expired, rejected, or stopped sessions MUST release their resources and
-  discard pending datagrams. Data from an earlier session or failed connection MUST NOT be
-  replayed into a later session.
+- **FR-014**: Closed, expired, rejected, or stopped sessions MUST discard cancellable pending
+  datagrams, prevent new transmission commitment, and release their resources within the
+  documented bounded lifecycle. The architecture MUST define the commitment boundary and
+  distinguish cancellable queues, transport-committed output, and kernel/network in-flight
+  traffic. Already committed output MAY complete only on its original association within
+  documented output bounds; local session closure does not guarantee recall of that output.
+  Remora-retained data and delayed work identifiable as belonging to an earlier session or
+  failed connection MUST NOT be replayed or reassigned to a later session or another client.
+  Any retained lifecycle/output state MUST remain bounded and satisfy resource/reclamation
+  criteria; its mechanism and trade-offs are design decisions, not prescribed requirements.
 - **FR-015**: Forwarding MUST preserve best-effort UDP behavior under congestion and overload,
   obey applicable transport congestion rules, and expose local drops. No reliable delivery or
   ordering guarantee MUST be implied to applications.
@@ -377,11 +413,31 @@ and payload delivery does not waive required control handling or standards-defin
 - Payload limits depend on the negotiated connection and path. A 1,200-byte application payload
   is a reference-test workload, not a guarantee on every path; test paths MUST accommodate it
   including encapsulation overhead. Application MTU adjustments are documented operator actions.
-- Numeric performance, scale, resource, and recovery targets are initial acceptance assumptions
-  derived for this specification, not user-supplied guarantees or measured results. Planning
-  MUST confirm their feasibility on a recorded reference environment or propose an explicit
-  specification amendment before implementation/acceptance measurements; targets MUST NOT be
-  relaxed retrospectively to fit results.
+- Numeric performance, scale, resource, and recovery targets are release acceptance criteria,
+  not guaranteed outcomes or measured results. An early authenticated end-to-end MVP and
+  reproducible direct-versus-tunneled baseline benchmarks MUST be part of normal incremental
+  implementation. Performance MUST be measured as soon as the basic tunnel works on a recorded
+  environment, and findings MUST guide subsequent engineering and optimization. No separate
+  feasibility prototype or pre-implementation measurements are required. Target changes MUST
+  be explicit and reviewed prospectively; targets MUST NOT be relaxed retrospectively to fit
+  results or failed runs relabelled as passes.
+- Linux x86_64 and ARM64 are initial release targets. Development and early baseline measurements
+  MAY begin on x86_64; ARM64 hardware, validation, and measurements MUST NOT block that work.
+  ARM64 native validation and applicable acceptance evidence remain required before claiming
+  ARM64 release support; cross-compilation alone is not runtime or performance proof.
+- Opaque destination UDP replies contain no tunnel-session identity. Once an identical relay
+  endpoint tuple is reused, a delayed reply from the authorized destination can be indistinguishable
+  from a new reply, including after process restart. Likewise, an application restart reusing
+  a still-active local sender tuple may not create an observable session boundary. Architecture
+  MUST document how associations are separated, stale state is rejected, reuse is handled, and
+  any limits of its chosen strategy; no absolute provenance guarantee for indistinguishable
+  external packets is claimed. This limitation does not waive cross-client routing isolation,
+  credential/target checks, or rejection of identifiable prior-session traffic.
+- Diagnostic acceptance uses a functioning collector and injected failure workload within
+  documented bounded status capacity, including ordinary log suppression and session cleanup
+  before a snapshot. Every injected failure must remain correlated; status overflow or failed
+  collection MUST be reported as failed/invalid coverage, not a passing SC-010 result. Separate
+  blocked-sink/overflow robustness tests verify resource bounds and explicit coverage loss.
 - The reference environment uses Linux hosts with a recorded CPU model, OS version, configuration,
   and at least four available logical CPU cores per role; a full-duplex 1 Gbit/s bottleneck;
   20 ms client-to-server round-trip delay; an uncongested server-to-destination leg; and no

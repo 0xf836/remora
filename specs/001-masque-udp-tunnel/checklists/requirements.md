@@ -37,7 +37,7 @@ and satisfied. It does not indicate implementation, runtime validation, or achie
 ## Notes
 
 - Items marked incomplete require spec updates before `$speckit-clarify` or `$speckit-plan`.
-- Validation completed on 2026-10-10. All 16 requirements-quality criteria pass; no unresolved
+- Validation rechecked on 2026-10-11 after accepted A1/A2 and independent-review corrections R1–R6. All 16 requirements-quality criteria pass; no unresolved
   clarification markers or template placeholders remain.
 - Linux and MASQUE CONNECT-UDP over HTTP/3 and QUIC are explicit product constraints supplied
   by the user. The specification selects no implementation language, library, API, threading
@@ -52,8 +52,11 @@ and satisfied. It does not indicate implementation, runtime validation, or achie
   and scope boundaries (FR-006, FR-009, FR-014, FR-020 through FR-025, FR-029).
 - SC-001 through SC-010 define verifiable user outcomes. Baseline topology, directional loads,
   payload sizes, measurement intervals, impairment profiles, and timing origins are explicit.
-  Numerical targets are recorded acceptance assumptions requiring planning confirmation,
-  not results claimed for an existing application.
+  Numerical targets remain release acceptance criteria, not guaranteed outcomes or measured
+  results. An early end-to-end MVP and reproducible baseline measurements are normal
+  implementation increments; neither a separate feasibility prototype nor measurements on
+  both architectures are prerequisites for initial x86_64 implementation. Applicable native
+  ARM64 qualification is required before claiming ARM64 support.
 - Review corrected the overload criterion from requiring every probe response to requiring
   at least 99% within one second on an externally unsaturated reference path. This preserves
   best-effort UDP semantics and separates process resource pressure from network exhaustion.
@@ -61,5 +64,14 @@ and satisfied. It does not indicate implementation, runtime validation, or achie
 - Security acceptance includes revoked credentials, identity validation, default-deny targets,
   changed hostname resolution, early-data replay, session isolation, and secret redaction.
   Payload preservation and non-replay apply to empty, oversized, late, and outage-period traffic.
+  A1 requires observable client/session isolation and rejection of identifiable stale work,
+  while explicitly documenting externally indistinguishable UDP after endpoint reuse or
+  process restart. The architecture determines mitigation and lifecycle trade-offs; no fixed
+  socket quarantine mechanism or interval is required.
+- Review corrections define cancellable versus transport-committed output without changing
+  cross-client isolation, numeric targets or the early-MVP sequence. The documented commitment
+  boundary does not promise recall of generated/kernel/network in-flight packets. Bounded
+  failure status survives ordinary log suppression; explicit diagnostic coverage gaps cannot
+  be counted as SC-010 success. Protocol/idle details and required tests are in the contracts.
 - Scope excludes CONNECT-IP, TUN, VPN or WireGuard management, GUI, and alternative transports.
   There are no blocking quality findings or deferred clarification questions.
