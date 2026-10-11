@@ -1,0 +1,18 @@
+schema_version = 1
+coverage = "early-mvp-low-rate-loopback"
+architecture = "x86_64"
+topology = "two-leg"
+sessions = 1
+payload_bytes = 128
+pps = 1000
+warmup_seconds = 2
+measurement_seconds = 3
+drain_ms = 200
+paired_repetitions = 2
+io = "mmsg"
+batch_max = 32
+gso_requested = "off"
+gro_requested = "off"
+cc = "cubic"
+diagnostics = "info"
+# This first baseline has no regression reference/policy and cannot claim SC.

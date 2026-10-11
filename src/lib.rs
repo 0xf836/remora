@@ -11,3 +11,16 @@ compile_error!("Remora initially targets Linux GNU on x86_64 and aarch64");
 pub mod buffers;
 pub mod config;
 pub mod diagnostics;
+pub mod masque;
+pub mod policy;
+pub mod reactor;
+pub mod session;
+pub mod transport;
+pub mod udp;
+
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
+
+#[cfg(test)]
+extern crate self as remora;

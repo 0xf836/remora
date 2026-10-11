@@ -15,6 +15,7 @@ import sys
 
 parser = argparse.ArgumentParser(description="Generate private, isolated Remora fixtures")
 parser.add_argument("--output", required=True)
+parser.add_argument("--family", choices=["ipv4", "ipv6"], default="ipv4")
 args = parser.parse_args()
 root = Path(args.output).absolute()
 os.umask(0o077)
@@ -24,9 +25,12 @@ try:
     # Atomic mkdir: neither an existing directory nor a symlink is overwritten.
     root.mkdir(mode=0o700)
     owned = True
+    host = "::1" if args.family == "ipv6" else "127.0.0.1"
+    bracketed = f"[{host}]" if args.family == "ipv6" else host
+    prefix = 128 if args.family == "ipv6" else 32
     for _ in range(3):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("127.0.0.1", 0))
+        sock = socket.socket(socket.AF_INET6 if args.family == "ipv6" else socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((host, 0))
         if sock.getsockname()[1] < 1024:
             raise RuntimeError("invalid ephemeral port")
         sockets.append(sock)
@@ -50,26 +54,26 @@ try:
 id = "fixture"
 token_sha256 = "{digest}"
 [[identities.targets]]
-host = "127.0.0.1"
+host = "{host}"
 port = {target_port}
-addresses = ["127.0.0.1/32"]
+addresses = ["{host}/{prefix}"]
 ''')
     (root / "client.toml").write_text(f'''schema_version = 1
 [client]
-listen = "127.0.0.1:{client_port}"
+listen = "{bracketed}:{client_port}"
 allow_non_loopback = false
-server_address = "127.0.0.1:{proxy_port}"
+server_address = "{bracketed}:{proxy_port}"
 server_name = "remora.test"
 proxy_authority = "remora.test:{proxy_port}"
 uri_template = "https://remora.test:{proxy_port}/.well-known/masque/udp/{{target_host}}/{{target_port}}/"
 ca_file = "ca.pem"
 token_file = "client.token"
-target_host = "127.0.0.1"
+target_host = "{host}"
 target_port = {target_port}
 ''')
     (root / "server.toml").write_text(f'''schema_version = 1
 [server]
-listen = ["127.0.0.1:{proxy_port}"]
+listen = ["{bracketed}:{proxy_port}"]
 proxy_authority = "remora.test:{proxy_port}"
 path_prefix = "/.well-known/masque/udp/"
 certificate_file = "server.pem"

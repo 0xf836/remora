@@ -14,7 +14,11 @@ Remora requires Rust/quiche, independent standards compatibility, opaque UDP sem
 
 ## Decision
 
-Choose option 1. Pin quiche =0.30.0, Rust 1.99.0 and the resolved dependency graph; use its Rust API, default BoringSSL and h3 ALPN. One request stream per local sender, shared connection per listener mapping, dedicated connected target socket per accepted flow. Enable QUIC DATAGRAM and Extended CONNECT; await processed settings and verified handshake before credentials/payloads. Implement only RFC CONNECT-UDP URI/Context 0/HTTP Datagram association and bounded Capsule parsing. Payloads remain unreliable and opaque, including empty datagrams. Required unknown-capsule handling and wire errors are distinct from unsupported reliable payload-carrier discards.
+Refinement: [ADR-0007](0007-review-corrections-and-contract-alignment.md) makes
+the local sender/local-destination pair the client association key, preserving
+wildcard reply source without changing this transport profile.
+
+Choose option 1. Pin quiche =0.30.0, Rust 1.99.0 and the resolved dependency graph; use its Rust API, default BoringSSL and h3 ALPN. One request stream per local sender/local-destination pair, shared connection per listener mapping, dedicated connected target socket per accepted flow. Enable QUIC DATAGRAM and Extended CONNECT; await processed settings and verified handshake before credentials/payloads. Implement only RFC CONNECT-UDP URI/Context 0/HTTP Datagram association and bounded Capsule parsing. Payloads remain unreliable and opaque, including empty datagrams. Required unknown-capsule handling and wire errors are distinct from unsupported reliable payload-carrier discards.
 
 Transport per-connection failures interrupt that connection's sessions, but session/policy/overload failures close only the affected stream. Generation IDs and closed-flow datagram discard prevent internal replay. Accepted A1 defines observable isolation and explicit UDP provenance limitations, not a fixed socket-retention mechanism or private wire extension.
 

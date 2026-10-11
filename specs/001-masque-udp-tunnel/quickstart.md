@@ -1,102 +1,171 @@
-# Quickstart validation guide
+# MVP quickstart and qualification guide
 
-Phase 2 adds the validated configuration library, finite resource/buffer ownership, safe diagnostic primitives and fixture generator to Phase 1 build infrastructure; see [build instructions](../../docs/build.md) and [foundation evidence](../../docs/validation/phase2.md). The binary still exits with an explicit not-implemented error: command wiring, traffic tools and forwarding runners below remain planned. Revised [A1/A2](proposed-amendments.md) are accepted and the design-readiness gate passes. Early x86_64 E2E MVP/baseline runs precede full native-platform and numerical qualification. No command applies changes to a production server or configures an existing VPN.
+Phase 3 implements authenticated generic UDP forwarding, its Linux I/O and
+protocol/security/lifecycle tests, separate test traffic tools and the first
+paired x86_64 measurements. See [MVP evidence](../../docs/validation/mvp.md),
+[performance](../../docs/performance.md) and [tasks](tasks.md) for actual
+coverage and remaining release work. Planning readiness is not runtime acceptance.
+These commands do not deploy a server or configure an existing VPN.
 
-## Prerequisites
+The [review correction record](../../docs/validation/review-remediation.md)
+identifies the latest verified increment. Explicit wildcard listeners retain
+each packet's local destination as the reply source; sender/local-destination
+pairs consume separate bounded sessions. On shutdown, pending terminal status
+is collected independently of periodic cadence within a shared one-second
+deadline. An unfinished drain/writer returns a nonzero exit; a blocked sink
+does not receive a delivery guarantee. See the [diagnostics contract](contracts/diagnostics.md).
 
-Linux 6.1+ x86_64 or ARM64; Rust 1.99.0 from the pinned toolchain; C/C++, CMake and Clang/libclang for the BoringSSL build; Bash, Python 3 standard library and OpenSSL for test fixtures. Interop needs pinned Go 1.27.2. Foundation tests use unprivileged loopback ports. Delay/loss/MTU/WireGuard tests require a separate runner with network-namespace capabilities; Remora itself runs as an ordinary user.
+## Prerequisites and checks
 
-## Build and static/component checks
-
-From the repository root (available starting with Phase 1; behavior coverage grows with implementation):
+Start on Linux x86_64 (kernel 6.1+), Rust 1.99.0, C/C++, CMake and Clang/libclang
+for bundled BoringSSL. Test fixtures require Bash, Python 3.11+ standard library,
+OpenSSL and ordinary loopback UDP permission. The pinned image includes these
+prerequisites; see [build instructions](../../docs/build.md). Native ARM64 remains
+required before an ARM64 support claim and does not block x86_64 development.
 
 ```bash
 cargo build --locked --release
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
+cargo build --locked --release --manifest-path tools/traffic/Cargo.toml
+cargo test --locked --manifest-path tools/traffic/Cargo.toml
 ```
 
-Start these checks natively on x86_64 for implemented functionality. Add ARM64 native checks during development and complete them before claiming ARM64 release support; ARM64 availability/results do not block initial x86_64 development. Cross compilation alone does not qualify the ARM64 native library/syscall path. Fuzz smoke and scheduled longer jobs follow the benchmark contract; record corpus/toolchain and treat crashes as failed gates.
+`./scripts/validate/mvp.sh` runs the complete implemented-package checks,
+including separate traffic formatting and Clippy. Use `CARGO_NET_OFFLINE=true`
+only with a populated, checksum-verified cache. `--all-features` checks compile
+support; it does not activate a runtime qlog writer.
 
-## Generate isolated fixtures
+## Private fixtures and actual forwarding
 
-Implemented `scripts/validate/fixtures.sh` creates a mode-0700 output directory, a local CA, server certificate with DNS SAN remora.test, mode-0600 key/token/credential files, and client/server TOML. It provisions a random token and canonical-text digest without putting either in argv/logs. Client, proxy and authorized target use distinct ephemeral loopback ports recorded in `ports.json`, with an exact per-identity target permission. The script refuses any existing output. Ports are held during generation only; future process runners must handle bind collisions with fresh fixtures.
+Choose a fresh directory; fixtures refuse to overwrite existing output.
+Generation creates private credentials, local CA/certificate for remora.test,
+exact target permission and three ephemeral loopback ports. No token enters
+argv/logs. Ports are held during generation only; retry with fresh fixtures if
+another process later occupies them. Certificates are short-lived test inputs.
 
 ```bash
 ./scripts/validate/fixtures.sh --output /tmp/remora-validation
-```
-
-The following `check-config` commands are planned for T024; current foundation
-tests validate both generated configurations through the library loader:
-
-```bash
 ./target/release/remora check-config --config /tmp/remora-validation/server.toml
 ./target/release/remora check-config --config /tmp/remora-validation/client.toml
-```
-
-Expected once command wiring exists: valid schema/trust/secret files accepted, no sockets/peer traffic during check-config. The implemented library already rejects bad permissions, unknown fields and invalid static policy shapes. Runtime authentication and DNS authorization remain Phase 3 work.
-
-## Generic UDP flow
-
-Run responder, server and client in separate terminals once implemented. The examples below use the contract's illustrative fixed ports; substitute the generated `ports.json` target port when using ephemeral fixtures. The test-only traffic tool interfaces remain planned:
-
-```bash
-cargo run --locked --release --manifest-path tools/traffic/Cargo.toml -- responder --listen 127.0.0.1:9000
-./target/release/remora server --config /tmp/remora-validation/server.toml
-./target/release/remora client --config /tmp/remora-validation/client.toml
-```
-
-Then run the automated unprivileged smoke runner:
-
-```bash
 ./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario smoke
-./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario concurrency
-```
-
-Expected: independent tagged payloads return unchanged with correct datagram boundaries, including empty datagrams; startup first-packet drop is documented and test traffic retries at its application layer after acceptance. 32 admitted sessions remain isolated; unauthorized identity/target emits zero monitored target traffic. Run negative trust/token/size/partial-I/O and sentinel tests, and retain machine-readable results.
-
-At the first MVP checkpoint, include initial GOAWAY cutoff/new-request refusal/accepted-flow continuation tests in the transport suite. Concurrency, recovery and other dependency-ready development can continue after checked T034 while an independent peer or prepared WireGuard fixture remains unavailable. Record those qualification tasks as pending, publish only actual MVP evidence, and complete the required compatibility evidence before the associated full story/release claim. Unavailable external qualification does not excuse a failing check of implemented behavior.
-
-```bash
-./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario security
-./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario recovery
 ./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario shutdown
+./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario security
 ```
 
-Recovery scenario covers a ten-second blackhole or server restart, preserved listener, no replay, repeated authentication and the exact timing origins in SC-006. Permanent rejection remains denied after source-tuple churn, flow cleanup and transient reconnect; only a controlled client restart replaces the mapping admission latch. Shutdown releases resources <=5 seconds. The lifecycle component tests must include two streams, EAGAIN/partial send and close on both sides of the packet-generation commitment boundary. Uncommitted data is discarded; already generated output can finish only on its original association within its unchanged 100 ms residence, cannot be recalled by local close, and is discarded with old connection state on replacement/stop. No output is replayed into a new generation. Test the two-minute idle default with sparse traffic and prove that transport keepalives do not refresh application inactivity. A1 tests require rejection of identifiable closed-session datagrams, queued responses and late setup work, with zero cross-client delivery for active associations and retained data during closure/recreation. Characterize and document the chosen reuse strategy and the ambiguity of externally indistinguishable replies after identical UDP tuple reuse/restart; do not claim a fixed quarantine guarantee.
+`check-config` validates schema, private-file modes, trust and static rules
+without binding, DNS or peer traffic. Smoke/shutdown own a responder and both
+roles, verify exact 0/1/128/512/1200-byte datagrams from two distinct senders,
+and clean their processes. Security runs the real-process monitored negatives
+with its own private fixtures. Full concurrency/recovery scenarios explicitly
+report later-phase unavailability rather than a pass.
 
-## Independent interop
+Generate IPv6 fixtures with the same commands and a different fresh path:
 
 ```bash
-./scripts/validate/interop.sh --fixtures /tmp/remora-validation --peer-ref c1cf0e4dd6439aea94d5491b27439a4736f00246 --direction both
+./scripts/validate/fixtures.sh --output /tmp/remora-validation-v6 --family ipv6
+./scripts/validate/e2e.sh --fixtures /tmp/remora-validation-v6 --scenario shutdown
 ```
 
-Build the pinned Go fixture with committed module sums, verify certificate trust, and test Remora-client->masque-go-proxy and masque-go-client->Remora-server. Expected: both-role byte equality and supported-profile negative cases, including forbidden final Capsule statuses/fields and mandatory Context ID/oversized Capsule checks before carrier discard; preserve peer versions/settings/results. API inspection in research is not a completed test. No InsecureSkipVerify or raw authentication dump. Configure the pinned Transport.DialAddr callback to dial the numeric loopback proxy endpoint while TLSClientConfig retains ServerName=remora.test and the generated RootCAs. This avoids system DNS or /etc/hosts changes and preserves normal certificate verification.
+For an existing UDP application, configure the client mapping's local listener,
+proxy trust/authority and target host/port; configure the server's exact
+credential/host/port/address rule as described in the
+[CLI/config contract](contracts/cli-config.md). Start the two roles in separate
+terminals with `remora server --config PATH` and `remora client --config PATH`.
+Provision credentials privately; keep the client secret out of argv, URLs and
+public examples. Private files are loaded once; updates/revocation require
+candidate check-config and controlled stop/start, not hot reload.
 
-## Reference benchmarks and network cases
+## Supported MVP behavior
 
-A planned benchmark runner consumes a predeclared manifest and writes immutable results. It validates hardware/topology/generator headroom before claiming a valid run. Follow [benchmark contract](contracts/benchmarks.md); do not substitute a shorter direct path, report only simultaneous sum, or use echo traffic as true bidirectional capacity.
+The client sends credentials only after CA/name verification and required H3
+settings. The server authorizes every resolved address and pins one approved
+address to a distinct connected relay. No application payload is forwarded
+before valid client acceptance and the server's conservative ACK-backed
+acceptance receipt. Initial application packets and packets during setup are
+dropped/countable; readiness probes retry only in the test application.
+
+Datagrams retain exact bytes/boundaries, including empty messages. Configured
+application maximum defaults to 1200 bytes and is constrained by current QUIC
+DATAGRAM capacity/path limits. Oversize/backpressure/expired traffic is counted
+and dropped without truncation, private fragmentation or reliable fallback.
+Capsules are parsed for conformance, never used for application forwarding.
+Default application/native residence is 20 ms; generated ciphertext has a
+100-ms original-generation FIFO deadline and obeys quiche pacing metadata.
+An individual stream close purges cancellable data but cannot rewrite or recall
+already generated mixed ciphertext or kernel/network traffic. Stop discards
+unsent original-generation output; no new-generation replay occurs.
+
+Exclusive state ownership, opaque generations and connected relay sockets
+isolate live/internal associations. External UDP provides no generation tag
+for an indistinguishable late reply after identical tuple reuse/restart.
+No fixed quarantine promise is made. Initial GOAWAY tests preserve accepted
+lower streams and refuse excluded/new requests; replacement/recovery is later
+work. Permanent auth/policy/capability rejection retains a mapping latch until
+controlled restart. See [wire contract](contracts/masque-wire.md) and
+[ADR-0006](../../docs/adr/0006-mvp-acceptance-and-ownership.md).
+
+Stdout contains bounded JSON status, stderr fixed diagnostic events. Never infer
+a destination error solely from UDP silence. Terminal failures survive ordinary
+log suppression until writer acknowledgement; explicit coverage-loss counters
+invalidate complete-correlation claims after deliberate overflow/broken sinks.
+GSO/GRO off/auto are accepted: off reports configured_off, deferred auto reports
+effective off/not_implemented without a probe. No raw upstream/qlog/keylog output
+is enabled. SIGTERM/SIGINT release listeners and terminate owned packet work.
+
+## Independent peer and performance reproduction
+
+Build the separate pinned Go 1.27.2 fixture; normal CA/name validation remains
+active. Module sums pin masque-go v0.6.0 at the requested commit and quic-go
+v0.63.0. No system DNS or /etc/hosts edit is needed for the numeric proxy dial.
 
 ```bash
-./scripts/validate/bench.sh --manifest benchmarks/reference-x86_64.toml --output /tmp/remora-bench-x86_64
+(cd tools/interop && go build -mod=readonly -o /tmp/remora-interop . && go vet ./...)
+./scripts/validate/interop.sh --fixtures /tmp/remora-validation \
+  --peer-ref c1cf0e4dd6439aea94d5491b27439a4736f00246 \
+  --direction both --peer-binary /tmp/remora-interop --output /tmp/remora-interop-results
+./scripts/validate/bench.sh --profile benchmarks/mvp-x86_64.toml \
+  --output /tmp/remora-mvp-benchmark
 ```
 
-Reference manifests/scripts do not exist yet. Build the baseline/load harness with the first working E2E MVP, record CPU/kernel/NIC/path/dependency/settings, and start reproducible direct-versus-tunneled measurements on x86_64 immediately. Early measurements may have declared partial workload coverage and unmet targets; they guide continued engineering and are not full release acceptance results. For release qualification use prospectively recorded reference settings, >=five pairs, one/32 sessions, 128/512/1200 bytes and separate/simultaneous directions; each applicable SC threshold must pass per run. Add ARM64 native evidence before claiming its release support, without making it a prerequisite for x86_64 work. No separate prototype or current throughput/loss/latency/RSS result is asserted.
+Both output paths must be fresh. The interop runner validates supplied fixtures
+and provisions isolated per-case fixtures; see [actual independent evidence](../../docs/validation/interop.md)
+for passed cases and pending peer-profile cases. Same-stack contract tests are
+recorded separately. Preserve failed runs, manifests and logs.
 
-After initial measurements and before critical-path changes, record the pre-change Remora revision/reference-manifest, metric bounds with units, variability and comparison method under the benchmark contract's prospective regression policy. Run affected paired comparisons before accepting the changed increment; missing/unmatched evidence is inconclusive/invalid, and failed comparisons remain visible. Initial baseline runs need no regression tolerance and make no regression claim. Requested/effective GSO/GRO modes and fixed fallback reasons are part of run records; deferred `auto` means ordinary I/O with `not_implemented`, not a claimed kernel capability failure.
+The first benchmark is one 128-byte session at 1000 pps per active direction,
+two-second warmup, three-second measurement and two pairs on the same-host
+matching two-role path. It measures independent separate/simultaneous directions,
+unique delivery/loss, sparse RTT, per-role CPU/RSS and owner headroom.
+It makes no sustainable capacity or full SC claim. The versioned
+[MVP development bounds](../../benchmarks/policies/mvp-development.json)
+are bound to a pre-change reference before later critical-path changes using
+the commands in [performance](../../docs/performance.md). Matched per-run bounds
+must pass and missing/invalid comparisons remain visible. Do not run competing builds/tests
+during comparisons. Full 1/32-session, five-pair/five-minute, size/impairment,
+resource/churn and native ARM64 matrices remain later tasks; their planned
+reference manifests and namespace runners must not be treated as existing tools.
 
-Later, as the relevant functionality and runners become available, run full reference/network cases and native ARM64 qualification. These commands are release-validation work, not prerequisites for the initial x86_64 MVP:
+## Remaining qualification and cleanup
 
-```bash
-./scripts/validate/network.sh --fixtures /tmp/remora-validation --scenario impairment
-./scripts/validate/bench.sh --manifest benchmarks/reference-arm64.toml --output /tmp/remora-bench-arm64
-```
+The [local two-VM operator tool](../../docs/validation/local-kvm.md) prepares a
+dedicated fixture. T037's 30-minute WG/generic qualification passed on the
+recorded x86_64 profile with exact bidirectional delivery and verified cleanup;
+final-revision release qualification remains separate. Remora does not change
+keys/routes/firewalls or TUN state. Follow [WireGuard interface/MTU guidance](../../docs/wireguard.md)
+and [application compatibility evidence](../../docs/validation/application-compatibility.md).
+Installed WireGuard tools or a successful handshake alone do not qualify SC-001.
+VM qualification is explicitly opt-in through `libvirt-lab.sh test`; ordinary
+build/unit/CI checks do not start guests. The tool reuses a verified shared
+image cache and cleans up its disposable guests/network/storage on exit.
 
-## Independently managed WireGuard validation
+Requirements-quality checklists remain reviewer-owned and read-only during
+implementation. Completed tasks reflect checked increments; partial or missing
+release evidence stays explicit. T034 permits dependency-ready development
+without waiting for the named external qualifications. This does not waive a
+failing security/correctness test or change numeric release targets.
 
-The operator first prepares existing WireGuard peers, keys, routes, firewall and a permitted target UDP port outside Remora. Configure the client target to the server's permitted WireGuard endpoint and use Remora's local listener as the local WireGuard peer endpoint. Document an application MTU compatible with the measured effective payload ceiling; do not assume 1200-byte application payload fits every outer path. Maintain ordinary bidirectional traffic for 30 minutes and verify handshake/data with independent WireGuard counters alongside Remora events. Remora neither edits peer configuration nor manages routes/TUN. Generic UDP and WireGuard evidence are both required by SC-001.
-
-## Revocation, diagnostics and cleanup
-
-Use [config/update contract](contracts/cli-config.md) for private file replacement, candidate validation and controlled restart. Verify old process has exited and replacement is ready, then prove removed credentials/policies cannot create new authorized sessions or cause new forbidden relay emission. Attribute already committed/kernel/network in-flight pre-update traffic separately; a restart cannot recall it. Collect stdout snapshots and stderr events using [diagnostics contract](contracts/diagnostics.md); distinguish queue/kernel drops from outer QUIC loss and destination silence. SC-010 collection includes short-lived terminal failures after ordinary event suppression; require every injected class/session and zero status coverage loss. Deliberate blocked-sink/terminal-overflow tests verify bounded behavior and explicit missing coverage, not a diagnostic-acceptance pass. Optional filtered qlog is later work and must not delay the first E2E MVP. SIGTERM/SIGINT test processes; runner-owned cleanup must leave no listener/child/namespace and must never delete operator files. Retain failed manifests/results for review.
+Stop your manually started roles with SIGTERM/SIGINT. Delete only private
+fixtures/results that you created and no longer need. Runners clean only their
+own processes/directories and never modify operator networking.

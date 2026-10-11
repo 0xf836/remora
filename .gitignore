@@ -38,3 +38,12 @@ rustc-ice-*.txt
 *.pem
 *.token
 
+
+# Python validation-runner bytecode only. Benchmark JSON evidence is public.
+__pycache__/
+*.pyc
+
+# Generated benchmark and validation run artifacts (kept locally).
+/benchmarks/results/
+/docs/validation/interop-results/
+/docs/validation/wireguard-results/

@@ -389,6 +389,9 @@ impl SessionQueue {
         self.bytes = bytes;
         Ok(())
     }
+    pub fn front(&self, direction: Direction) -> Option<&Datagram> {
+        self.queues[direction_index(direction)].front()
+    }
     pub fn pop(&mut self, direction: Direction) -> Option<Datagram> {
         let packet = self.queues[direction_index(direction)].pop_front()?;
         self.bytes = self.bytes.checked_sub(packet.length).expect("queued bytes");

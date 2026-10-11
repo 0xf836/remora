@@ -345,29 +345,8 @@ fn load_client(c: ClientDocument, parent: &Path) -> Result<ClientConfig, ConfigE
     if authority_host != server_name {
         return Err(error("proxy_authority", ConfigReason::Format));
     }
-    let template = c
-        .uri_template
-        .strip_prefix("https://")
-        .ok_or(error("uri_template", ConfigReason::Format))?;
-    let (uri_authority, path) = template
-        .split_once('/')
-        .ok_or(error("uri_template", ConfigReason::Format))?;
-    if authority(uri_authority)? != authority(&c.proxy_authority)?
-        || !template.is_ascii()
-        || template
-            .bytes()
-            .any(|b| b.is_ascii_control() || b == b' ' || b == b'\\')
-        || !path.ends_with('/')
-        || path.contains(['?', '#'])
-        || path.matches("{target_host}").count() != 1
-        || path.matches("{target_port}").count() != 1
-        || path
-            .replace("{target_host}", "")
-            .replace("{target_port}", "")
-            .contains(['{', '}'])
-    {
-        return Err(error("uri_template", ConfigReason::Format));
-    }
+    crate::masque::UriTemplate::parse(&c.uri_template, &c.proxy_authority)
+        .map_err(|_| error("uri_template", ConfigReason::Format))?;
     let ca_pem = read_file(
         &parent.join(c.ca_file),
         false,

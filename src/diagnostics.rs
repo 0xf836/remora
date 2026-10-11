@@ -1,9 +1,10 @@
 //! Privacy-safe records and finite nonblocking handoff. There is deliberately
 //! no global tracing subscriber or arbitrary-string logging API. Terminal
-//! retention/acknowledgements and qlog filtering are later increments.
+//! summaries use acknowledged batches; optional qlog filtering is later work.
 use crate::{buffers::Direction, config::Level};
 use serde::Serialize;
 use std::{
+    collections::VecDeque,
     io::{self, Write},
     sync::{
         Arc,
@@ -50,6 +51,7 @@ pub enum Failure {
     Authentication,
     Authorization,
     Capability,
+    Resolution,
     SetupTimeout,
     PeerTimeout,
     Transport,
@@ -176,11 +178,45 @@ impl Event {
         }
     }
 }
+#[derive(Clone, Copy, Serialize)]
+pub struct OffloadReport {
+    pub requested: crate::config::Offload,
+    pub effective_on: bool,
+    pub reason: OffloadReason,
+}
+impl OffloadReport {
+    pub fn new(requested: crate::config::Offload) -> Self {
+        Self {
+            requested,
+            effective_on: false,
+            reason: requested.deferred_reason(),
+        }
+    }
+}
+impl Default for OffloadReport {
+    fn default() -> Self {
+        Self::new(crate::config::Offload::Off)
+    }
+}
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct OffloadState {
+    pub gso: OffloadReport,
+    pub gro: OffloadReport,
+}
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct SocketBuffers {
+    pub outer_receive_max_per_socket: usize,
+    pub outer_send_max_per_socket: usize,
+    pub application_receive_max_per_socket: usize,
+    pub application_send_max_per_socket: usize,
+}
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct Snapshot {
     pub sessions_active: u64,
     pub connections_active: u64,
     pub counters: Counters,
+    pub offloads: OffloadState,
+    pub socket_buffers: SocketBuffers,
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct Counters {
@@ -188,12 +224,57 @@ pub struct Counters {
     pub app_ingress_bytes: u64,
     pub quic_dgram_enqueued: u64,
     pub relay_socket_sent: u64,
+    pub app_ingress_by_direction: DirectionCounts,
+    pub app_ingress_bytes_by_direction: DirectionCounts,
+    pub app_egress_by_direction: DirectionCounts,
+    pub app_egress_bytes_by_direction: DirectionCounts,
+    pub outer_socket_sent: u64,
+    pub outer_socket_sent_bytes: u64,
+    pub outer_socket_received: u64,
+    pub outer_socket_received_bytes: u64,
+    pub kernel_rx_overflow: u64,
     pub local_drops: DropCounters,
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct DirectionCounts {
     pub to_target: u64,
     pub to_client: u64,
+}
+impl DirectionCounts {
+    fn add(&mut self, direction: Direction, amount: u64) -> Result<(), DiagnosticError> {
+        let slot = match direction {
+            Direction::ToTarget => &mut self.to_target,
+            Direction::ToClient => &mut self.to_client,
+        };
+        *slot = slot
+            .checked_add(amount)
+            .ok_or(DiagnosticError::Arithmetic)?;
+        Ok(())
+    }
+}
+impl Counters {
+    pub fn ingress(&mut self, direction: Direction, len: usize) -> Result<(), DiagnosticError> {
+        self.app_ingress_datagrams = self
+            .app_ingress_datagrams
+            .checked_add(1)
+            .ok_or(DiagnosticError::Arithmetic)?;
+        self.app_ingress_bytes = self
+            .app_ingress_bytes
+            .checked_add(len as u64)
+            .ok_or(DiagnosticError::Arithmetic)?;
+        self.app_ingress_by_direction.add(direction, 1)?;
+        self.app_ingress_bytes_by_direction
+            .add(direction, len as u64)
+    }
+    pub fn egress(&mut self, direction: Direction, len: usize) -> Result<(), DiagnosticError> {
+        self.relay_socket_sent = self
+            .relay_socket_sent
+            .checked_add(1)
+            .ok_or(DiagnosticError::Arithmetic)?;
+        self.app_egress_by_direction.add(direction, 1)?;
+        self.app_egress_bytes_by_direction
+            .add(direction, len as u64)
+    }
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct DropCounters {
@@ -219,6 +300,14 @@ impl DropCounters {
         reason: DropReason,
         direction: Direction,
     ) -> Result<(), DiagnosticError> {
+        self.add(reason, direction, 1)
+    }
+    pub fn add(
+        &mut self,
+        reason: DropReason,
+        direction: Direction,
+        amount: u64,
+    ) -> Result<(), DiagnosticError> {
         let counts = match reason {
             DropReason::NotActive => &mut self.not_active,
             DropReason::Recovering => &mut self.recovering,
@@ -240,7 +329,9 @@ impl DropCounters {
             Direction::ToTarget => &mut counts.to_target,
             Direction::ToClient => &mut counts.to_client,
         };
-        *count = count.checked_add(1).ok_or(DiagnosticError::Arithmetic)?;
+        *count = count
+            .checked_add(amount)
+            .ok_or(DiagnosticError::Arithmetic)?;
         Ok(())
     }
 }
@@ -254,14 +345,38 @@ struct Envelope<T: Serialize> {
     #[serde(flatten)]
     body: T,
 }
+#[derive(Clone, Copy, Serialize)]
+pub struct FailureSummary {
+    #[serde(rename = "seq")]
+    sequence: u64,
+    #[serde(rename = "connection")]
+    connection_id: Option<OpaqueId>,
+    #[serde(rename = "session")]
+    session_id: Option<OpaqueId>,
+    #[serde(rename = "class")]
+    failure: Failure,
+    #[serde(rename = "code")]
+    numeric_code: u64,
+    terminal: bool,
+    repeats: u64,
+    #[serde(rename = "ms")]
+    monotonic_ms: u64,
+}
+const _: () = assert!(std::mem::size_of::<FailureSummary>() <= 256);
 #[derive(Serialize)]
-struct Status {
+struct Status<'a> {
     event: &'static str,
     #[serde(flatten)]
     counters: Snapshot,
     diagnostics_dropped: u64,
     status_write_failures: u64,
     counter_overflow: bool,
+    failures: &'a [FailureSummary],
+    chunk_index: usize,
+    chunk_count: usize,
+    coverage_lost: u64,
+    lost_first: Option<u64>,
+    lost_last: Option<u64>,
 }
 
 /// Exact token-credit accumulation, with intentional burst clamping.
@@ -305,6 +420,7 @@ struct Shared {
     dropped: AtomicU64,
     write_failures: AtomicU64,
     overflow: AtomicBool,
+    status_ack: AtomicU64,
 }
 fn increment(counter: &AtomicU64, shared: &Shared) {
     if counter
@@ -319,6 +435,7 @@ pub struct OutputRecord {
     data: Box<[u8]>,
     shared: Arc<Shared>,
     status: bool,
+    acknowledgement: u64,
 }
 impl OutputRecord {
     pub fn bytes(&self) -> &[u8] {
@@ -366,6 +483,7 @@ impl OutputQueue {
             dropped: AtomicU64::new(0),
             write_failures: AtomicU64::new(0),
             overflow: AtomicBool::new(false),
+            status_ack: AtomicU64::new(0),
         });
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_RECORDS);
         let (status_tx, status_rx) = mpsc::sync_channel(STATUS_RECORDS);
@@ -395,13 +513,27 @@ impl OutputQueue {
     }
     // Private: accepting arbitrary JSON/text here would bypass the safe schema.
     fn enqueue<T: Serialize>(&self, status: bool, value: &T) -> Result<(), DiagnosticError> {
-        let result = self.enqueue_inner(status, value);
+        let result = self.enqueue_inner(status, value, 0);
         if result.is_err() {
             increment(&self.shared.dropped, &self.shared);
         }
         result
     }
-    fn enqueue_inner<T: Serialize>(&self, status: bool, value: &T) -> Result<(), DiagnosticError> {
+    fn enqueue_inner<T: Serialize>(
+        &self,
+        status: bool,
+        value: &T,
+        acknowledgement: u64,
+    ) -> Result<(), DiagnosticError> {
+        let record = self.prepare(status, value, acknowledgement)?;
+        self.publish(record)
+    }
+    fn prepare<T: Serialize>(
+        &self,
+        status: bool,
+        value: &T,
+        acknowledgement: u64,
+    ) -> Result<OutputRecord, DiagnosticError> {
         // Fixed stack formatting is <=64 KiB. There is no unbounded to_string
         // intermediate. Metadata plus one writer record and future status
         // formatting consume the separate 512 KiB storage reservation.
@@ -412,13 +544,12 @@ impl OutputQueue {
             .write_all(b"\n")
             .map_err(|_| DiagnosticError::Format)?;
         let length = cursor.position() as usize;
-        let (counter, cap, records, record_cap, sender) = if status {
+        let (counter, cap, records, record_cap) = if status {
             (
                 &self.shared.status_bytes,
                 STATUS_BYTES,
                 &self.shared.status_records,
                 STATUS_RECORDS,
-                &self.status,
             )
         } else {
             (
@@ -426,7 +557,6 @@ impl OutputQueue {
                 EVENT_BYTES,
                 &self.shared.event_records,
                 EVENT_RECORDS,
-                &self.event,
             )
         };
         records
@@ -454,6 +584,15 @@ impl OutputQueue {
             data: data.into_boxed_slice(),
             shared: self.shared.clone(),
             status,
+            acknowledgement,
+        };
+        Ok(record)
+    }
+    fn publish(&self, record: OutputRecord) -> Result<(), DiagnosticError> {
+        let sender = if record.status {
+            &self.status
+        } else {
+            &self.event
         };
         sender.try_send(record).map_err(|e| match e {
             mpsc::TrySendError::Full(_) => DiagnosticError::Full,
@@ -494,6 +633,11 @@ impl OutputReceiver {
         {
             increment(&self.shared.write_failures, &self.shared);
             return Err(DiagnosticError::Disconnected);
+        }
+        if record.acknowledgement != 0 {
+            self.shared
+                .status_ack
+                .store(record.acknowledgement, Ordering::Release);
         }
         Ok(true)
     }
@@ -575,6 +719,14 @@ pub struct Diagnostics {
     role: Role,
     last_snapshot: Option<Instant>,
     snapshot_interval: Duration,
+    failures: VecDeque<FailureSummary>,
+    failure_sequence: u64,
+    coverage_lost: u64,
+    lost_first: Option<u64>,
+    lost_last: Option<u64>,
+    in_flight: Option<(u64, u64, u64)>,
+    started: Instant,
+    minimum_level: Level,
 }
 impl Diagnostics {
     pub fn new(
@@ -595,9 +747,20 @@ impl Diagnostics {
                 role,
                 last_snapshot: None,
                 snapshot_interval,
+                failures: VecDeque::with_capacity(256),
+                failure_sequence: 0,
+                coverage_lost: 0,
+                lost_first: None,
+                lost_last: None,
+                in_flight: None,
+                started: now,
+                minimum_level: Level::Trace,
             },
             receiver,
         ))
+    }
+    pub fn set_level(&mut self, level: Level) {
+        self.minimum_level = level;
     }
     pub fn next_id(&mut self) -> Result<OpaqueId, DiagnosticError> {
         self.ids.next_id()
@@ -626,6 +789,18 @@ impl Diagnostics {
         })
     }
     pub fn event(&mut self, now: Instant, event: Event) -> Result<bool, DiagnosticError> {
+        fn rank(level: Level) -> u8 {
+            match level {
+                Level::Error => 0,
+                Level::Warn => 1,
+                Level::Info => 2,
+                Level::Debug => 3,
+                Level::Trace => 4,
+            }
+        }
+        if rank(event.level) > rank(self.minimum_level) {
+            return Ok(false);
+        }
         if !self.bucket.admit(now)? {
             increment(&self.queue.shared.dropped, &self.queue.shared);
             return Ok(false);
@@ -634,8 +809,124 @@ impl Diagnostics {
         self.queue.enqueue(false, &record)?;
         Ok(true)
     }
+    /// Independent of ordinary log admission. No arbitrary input is retained.
+    pub fn failure(
+        &mut self,
+        now: Instant,
+        connection: Option<OpaqueId>,
+        session: Option<OpaqueId>,
+        class: Failure,
+        code: u64,
+        terminal: bool,
+    ) -> Result<(), DiagnosticError> {
+        self.failure_sequence = self
+            .failure_sequence
+            .checked_add(1)
+            .ok_or(DiagnosticError::Arithmetic)?;
+        let sequence = self.failure_sequence;
+        if !terminal
+            && let Some(entry) = self.failures.iter_mut().find(|e| {
+                !e.terminal
+                    && e.connection_id == connection
+                    && e.session_id == session
+                    && e.failure == class
+            })
+        {
+            entry.sequence = sequence;
+            entry.numeric_code = code;
+            entry.repeats = entry
+                .repeats
+                .checked_add(1)
+                .ok_or(DiagnosticError::Arithmetic)?;
+            return Ok(());
+        }
+        if self.failures.len() == 256 {
+            let lost = self.failures.pop_front().expect("full ring");
+            self.coverage_lost = self
+                .coverage_lost
+                .checked_add(1)
+                .ok_or(DiagnosticError::Arithmetic)?;
+            self.lost_first = Some(
+                self.lost_first
+                    .map_or(lost.sequence, |old| old.min(lost.sequence)),
+            );
+            self.lost_last = Some(lost.sequence);
+        }
+        self.failures.push_back(FailureSummary {
+            sequence,
+            connection_id: connection,
+            session_id: session,
+            failure: class,
+            numeric_code: code,
+            terminal,
+            repeats: 1,
+            monotonic_ms: now
+                .checked_duration_since(self.started)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
+        });
+        Ok(())
+    }
+    pub fn finish_session(&mut self, session: OpaqueId) -> Result<(), DiagnosticError> {
+        for entry in self
+            .failures
+            .iter_mut()
+            .filter(|e| e.session_id == Some(session) && !e.terminal)
+        {
+            self.failure_sequence = self
+                .failure_sequence
+                .checked_add(1)
+                .ok_or(DiagnosticError::Arithmetic)?;
+            entry.sequence = self.failure_sequence;
+            entry.terminal = true;
+        }
+        Ok(())
+    }
+    fn acknowledge(&mut self) {
+        if let Some((batch, covered, failures)) = self.in_flight {
+            if self.queue.shared.status_ack.load(Ordering::Acquire) >= batch {
+                self.failures.retain(|e| e.sequence > covered);
+                self.in_flight = None;
+            } else if self.queue.shared.write_failures.load(Ordering::Acquire) > failures {
+                self.in_flight = None;
+            }
+        }
+    }
+    pub fn pending_failures(&self) -> usize {
+        self.failures.len()
+    }
+    pub fn coverage_lost(&self) -> u64 {
+        self.coverage_lost
+    }
     pub fn snapshot(&mut self, now: Instant, counters: Snapshot) -> Result<bool, DiagnosticError> {
-        if let Some(last) = self.last_snapshot
+        self.publish_snapshot(now, counters, false)
+    }
+    /// Shutdown-only status attempt. Preserve one batch in flight and its ACK
+    /// semantics, while bypassing ordinary cadence after packet work has ended.
+    pub fn final_snapshot(
+        &mut self,
+        now: Instant,
+        counters: Snapshot,
+    ) -> Result<bool, DiagnosticError> {
+        self.publish_snapshot(now, counters, true)
+    }
+    pub fn final_status_complete(&mut self) -> bool {
+        self.acknowledge();
+        self.failures.is_empty() && self.in_flight.is_none()
+    }
+    fn publish_snapshot(
+        &mut self,
+        now: Instant,
+        counters: Snapshot,
+        final_status: bool,
+    ) -> Result<bool, DiagnosticError> {
+        self.acknowledge();
+        if self.in_flight.is_some() {
+            return Ok(false);
+        }
+        if !final_status
+            && let Some(last) = self.last_snapshot
             && now
                 .checked_duration_since(last)
                 .ok_or(DiagnosticError::Clock)?
@@ -643,14 +934,64 @@ impl Diagnostics {
         {
             return Ok(false);
         }
-        let record = self.envelope(Status {
-            event: "snapshot",
-            counters,
-            diagnostics_dropped: self.queue.dropped(),
-            status_write_failures: self.queue.shared.write_failures.load(Ordering::Relaxed),
-            counter_overflow: self.queue.shared.overflow.load(Ordering::Relaxed),
-        })?;
-        self.queue.enqueue(true, &record)?;
+        if final_status && self.failures.is_empty() {
+            return Ok(false);
+        }
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(DiagnosticError::Arithmetic)?;
+        let sequence = self.sequence;
+        let covered = self.failure_sequence;
+        let entries: Vec<_> = self.failures.iter().copied().collect();
+        let count = entries.len().max(1).div_ceil(128);
+        let mut prepared = Vec::with_capacity(count);
+        for index in 0..count {
+            let begin = (index * 128).min(entries.len());
+            let end = (begin + 128).min(entries.len());
+            let body = Status {
+                event: "snapshot",
+                counters,
+                diagnostics_dropped: self.queue.dropped(),
+                status_write_failures: self.queue.shared.write_failures.load(Ordering::Relaxed),
+                counter_overflow: self.queue.shared.overflow.load(Ordering::Relaxed),
+                failures: &entries[begin..end],
+                chunk_index: index,
+                chunk_count: count,
+                coverage_lost: self.coverage_lost,
+                lost_first: self.lost_first,
+                lost_last: self.lost_last,
+            };
+            let record = Envelope {
+                schema_version: 1,
+                timestamp: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|_| DiagnosticError::Format)?,
+                sequence,
+                role: self.role,
+                process_epoch: OpaqueId {
+                    epoch: self.ids.epoch,
+                    serial: 0,
+                },
+                body,
+            };
+            prepared.push(self.queue.prepare(
+                true,
+                &record,
+                if index + 1 == count { sequence } else { 0 },
+            )?);
+        }
+        self.in_flight = Some((
+            sequence,
+            covered,
+            self.queue.shared.write_failures.load(Ordering::Relaxed),
+        ));
+        for record in prepared {
+            if let Err(error) = self.queue.publish(record) {
+                increment(&self.queue.shared.write_failures, &self.queue.shared);
+                return Err(error);
+            }
+        }
         self.last_snapshot = Some(now);
         Ok(true)
     }

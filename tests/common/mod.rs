@@ -80,6 +80,28 @@ impl ChildGuard {
             status: None,
         })
     }
+    pub fn spawn_logged(command: &mut Command, stdout: &Path, stderr: &Path) -> io::Result<Self> {
+        use std::os::unix::process::CommandExt;
+        let child = command
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(fs::File::create(stdout)?)
+            .stderr(fs::File::create(stderr)?)
+            .spawn()?;
+        Ok(Self {
+            child,
+            reaped: false,
+            status: None,
+        })
+    }
+    pub fn signal(&self, signal: rustix::process::Signal) -> io::Result<()> {
+        if self.reaped {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        let pid = rustix::process::Pid::from_raw(self.child.id() as i32)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        rustix::process::kill_process_group(pid, signal).map_err(Into::into)
+    }
     pub fn id(&self) -> u32 {
         self.child.id()
     }
@@ -202,3 +224,5 @@ impl Drop for Fixtures {
         fs::remove_dir_all(&self.owned_root).expect("owned fixture cleanup");
     }
 }
+
+pub mod quic;

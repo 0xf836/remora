@@ -28,6 +28,17 @@ A valid successful Capsule response is a well-formed final 2xx response excludin
 
 Missing/invalid credentials: 401 plus `www-authenticate: Bearer`; authenticated denied target: 403; malformed HTTP request/path: 400; unmatched route: 404; unsupported method: 405. Capacity admission uses 503; DNS/connect-socket setup failure 502, setup timeout 504. Numeric setup status and privacy-safe reason class are diagnostic, never raw headers/DNS input. Standards-mandated H3/QPACK/QUIC errors remain the stack's protocol errors, not arbitrarily converted to HTTP status. A 200 proves authorization/setup, not destination reachability.
 
+HTTP/3 field validation precedes request policy and response activation. `te`
+is allowed only in requests with the case-insensitive value `trailers`; it is
+forbidden in responses. If a request includes `host`, it must occur once and
+match its nonempty `:authority`. Field values may contain visible bytes,
+obs-text and interior SP/HTAB, but no other control bytes, DEL or leading/trailing
+SP/HTAB. Malformed fields cause H3_MESSAGE_ERROR, with no relay eligibility and
+no diagnostic export of the offending value. Sources: [RFC 9114 §4.2](https://www.rfc-editor.org/rfc/rfc9114.html#section-4.2),
+[§4.3.1](https://www.rfc-editor.org/rfc/rfc9114.html#section-4.3.1),
+[§10.3](https://www.rfc-editor.org/rfc/rfc9114.html#section-10.3)
+and [RFC 9110 §5.5](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.5).
+
 ## HTTP Datagram and context format
 
 QUIC DATAGRAM payload is `varint(request_stream_id / 4) || varint(context_id = 0) || opaque_udp_payload`. Request stream identity is checked against its connection generation. Context zero represents UDP, including empty payloads; nonzero unknown contexts drop without creating state or registering extensions. Closed/unknown/not-yet-created flow datagrams are discarded. Unparseable or out-of-range quarter-stream association is connection H3_DATAGRAM_ERROR (0x33). Missing/truncated Context ID datagrams are discarded and counted as malformed under Remora receive policy; no application bytes are forwarded and no new context is inferred. This is not an invented RFC-mandated stream-abort rule.

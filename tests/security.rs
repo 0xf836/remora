@@ -6,3 +6,8 @@ mod common;
 mod config;
 #[path = "security/diagnostic_primitives.rs"]
 mod diagnostic_primitives;
+#[path = "security/policy.rs"]
+mod policy;
+
+#[path = "security/diagnostics.rs"]
+mod diagnostics;

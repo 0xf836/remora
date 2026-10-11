@@ -1,9 +1,10 @@
 # Building Remora
 
-Phase 2 supplies validated startup configuration, bounded buffer/resource
-ownership, safe diagnostic primitives and isolated test fixtures. The binary
-still exits with an error; command wiring and forwarding arrive in Phase 3.
-Only implemented foundation behavior has test coverage.
+Phase 3 provides the client/server/check-config executable, authenticated UDP
+forwarding and separate test traffic/interoperability tools. See the
+[MVP validation](validation/mvp.md) for verified scope and the
+[quickstart](../specs/001-masque-udp-tunnel/quickstart.md) for a working walkthrough.
+The earlier Phase 1/2 records below remain historical evidence.
 
 ## Inputs
 
@@ -80,8 +81,11 @@ The implemented fixture generator can be run independently:
 The output must not already exist. Generated ports are recorded in `ports.json`;
 they are distinct at generation but are not held after the script exits.
 Protect the private output directory and remove only fixtures you own.
-`remora check-config` is still a planned Phase 3 command; foundation tests call
-the typed library loader without binding or contacting peers.
+`remora check-config --config PATH` validates startup inputs without binding,
+DNS or contacting peers. The test-only traffic package has its own lockfile;
+build it separately with `cargo build --locked --release --manifest-path tools/traffic/Cargo.toml`.
+`./scripts/validate/mvp.sh` includes its checks. The independent Go fixture uses
+Go 1.27.2 and committed module sums; see `tools/interop/README.md`.
 
 ## Phase 1 verification
 
@@ -112,3 +116,15 @@ passed the same native/container commands with **45 tests**. The
 [resolution evidence](validation/phase2.md#review-finding-resolution) preserves
 the original 33-test results and distinguishes the corrections from a repeated
 independent audit.
+
+## Phase 3 verification
+
+On 2026-10-11 native x86_64 and the pinned x86_64 container passed the locked
+MVP checks. The initial 87-test set was followed by a real encrypted HTTP
+rejection/cleanup regression, bringing the production package to 90 tests with additional RESET and stateless Initial
+admission test and one separately invoked external interoperability test;
+the traffic package has two accounting tests. Verification and partial
+qualification are recorded in [MVP evidence](validation/mvp.md), with
+[independent peer results](validation/interop.md) and
+[first measurements](performance.md). Native ARM64, hosted Actions and full
+release matrices have not run.

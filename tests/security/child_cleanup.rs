@@ -86,6 +86,13 @@ fn successful_and_failed_leaders_cleanup_descendants_before_reaping() {
         assert_eq!(status.code(), Some(code));
         assert_stopped(pid);
         assert_eq!(guard.finish(Duration::ZERO).unwrap(), status);
+        assert_eq!(
+            guard
+                .signal(rustix::process::Signal::TERM)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
         drop(guard);
         assert!(running(unrelated.id()), "unrelated group was signalled");
     }

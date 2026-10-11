@@ -198,44 +198,30 @@ fn ordinary_saturation_preserves_status_count_reservation_and_inflight_charge() 
         ),
         Err(DiagnosticError::Full)
     );
-    let mut statuses = 0;
-    for _ in 0..=STATUS_RECORDS {
-        match diagnostics.snapshot(clock.now(), Snapshot::default()) {
-            Ok(true) => {
-                statuses += 1;
-                clock.advance(Duration::from_secs(1));
-            }
-            Err(DiagnosticError::Full) => break,
-            other => panic!("unexpected snapshot admission: {other:?}"),
-        }
-    }
-    // Full-schema records can exhaust bytes before the 256-record cap.
-    assert!(statuses > 0 && statuses <= STATUS_RECORDS);
-    let retained_records = 768 + statuses;
-    assert!(retained_records <= OUTPUT_RECORDS);
-    assert_eq!(diagnostics.queue().retained_records(), retained_records);
-    assert_eq!(
-        diagnostics.snapshot(clock.now(), Snapshot::default()),
-        Err(DiagnosticError::Full)
-    );
-    let held = receiver.try_next().unwrap().unwrap();
-    assert!(held.is_status());
-    assert_eq!(diagnostics.queue().retained_records(), retained_records);
-    assert_eq!(
-        diagnostics.snapshot(clock.now(), Snapshot::default()),
-        Err(DiagnosticError::Full)
-    );
-    drop(held);
-    assert_eq!(diagnostics.queue().retained_records(), retained_records - 1);
     assert!(
         diagnostics
             .snapshot(clock.now(), Snapshot::default())
             .unwrap()
     );
-    assert!(diagnostics.queue().retained_bytes() <= OUTPUT_BYTES);
-    drop(receiver);
-    assert_eq!(diagnostics.queue().retained_records(), 0);
-    assert_eq!(diagnostics.queue().retained_bytes(), 0);
+    assert_eq!(diagnostics.queue().retained_records(), 769);
+    clock.advance(Duration::from_secs(1));
+    assert!(
+        !diagnostics
+            .snapshot(clock.now(), Snapshot::default())
+            .unwrap()
+    );
+    // Writer-held output stays charged. Dropping without completed writing is
+    // not an acknowledgement and cannot authorize another status batch.
+    let held = receiver.try_next().unwrap().unwrap();
+    assert!(held.is_status());
+    assert_eq!(diagnostics.queue().retained_records(), 769);
+    drop(held);
+    assert_eq!(diagnostics.queue().retained_records(), 768);
+    assert!(
+        !diagnostics
+            .snapshot(clock.now(), Snapshot::default())
+            .unwrap()
+    );
 }
 #[test]
 fn suppressed_events_do_not_suppress_stdout_snapshot_and_interval_is_enforced() {
@@ -276,13 +262,17 @@ fn suppressed_events_do_not_suppress_stdout_snapshot_and_interval_is_enforced() 
             .snapshot(clock.now(), Snapshot::default())
             .unwrap()
     );
+    let mut first_status = Vec::new();
+    receiver
+        .write_one(&mut first_status, &mut std::io::sink())
+        .unwrap();
     clock.advance(Duration::from_millis(1));
     assert!(
         diagnostics
             .snapshot(clock.now(), Snapshot::default())
             .unwrap()
     );
-    let mut stdout = Vec::new();
+    let mut stdout = first_status;
     let mut stderr = Vec::new();
     while receiver.write_one(&mut stdout, &mut stderr).unwrap() {}
     let text = String::from_utf8(stdout).unwrap();

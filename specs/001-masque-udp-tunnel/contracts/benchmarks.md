@@ -4,6 +4,13 @@ Version: 1, no result is asserted. Defines the reproducible evidence required fo
 
 ## Incremental MVP measurements and release qualification
 
+Keep profiles, numerical policy templates and concise outcome reports in Git.
+Generated manifests, counters, samples, logs and comparison results belong in
+ignored local run directories or separately published artifact archives; their
+retention does not require committing them. Preserve original failures there.
+Bind the versioned limits to reference hashes in a local frozen policy before
+candidate work, without changing the limits; see [artifact retention](../../../docs/validation/README.md).
+
 The first usable implementation increment is an authenticated end-to-end client/server tunnel with validated server trust, default-deny target authorization, preserved datagram boundaries, isolated supported associations, finite resources and privacy-safe diagnostics. Implement the same-topology unencrypted UDP relay/load harness alongside it, not as a separate disposable feasibility project. Begin on x86_64; no ARM64 hardware or measurements are prerequisites.
 
 As soon as the basic tunnel works, record reproducible baseline/tunnel runs in each direction and simultaneously. Measure delivered throughput/loss, sparse-probe RTT, CPU/RSS and available local-drop/queue statistics. Early runs may cover one session or shorter declared intervals while concurrency/features mature; declare coverage, configuration and interval rather than presenting partial measurements as a full SC pass. Preserve scripts/manifests/results so later runs can repeat the baseline.
@@ -19,6 +26,15 @@ The matching unencrypted relay establishes release throughput/loss/latency crite
 After the first MVP measurements, before implementing a critical-path change or measuring its candidate, freeze a regression policy in a new comparison manifest; never rewrite the immutable baseline run to add later decisions. Identify the pre-change revision and manifest hash, the currently implemented workload/profile/platform coverage, and the metric bounds: maximum throughput decrease and maximum increases in delivered loss, p95 RTT, CPU and RSS, with explicit units and absolute/relative interpretation. Declare matching offered load/directions/session counts, repetition/interval/pair-order and noise-handling method. Justify tolerances using reference variability and the intended trade-off; do not invent universal percentages before evidence exists. If reference evidence is insufficient, collect additional declared pre-change samples in normal incremental work. New workloads require their own reference before an improvement/regression claim; they do not require a full release matrix or ARM64 evidence before x86_64 development.
 
 At each affected behavioral checkpoint, run applicable paired comparisons against that frozen reference. A missing/unmatched reference, missing prospective policy or insufficient data is an inconclusive/invalid regression comparison, never a pass. Exceeding a tolerance is a failed regression check requiring correction or a prospectively reviewed trade-off before accepting the affected change. Retain the original failure; any revised policy applies only to a new comparison, not to relabelling existing results. Security, correctness, conformance and resource-bound checks remain mandatory. Regression allowances cannot waive or change SC-003/004/005/007 or any other release criterion. No regression evidence is required before writing the first MVP.
+
+An explicitly authorized early-MVP development exception may adopt a separate,
+broader CPU smoke ceiling without additional profiling or traffic runs. Record
+its rationale and scope, preserve the original policy/failure, and label any
+reassessment of existing data as retrospective, never a prospective regression
+pass. This permits continued implementation; it does not waive evidence validity,
+non-CPU bounds, security/correctness/conformance checks or release criteria.
+The Phase 3 application is recorded in [ADR-0007](../../../docs/adr/0007-review-corrections-and-contract-alignment.md)
+and [performance evidence](../../../docs/performance.md).
 
 ## Automated verification layers
 
@@ -72,6 +88,18 @@ At least five paired baseline/tunnel repetitions, each 60-second warmup and five
 Separate test-tool-generated loss/overload from Remora local drops, kernel overflow and outer QUIC lost-packet estimates. Delivered loss uses unique received sequences versus submitted offered messages, with declared drain window and duplicate/reorder/corruption counts. Record generator enqueue failures separately; runs with saturated generators cannot establish Remora capacity. Resource churn includes all state retained by the chosen lifecycle/isolation strategy and its bounded cleanup. No fixed socket-retention interval is assumed, and stale payloads cannot be retained for reassignment. Report kernel socket memory independently of process RSS.
 
 ## Manifest and result artifacts
+
+The MVP comparator validates the reference and candidate before applying any
+bound: exactly one valid run per `(pair, mode, direction)` for every declared
+pair, both baseline/tunnel modes and forward/reverse/simultaneous directions.
+Duplicates, missing workloads, unexpected keys or invalid pair indices cannot
+pass based on the total row count. A frozen schema-version-1 policy must contain
+each of the six workloads exactly once and all mandatory metrics: active
+direction delivery/loss, p95 RTT, and each role's process CPU, owner CPU and
+peak RSS. Require the defined units and finite nonnegative bounds, including
+the appropriate minimum for delivery and maximum for every other metric.
+Malformed/incomplete evidence is invalid; synthetic tests exercise this without
+depending on archived real measurement files.
 
 Each run directory contains manifest.json, counters.ndjson, latency histogram, samples.csv, summary.json, optional CPU/syscall profiles and an explicit pass/fail/invalid status for each criterion. Manifest fields: Remora/baseline/peer revisions, Rust/Go/dependency locks, compiler/build/profile, arch/CPU/core placement/governor, kernel, NIC/driver/offloads (requested/effective modes and fixed fallback reasons), MTU/socket buffer requested/effective/kernel memory, qdisc/delay/rate/queue rules, FD/process limits, CC/pacing/batch/pool settings, diagnostic modes, topology endpoints, payload/session/direction/seed, offered/actual rates, run/drain intervals and clock evidence. Regression comparisons additionally store the pre-change revision/reference-manifest hash, frozen policy/metric bounds and units, reference variability, comparison method, coverage and separate regression outcome; initial MVP runs explicitly have no regression claim. Hash all manifests/lockfiles; preserve failures and original targets.
 

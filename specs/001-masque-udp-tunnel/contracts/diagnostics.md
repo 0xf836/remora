@@ -4,7 +4,7 @@ Version: 1. Requirements FR-021/022/023/027/028. Records contain observable oper
 
 ## Streams and schema
 
-stderr: NDJSON structured tracing events. stdout: NDJSON aggregate/status snapshots at most once/second. Both use schema_version=1, UTC timestamp, monotonic sequence, role, process_epoch and a fixed event name. Privacy-safe opaque connection/session ids are randomly scoped to process lifetime; no tokens/digests, arbitrary header values, payload bytes, local source tuples or target names. Human errors retain safe reason/field names rather than serialized config/peer text. Any exported peer error text is replaced by numeric code and fixed reason enum.
+stderr: NDJSON structured tracing events. stdout: NDJSON aggregate/status snapshots at most once/second during packet processing; the bounded shutdown-only terminal drain described below may bypass periodic cadence. Both use schema_version=1, UTC timestamp, monotonic sequence, role, process_epoch and a fixed event name. Privacy-safe opaque connection/session ids are randomly scoped to process lifetime; no tokens/digests, arbitrary header values, payload bytes, local source tuples or target names. Human errors retain safe reason/field names rather than serialized config/peer text. Any exported peer error text is replaced by numeric code and fixed reason enum.
 
 Example snapshot shape (numeric values illustrative, not measured):
 
@@ -21,6 +21,21 @@ Record each terminal setup/session/connection failure in a fixed 256-entry, 64 K
 Ordinary event suppression does not suppress these status records. The existing 1 MiB/1024-record writer budget reserves 256 KiB/256 records for status output; events/qlog use at most the remaining 768 KiB/768 records. Prioritize pending status batches over ordinary events/qlog at record boundaries. Do not keep more than one status batch in flight; each batch is <=256 KiB with <=64 KiB chunks. The writer reports successful batch completion to the owner by a bounded acknowledgement; retire only entries covered by that completed batch. New or updated entries must not be cleared by an older acknowledgement. Failed/dropped writes leave entries pending for a later snapshot. Packet processing never waits for the sink. Preserve total queue accounting across both reservations.
 
 If the ring fills before completed output, evict the oldest pending entry with a monotonic coverage-loss count and lost-sequence range; expose status write failures, ring overflow and ordinary event loss separately. Their summaries remain in cumulative counters, but missing session correlation is not reconstructed or claimed. A blocked/broken sink or terminal churn above retention capacity cannot guarantee delivery of every session's diagnostics. SC-010 is verified with a functioning collector and injected failures within the documented status capacity; ordinary event-bucket exhaustion is explicitly included. Every injected failure must be correlated and coverage-loss counts must remain zero. An overflow/failed collection is a failed or invalid SC-010 run, never a pass. Separate robustness tests intentionally exceed the ring or block the sink and verify bounded memory, explicit coverage gaps and uninterrupted packet processing; they do not establish complete diagnostic coverage.
+
+### Shutdown collection
+
+After packet work and session/socket cleanup end, drain pending terminal status
+within one shared one-second collection deadline, inside the overall shutdown
+budget. This shutdown-only operation may bypass the ordinary snapshot interval;
+one batch in flight, reserved capacity and ACK coverage rules still apply.
+Wait for an older batch's ACK before publishing updated/new terminal entries.
+Do not clear pending entries merely because they were queued. An incomplete
+terminal drain or unfinished writer produces the fixed
+`DiagnosticCollectionIncomplete` runtime failure and a nonzero exit, including
+when ordinary logging is suppressed. A functioning collector within the
+declared capacity must receive short-lived failures at shutdown even with a
+long configured snapshot interval. Blocked/broken sinks remain bounded and
+cannot guarantee correlation delivery.
 
 ## Required measurements and meanings
 
