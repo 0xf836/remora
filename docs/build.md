@@ -1,8 +1,9 @@
 # Building Remora
 
-The Phase 1 package is build infrastructure. Its binary exits with an error;
-client/server commands and forwarding arrive in later increments. Empty domain
-test entry points establish registration and do not provide behavior coverage.
+Phase 2 supplies validated startup configuration, bounded buffer/resource
+ownership, safe diagnostic primitives and isolated test fixtures. The binary
+still exits with an error; command wiring and forwarding arrive in Phase 3.
+Only implemented foundation behavior has test coverage.
 
 ## Inputs
 
@@ -15,6 +16,10 @@ test entry points establish registration and do not provide behavior coverage.
 - C/C++ compiler, CMake, Clang/libclang (bindgen), pkg-config, and a linker.
   The pinned image supplies them; no system package changes are needed on
   operator hosts. Native builds need equivalent prerequisites already installed.
+- Foundation tests require Bash, Python 3 (standard library), OpenSSL CLI and
+  permission to bind unprivileged loopback UDP sockets. The pinned image supplies
+  these tools. OpenSSL is test-only certificate provisioning; production PEM
+  validation uses the existing BoringSSL backend.
 
 The [Dockerfile](../tools/build/Dockerfile) pins the official Rust image by
 multi-platform digest and Debian package resolution to the 2026-10-01 snapshot.
@@ -66,6 +71,18 @@ and native ARM64 validation are separate qualification jobs. See the
 [quickstart](../specs/001-masque-udp-tunnel/quickstart.md) and
 [tasks](../specs/001-masque-udp-tunnel/tasks.md) for prerequisites and sequencing.
 
+The implemented fixture generator can be run independently:
+
+```bash
+./scripts/validate/fixtures.sh --output /tmp/remora-validation
+```
+
+The output must not already exist. Generated ports are recorded in `ports.json`;
+they are distinct at generation but are not held after the script exits.
+Protect the private output directory and remove only fixtures you own.
+`remora check-config` is still a planned Phase 3 command; foundation tests call
+the typed library loader without binding or contacting peers.
+
 ## Phase 1 verification
 
 On 2026-10-11, native Linux GNU x86_64 and the pinned Docker image passed
@@ -80,3 +97,18 @@ with **zero tests**. This verifies setup and native dependency compilation,
 not forwarding, security, interoperability, performance or ARM64 behavior.
 The skeleton binary was checked to exit with status 1 and an explicit
 not-implemented diagnostic. Hosted GitHub CI has not been run from this session.
+
+## Phase 2 verification
+
+On 2026-10-11, native x86_64 and the updated pinned build image passed the same
+locked release, formatting, Clippy and all-feature test commands, with **33
+foundation tests**. Python 3/OpenSSL and local unprivileged socket permission
+are required by the generated fixtures. See the [full Phase 2 evidence](validation/phase2.md)
+for inputs, scope, failure checks and remaining qualification. The CLI binary
+still has no forwarding or check-config command implementation.
+
+After the independent Phase 2 review, the child-cleanup fix and parser properties
+passed the same native/container commands with **45 tests**. The
+[resolution evidence](validation/phase2.md#review-finding-resolution) preserves
+the original 33-test results and distinguishes the corrections from a repeated
+independent audit.

@@ -14,6 +14,11 @@ qlog = ["quiche/qlog"]
 
 [dependencies]
 quiche = "=0.30.0"
+# Reuse quiche's TLS backend to validate in-memory PEM without reopening paths.
+boring = "=5.2.0"
+# Safe startup-only openat/UID/rlimit access; packet syscalls remain in udp.rs.
+rustix = { version = "1.1", features = ["fs", "process"] }
+time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "=1.53.2", default-features = false, features = ["rt", "net", "time", "signal", "sync"] }
 socket2 = { version = "0.6", features = ["all"] }
 libc = "0.2"

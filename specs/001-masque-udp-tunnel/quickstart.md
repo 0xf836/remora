@@ -1,10 +1,10 @@
 # Quickstart validation guide
 
-Phase 1 provides the Cargo package, locked dependencies, build image and CI entry points; see [build instructions](../../docs/build.md). Native x86_64 build, formatting, Clippy and test-target registration have been checked, with no behavioral tests implemented yet. The binary exits with an explicit not-implemented error; fixture scripts, traffic tools and forwarding commands below remain planned. Revised [A1/A2](proposed-amendments.md) are accepted and the design-readiness gate passes. This guide follows normal incremental implementation: early x86_64 E2E MVP/baseline runs first, full target-native and numerical qualification before release. No command applies changes to a production server or configures an existing VPN.
+Phase 2 adds the validated configuration library, finite resource/buffer ownership, safe diagnostic primitives and fixture generator to Phase 1 build infrastructure; see [build instructions](../../docs/build.md) and [foundation evidence](../../docs/validation/phase2.md). The binary still exits with an explicit not-implemented error: command wiring, traffic tools and forwarding runners below remain planned. Revised [A1/A2](proposed-amendments.md) are accepted and the design-readiness gate passes. Early x86_64 E2E MVP/baseline runs precede full native-platform and numerical qualification. No command applies changes to a production server or configures an existing VPN.
 
 ## Prerequisites
 
-Linux 6.1+ x86_64 or ARM64; Rust 1.99.0 from the pinned toolchain; C/C++, CMake and Clang/libclang for the BoringSSL build; OpenSSL test certificate tooling. Interop needs pinned Go 1.27.2. Smoke tests use unprivileged loopback ports. Delay/loss/MTU/WireGuard tests require a separate runner with network-namespace capabilities; Remora itself runs as an ordinary user.
+Linux 6.1+ x86_64 or ARM64; Rust 1.99.0 from the pinned toolchain; C/C++, CMake and Clang/libclang for the BoringSSL build; Bash, Python 3 standard library and OpenSSL for test fixtures. Interop needs pinned Go 1.27.2. Foundation tests use unprivileged loopback ports. Delay/loss/MTU/WireGuard tests require a separate runner with network-namespace capabilities; Remora itself runs as an ordinary user.
 
 ## Build and static/component checks
 
@@ -21,19 +21,25 @@ Start these checks natively on x86_64 for implemented functionality. Add ARM64 n
 
 ## Generate isolated fixtures
 
-Planned `scripts/validate/fixtures.sh` creates an output directory with mode 0700, a local CA, server certificate with DNS SAN remora.test, mode-0600 key/client token/credential file, and contract-compatible client/server TOML. It provisions a random token and server canonical-text digest without putting either token in argv/logs. Default target is loopback 127.0.0.1:9000, explicit per-identity allowlist, client listener 127.0.0.1:51821, proxy 127.0.0.1:4433. It must never overwrite an existing operator directory.
+Implemented `scripts/validate/fixtures.sh` creates a mode-0700 output directory, a local CA, server certificate with DNS SAN remora.test, mode-0600 key/token/credential files, and client/server TOML. It provisions a random token and canonical-text digest without putting either in argv/logs. Client, proxy and authorized target use distinct ephemeral loopback ports recorded in `ports.json`, with an exact per-identity target permission. The script refuses any existing output. Ports are held during generation only; future process runners must handle bind collisions with fresh fixtures.
 
 ```bash
 ./scripts/validate/fixtures.sh --output /tmp/remora-validation
+```
+
+The following `check-config` commands are planned for T024; current foundation
+tests validate both generated configurations through the library loader:
+
+```bash
 ./target/release/remora check-config --config /tmp/remora-validation/server.toml
 ./target/release/remora check-config --config /tmp/remora-validation/client.toml
 ```
 
-Expected: valid schema/trust/secret files accepted, no sockets/peer traffic during check-config. Bad permissions, unknown fields and invalid policies fail before forwarding.
+Expected once command wiring exists: valid schema/trust/secret files accepted, no sockets/peer traffic during check-config. The implemented library already rejects bad permissions, unknown fields and invalid static policy shapes. Runtime authentication and DNS authorization remain Phase 3 work.
 
 ## Generic UDP flow
 
-Run responder, server and client in separate terminals. The test-only traffic tool interfaces are planned and fixed by these validation scripts:
+Run responder, server and client in separate terminals once implemented. The examples below use the contract's illustrative fixed ports; substitute the generated `ports.json` target port when using ephemeral fixtures. The test-only traffic tool interfaces remain planned:
 
 ```bash
 cargo run --locked --release --manifest-path tools/traffic/Cargo.toml -- responder --listen 127.0.0.1:9000

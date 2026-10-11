@@ -11,7 +11,7 @@
 **Review Ownership**: This is a reviewer-owned requirements-quality review artifact. Mark an item `[x]` only when the reviewer determines that the written requirements satisfy the criterion.
 **Marker Semantics**: `[x]` means the criterion has been reviewed and satisfied for requirements quality. It does not mean implementation work is complete. Every generated item is initially unchecked and unevaluated.
 
-**Reviewed**: 2026-10-11 by the independent read-only reviewer. All 40 criteria satisfied; see the [full review and per-item evidence](../../../docs/validation/phase1-review.md#requirements-readiness-checklist-decisions). The main agent recorded these decisions at the user's explicit request; the reviewer did not modify files. Phase 1 completion and outstanding runtime qualification are assessed separately in that report.
+**Reviewed**: 2026-10-11 by the independent read-only reviewer following Phase 2. All 40 criteria reconfirmed; see the [full review and per-item evidence](../../../docs/validation/phase2-review.md#requirements-readiness-checklist-decisions). The main agent recorded these decisions at the user's explicit request; the reviewer did not modify files. Phase 2 acceptance remains incomplete: T008/T009 are reopened for findings F1/F2. These implementation/verification findings do not invalidate written requirements. The [Phase 1 review](../../../docs/validation/phase1-review.md) remains historical evidence.
 
 ## Requirement Completeness
 

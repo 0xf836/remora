@@ -4,7 +4,7 @@ Date: 2026-10-10. Revised: 2026-10-11. Status: design selected; revised A2 accep
 
 ## Context
 
-A performant authenticated tunnel must demonstrate correctness, both-role independent compatibility, security and measured directional throughput/loss/latency/resources. The repository currently has no executable or recorded reference hardware/results. Architectural estimates are not evidence that release targets have been met; the specification permits implementation to start and requires early reproducible measurements as soon as the basic tunnel works.
+A performant authenticated tunnel must demonstrate correctness, both-role independent compatibility, security and measured directional throughput/loss/latency/resources. The initial planning snapshot had no executable or recorded reference hardware/results; the current skeleton and foundation still provide no working tunnel or benchmark evidence. Architectural estimates are not evidence that release targets have been met; the specification permits implementation to start and requires early reproducible measurements as soon as the basic tunnel works.
 
 ## Options considered
 

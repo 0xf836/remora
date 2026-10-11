@@ -1,6 +1,6 @@
 # CLI and configuration contract
 
-Version: 1, design-only. Commands/files below are the implementation interface, not existing binaries. Requirements FR-001/006/007/009/011/012/017/020/024/025/028/029.
+Version: 1. Startup file/schema validation is implemented in Phase 2; commands below remain the planned T024 interface. Requirements FR-001/006/007/009/011/012/017/020/024/025/028/029.
 
 ## Commands and process lifecycle
 
@@ -17,6 +17,15 @@ PATH is configuration, never a token. check-config validates schema, arithmetic,
 ## TOML schema_version=1
 
 Exactly one `[client]` or `[server]` role section is required. Explicit config values override defaults; no secret-bearing environment or CLI override. Paths resolve relative to config file directory. Client tokens and server keys/credential files must be regular files owned by the executing uid (or root for a provisioned server) and deny group/world access; reject symlink substitution/unsafe ownership at secure open. Do not echo contents on errors. Server certificate chain and CA bundle are public, private key and token files are not.
+
+Initial bounded parser ceilings: configuration <=256 KiB, credentials <=4 MiB,
+each PEM input <=1 MiB, <=16 distinct server listeners, <=128 CIDRs per target
+rule, and identity IDs of 1..64 ASCII alphanumeric/`_-.` bytes. Token input is
+at most 65 bytes including optional terminal LF. Encrypted private keys are
+unsupported in v1 and fail without prompting; the leaf certificate must match
+the private key. These startup checks do not establish peer trust or DNS policy.
+See [ADR-0005](../../../docs/adr/0005-foundation-primitives.md) for descriptor-open
+guarantees, provisioning assumptions and the conservative FD calculation.
 
 Client example:
 

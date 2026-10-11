@@ -12,6 +12,9 @@ RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
     && rustup component add rustfmt clippy \
     && dpkg-query -W > /usr/local/share/remora-build-packages.txt
 
+# Phase 2 fixture prerequisites already supplied by the pinned image/packages.
+RUN python3 --version && openssl version
+
 WORKDIR /work
 # Source/lockfile are mounted at runtime; the image contains build tools only.
 CMD ["cargo", "build", "--locked", "--release"]

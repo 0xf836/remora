@@ -99,7 +99,7 @@ scripts/validate/                 # smoke, scenarios, interop, namespace and ben
 .github/workflows/                # native target checks and scheduled qualification
 ```
 
-**Structure Decision**: Existing repository has no Cargo implementation. All source/tool paths above are proposed. Keep one production package and concrete modules rather than separate service/crate frameworks. Only benchmark and independent-peer tools need separate builds. `tasks.md` is intentionally left to `$speckit-tasks`.
+**Structure Decision**: The initial planning snapshot had no Cargo implementation. Phase 1 supplies the package/build infrastructure; Phase 2 supplies configuration, buffers, diagnostics and fixtures. Remaining source/tool paths are proposed and tracked in the existing `tasks.md`. Keep one production package and concrete modules rather than separate service/crate frameworks; only benchmark and independent-peer tools need separate builds. [ADR-0005](../../docs/adr/0005-foundation-primitives.md) records foundation choices and boundaries.
 
 ## Architecture and ownership
 
