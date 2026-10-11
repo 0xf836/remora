@@ -36,6 +36,7 @@ and satisfied. It does not indicate implementation, runtime validation, or achie
 
 ## Notes
 
+- Independent read-only review on 2026-10-11 reconfirmed all 16 existing marks; see [decisions and evidence](../../../docs/validation/phase1-review.md#existing-specification-quality-checklist-decisions). The main agent recorded this revalidation at the user's request. These marks certify written requirements, not achieved SC outcomes; the report preserves two low-severity documentation findings and pending runtime evidence.
 - Items marked incomplete require spec updates before `$speckit-clarify` or `$speckit-plan`.
 - Validation rechecked on 2026-10-11 after accepted A1/A2 and independent-review corrections R1–R6. All 16 requirements-quality criteria pass; no unresolved
   clarification markers or template placeholders remain.

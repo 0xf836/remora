@@ -2,7 +2,7 @@
 
 **Input**: Design documents from `/specs/001-masque-udp-tunnel/`.
 **Prerequisites**: [plan.md](plan.md), [spec.md](spec.md), [research.md](research.md), [data-model.md](data-model.md), [wire](contracts/masque-wire.md), [configuration](contracts/cli-config.md), [diagnostics](contracts/diagnostics.md) and [benchmark](contracts/benchmarks.md) contracts; constitution v1.0.0 and ADR-0001–0004.
-**Created**: 2026-10-11. All tasks describe future work; no implementation, test result or performance pass is asserted.
+**Created**: 2026-10-11. Completed tasks are marked only after their scoped checks; unchecked tasks remain planned work. Phase 1 completion is not tunnel or release acceptance.
 
 **Tests**: Automated verification of every behavioral change and relevant failure modes is mandatory under Constitution V and review correction R6. No TDD ordering was requested: implementation and its checks follow actual dependencies, and applicable checks must pass before accepting an increment. Pure documentation receives static review. Never substitute self-interoperation or source inspection for independent interoperability or measured performance.
 
@@ -20,12 +20,14 @@
 
 **Purpose**: Establish the reproducible x86_64 development path and assess existing I/O reuse before adding unsafe code.
 
-- [ ] T001 Initialize the single production package in `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/lib.rs` and `src/main.rs`: Rust 1.99.0/edition 2024, quiche =0.30.0/BoringSSL, Tokio 1.53.2 current-thread features and the justified dependencies in research; declare Linux GNU x86_64/aarch64 targets without making ARM64 execution a setup prerequisite, and keep optional qlog disabled by default.
-- [ ] T002 [P] Record pinned C/C++/CMake/BoringSSL build prerequisites, build-image inputs and locked release commands in `tools/build/Dockerfile` and `docs/build.md` after T001; document how each input is reproduced without runtime privileges or changes to operator hosts.
-- [ ] T003 [P] Create native x86_64 locked build, rustfmt, Clippy `-D warnings` and implemented-contract test jobs in `.github/workflows/ci.yml` after T001; register the test entry points in `tests/protocol.rs`, `tests/io.rs`, `tests/security.rs`, `tests/lifecycle.rs` and `tests/e2e.rs`, with explicit reporting for privileged checks that run separately.
-- [ ] T004 [P] Assess the exact compatible Cloudflare datagram-socket source for truncation, mmsg, pktinfo/source selection and PMTU/error handling; record reusable parts versus the necessary local syscall boundary in `docs/adr/0002-runtime-and-linux-io.md` after T001, without adding another runtime/backend or claiming measured superiority.
+- [X] T001 Initialize the single production package in `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/lib.rs` and `src/main.rs`: Rust 1.99.0/edition 2024, quiche =0.30.0/BoringSSL, Tokio 1.53.2 current-thread features and the justified dependencies in research; declare Linux GNU x86_64/aarch64 targets without making ARM64 execution a setup prerequisite, and keep optional qlog disabled by default.
+- [X] T002 [P] Record pinned C/C++/CMake/BoringSSL build prerequisites, build-image inputs and locked release commands in `tools/build/Dockerfile` and `docs/build.md` after T001; document how each input is reproduced without runtime privileges or changes to operator hosts.
+- [X] T003 [P] Create native x86_64 locked build, rustfmt, Clippy `-D warnings` and implemented-contract test jobs in `.github/workflows/ci.yml` after T001; register the test entry points in `tests/protocol.rs`, `tests/io.rs`, `tests/security.rs`, `tests/lifecycle.rs` and `tests/e2e.rs`, with explicit reporting for privileged checks that run separately.
+- [X] T004 [P] Assess the exact compatible Cloudflare datagram-socket source for truncation, mmsg, pktinfo/source selection and PMTU/error handling; record reusable parts versus the necessary local syscall boundary in `docs/adr/0002-runtime-and-linux-io.md` after T001, without adding another runtime/backend or claiming measured superiority.
 
 **Checkpoint**: Locked project and x86_64 checks exist; the Linux adapter's reuse decision is documented. T002–T004 may proceed together after T001.
+
+**Phase 1 evidence (2026-10-11)**: T001–T004 completed. Native x86_64 and the pinned build container passed locked release build, rustfmt, Clippy with warnings denied, and all-feature test-target compilation/execution (zero behavioral tests at this setup stage). The Dockerfile built successfully; its check commands ran with an unprivileged UID and read-only dependency cache. CI is configured but no hosted CI run is claimed. See [build evidence](../../docs/build.md) and [I/O assessment](../../docs/adr/0002-runtime-and-linux-io.md#phase-1-datagram-socket-reuse-assessment). T005 onward remains unchecked; requirements-checklist markers are unchanged.
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 

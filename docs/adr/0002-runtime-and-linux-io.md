@@ -31,6 +31,38 @@ Before implementing bespoke unsafe ancillary code, assess Cloudflare datagram-so
 
 ## Output lifecycle and capacity risks
 
+### Phase 1 datagram-socket reuse assessment
+
+Inspected Cloudflare's datagram-socket **0.8.0** at quiche tag **0.30.0**,
+using the GitHub contents API. Exact source blobs:
+`Cargo.toml` f836c8b8d1902892b0036c4b685b97668bcebbc4,
+`src/mmsg.rs` 194d935e7f319400224f7837a6b4c8b442094364,
+`src/datagram.rs` 1b90619969102e22e38b5da108f83dcf5ceb1468.
+This identifies the reviewed source rather than relying on rolling API docs.
+Its Tokio dependency uses the same upstream workspace; it does not provide a
+different runtime. It is not added as a Remora dependency in Phase 1.
+
+| Required behavior | Observed source behavior | Reuse decision |
+|-------------------|--------------------------|----------------|
+| Bounded mmsg calls and accepted prefixes | `MAX_MMSG=16`; recreates headers per chunk; returns accumulated successful message count after a later syscall error | Useful batching/readiness pattern; caller still owns prefix accounting, pacing and bounded work. Remora's batch-32 contract needs adaptation. |
+| Empty UDP and truncation detection | Returned messages advance `ReadBuf` by `msg_len`, including zero; receive does not inspect `msg_flags` for MSG_TRUNC | Empty messages are represented, but silent truncation cannot satisfy the contract; do not adopt receive unchanged. |
+| Remote/local address and source selection | mmsg headers set `msg_name` and `msg_control` to null; batch traits describe connected sockets; single `poll_recv_from` returns remote address only | Insufficient for wildcard outer/client sockets: require per-message sockaddr, pktinfo receive and explicit outgoing source ancillary data. |
+| PMTU, GRO and kernel overflow metadata | No ancillary parsing, MSG_CTRUNC validation, error-queue processing or no-fragment policy in the reviewed mmsg API; a zero-progress failure returns OS error, later errors are hidden behind accepted count | Remora must classify EMSGSIZE, configure PMTU, validate metadata and account overflow/optional GRO in its Linux boundary. |
+| Readiness and buffer ownership | Poll macros combine Tokio readiness with `try_io`; receive casts uninitialized buffer storage and initializes returned lengths | Reuse the readiness idea, not unreviewed unsafe code. Adapter tests must prove lengths, alignment, initialization and retained suffix ownership. |
+
+Decision: retain one narrow safe-facing Linux adapter in `src/udp.rs` for
+recvmsg/sendmsg, mmsg, ancillary metadata and timerfd. Reuse socket2/libc and
+Tokio readiness facilities already selected; do not add datagram-socket solely
+for connected batching while duplicating the required metadata path. If later
+copying/adapting upstream code, preserve its BSD license notices and document
+each changed safety invariant. This is a source/API assessment, not an
+independent safety audit or performance comparison. T016/T017 must still verify
+real syscalls and scripted partial progress before accepting the adapter.
+
+Sources: [tagged manifest](https://github.com/cloudflare/quiche/blob/0.30.0/datagram-socket/Cargo.toml),
+[mmsg implementation](https://github.com/cloudflare/quiche/blob/0.30.0/datagram-socket/src/mmsg.rs),
+[socket traits](https://github.com/cloudflare/quiche/blob/0.30.0/datagram-socket/src/datagram.rs).
+
 After independent review, generated ciphertext remains immutable and ordered within its original connection across EAGAIN and individual session close, under [ADR-0001's commitment rules](0001-transport-profile.md#transmission-commitment-and-close-independent-review-r1). Do not derive per-session ciphertext cancellation from native DATAGRAM purge. Fair scheduling still rotates independent connections; an earlier future-paced packet cannot be bypassed by later same-connection output. Test partial progress, preserved pacing and the original output deadline.
 
 One packet owner is a capacity hypothesis. The SC-007 two-core process budget includes setup/writer work and does not parallelize that owner. Early x86_64 profiles must report owner-thread CPU/headroom and assess 32-session progress, control-timer servicing and conservative native queue expiry/purge under load. These measurements guide refinement during normal implementation; no separate prototype or dual-architecture checkpoint is introduced.

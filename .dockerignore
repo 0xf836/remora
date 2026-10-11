@@ -1,0 +1,12 @@
+.git
+.agents
+target
+debug
+release
+**/*.log
+**/.env*
+**/*.tmp
+**/*.key
+**/*.pem
+**/*.token
+

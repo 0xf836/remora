@@ -1,14 +1,14 @@
 # Quickstart validation guide
 
-This is the intended runnable guide after implementation. The current repository has no Cargo project, Remora binary, fixture scripts or traffic tools; none of the commands below has been reported as passing. Revised [A1/A2](proposed-amendments.md) are accepted and the design-readiness gate passes. This guide follows normal incremental implementation: early x86_64 E2E MVP/baseline runs first, full target-native and numerical qualification before release. No command applies changes to a production server or configures an existing VPN.
+Phase 1 provides the Cargo package, locked dependencies, build image and CI entry points; see [build instructions](../../docs/build.md). Native x86_64 build, formatting, Clippy and test-target registration have been checked, with no behavioral tests implemented yet. The binary exits with an explicit not-implemented error; fixture scripts, traffic tools and forwarding commands below remain planned. Revised [A1/A2](proposed-amendments.md) are accepted and the design-readiness gate passes. This guide follows normal incremental implementation: early x86_64 E2E MVP/baseline runs first, full target-native and numerical qualification before release. No command applies changes to a production server or configures an existing VPN.
 
 ## Prerequisites
 
-Linux 6.1+ x86_64 or ARM64; Rust 1.99.0 from the future pinned toolchain; C/C++ and CMake/native BoringSSL prerequisites; OpenSSL test certificate tooling. Interop needs pinned Go 1.27.2. Smoke tests use unprivileged loopback ports. Delay/loss/MTU/WireGuard tests require a separate runner with network-namespace capabilities; Remora itself runs as an ordinary user.
+Linux 6.1+ x86_64 or ARM64; Rust 1.99.0 from the pinned toolchain; C/C++, CMake and Clang/libclang for the BoringSSL build; OpenSSL test certificate tooling. Interop needs pinned Go 1.27.2. Smoke tests use unprivileged loopback ports. Delay/loss/MTU/WireGuard tests require a separate runner with network-namespace capabilities; Remora itself runs as an ordinary user.
 
 ## Build and static/component checks
 
-From the repository root, after files/tools are implemented:
+From the repository root (available starting with Phase 1; behavior coverage grows with implementation):
 
 ```bash
 cargo build --locked --release

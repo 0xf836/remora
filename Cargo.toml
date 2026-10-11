@@ -1,0 +1,40 @@
+[package]
+name = "remora"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+description = "A standards-based MASQUE CONNECT-UDP tunnel"
+publish = false
+
+[features]
+default = []
+# Compilation support only; safe filtering and runtime activation are later work.
+qlog = ["quiche/qlog"]
+
+[dependencies]
+quiche = "=0.30.0"
+tokio = { version = "=1.53.2", default-features = false, features = ["rt", "net", "time", "signal", "sync"] }
+socket2 = { version = "0.6", features = ["all"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2.6"
+getrandom = "0.4"
+
+[dev-dependencies]
+proptest = "1"
+
+[package.metadata.remora]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+minimum-linux-version = "6.1"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+

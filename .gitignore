@@ -25,3 +25,16 @@ rustc-ice-*.txt
 
 .agents/
 
+# Local build/diagnostic output and private fixture inputs.
+/release/
+*.rlib
+*.profraw
+*.profdata
+*.log
+.env*
+*.tmp
+*.swp
+*.key
+*.pem
+*.token
+

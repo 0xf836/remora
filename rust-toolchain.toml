@@ -1,0 +1,6 @@
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+# ARM64 toolchain/runtime qualification is added independently of x86_64 setup.
+
