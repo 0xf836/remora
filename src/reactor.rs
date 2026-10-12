@@ -35,13 +35,15 @@ struct OwnedConnection {
     _permit: crate::buffers::Reservation,
     id: crate::diagnostics::OpaqueId,
     initial_cid: Vec<u8>,
-    cursors: [FairCursor; 6],
+    cursors: [FairCursor; 7],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
     Bind,
     Socket,
+    SocketErrno(i32),
     Transport,
+    TransportCode(u64),
     Capability,
     Trust,
     Resource,
@@ -79,6 +81,7 @@ struct Runner<'a> {
     pools: Pools,
     diagnostics: Diagnostics,
     snapshot: Snapshot,
+    retired_io: crate::udp::IoStats,
     latch: MappingLatch,
     retry: transport::Retry,
     source_buckets: [SourceBucket; 64],
@@ -94,6 +97,7 @@ fn native_drop(error: TransportError) -> crate::diagnostics::DropReason {
     use crate::diagnostics::DropReason;
     match error {
         TransportError::Oversized => DropReason::Oversized,
+        TransportError::Pmtu => DropReason::Pmtu,
         TransportError::Capacity => DropReason::QueueFull,
         TransportError::Expired => DropReason::QueueExpired,
         TransportError::Stopped => DropReason::StaleGeneration,
@@ -207,6 +211,7 @@ impl<'a> Runner<'a> {
             pools,
             diagnostics,
             snapshot: Snapshot::default(),
+            retired_io: crate::udp::IoStats::default(),
             latch: MappingLatch::default(),
             retry: transport::Retry::new(now).map_err(|_| RuntimeError::Resource)?,
             source_buckets: std::array::from_fn(|_| SourceBucket {
@@ -278,7 +283,7 @@ impl<'a> Runner<'a> {
                     _permit: permit,
                     id,
                     initial_cid: cid.to_vec(),
-                    cursors: [FairCursor::default(); 6],
+                    cursors: [FairCursor::default(); 7],
                 },
             );
         }
@@ -354,6 +359,9 @@ impl<'a> Runner<'a> {
     }
     fn retire_session(&mut self, generation: u64, code: u64, abort_write: bool) {
         if let Some(mut s) = self.sessions.remove(&generation) {
+            if let Some(relay) = &s.relay {
+                self.retired_io = self.retired_io.merge(relay.get_ref().0.borrow().stats());
+            }
             if [masque::H3_MESSAGE_ERROR, masque::H3_DATAGRAM_ERROR].contains(&code) {
                 let _ = self.diagnostics.failure(
                     Instant::now(),
@@ -490,6 +498,7 @@ impl<'a> Runner<'a> {
                     self.cfg.limits().session_queue_bytes,
                 ),
                 capsules: CapsuleParser::default(),
+                deferred_headers: None,
                 body_pending: false,
                 capsule_counts: crate::masque::CapsuleCounts::default(),
                 _identity: None,
@@ -640,7 +649,7 @@ impl<'a> Runner<'a> {
                     _permit: permit,
                     id,
                     initial_cid: header.dcid.as_ref().to_vec(),
-                    cursors: [FairCursor::default(); 6],
+                    cursors: [FairCursor::default(); 7],
                 },
             );
             generation.0
@@ -662,7 +671,11 @@ impl<'a> Runner<'a> {
                         } else {
                             Failure::Transport
                         },
-                        0,
+                        if matches!(error, quiche::Error::TlsFail) {
+                            0
+                        } else {
+                            transport::native_error_code(error)
+                        },
                         None,
                         self.connections.get(&connection).map(|c| c.id),
                     );
@@ -675,6 +688,44 @@ impl<'a> Runner<'a> {
         Ok(())
     }
     fn receive_outer(&mut self, index: usize, now: Instant) -> Result<bool, RuntimeError> {
+        let errors = self.outer[index]
+            .get_ref()
+            .0
+            .borrow_mut()
+            .drain_errors()
+            .map_err(|_| RuntimeError::Socket)?;
+        for error in errors.errors.into_iter().flatten() {
+            if error.errno == libc::EMSGSIZE as u32 {
+                self.snapshot.counters.outer_pmtu_errors = self
+                    .snapshot
+                    .counters
+                    .outer_pmtu_errors
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
+                for c in self.connections.values_mut().filter(|c| c.socket == index) {
+                    if c.transport
+                        .quic
+                        .path_stats()
+                        .any(|path| path.active && path.peer_addr == error.destination)
+                    {
+                        c.transport.quic.revalidate_pmtu();
+                    }
+                }
+            }
+        }
+        self.snapshot
+            .counters
+            .local_drops
+            .add(
+                crate::diagnostics::DropReason::AncillaryInvalid,
+                if self.server {
+                    Direction::ToTarget
+                } else {
+                    Direction::ToClient
+                },
+                errors.malformed as u64,
+            )
+            .map_err(|_| RuntimeError::Diagnostics)?;
         let mut slabs = Vec::with_capacity(self.cfg.io().batch_max.min(32));
         for _ in 0..self.cfg.io().batch_max.min(32) {
             if let Ok(s) = self.pools.scratch.acquire() {
@@ -721,7 +772,22 @@ impl<'a> Runner<'a> {
                             } else {
                                 crate::diagnostics::DropReason::AncillaryInvalid
                             },
-                            Direction::ToTarget,
+                            if self.server {
+                                Direction::ToTarget
+                            } else {
+                                Direction::ToClient
+                            },
+                        )?;
+                        continue;
+                    }
+                    if packet.length > self.cfg.transport().outer_udp_max_bytes {
+                        self.drop_packet(
+                            crate::diagnostics::DropReason::Oversized,
+                            if self.server {
+                                Direction::ToTarget
+                            } else {
+                                Direction::ToClient
+                            },
                         )?;
                         continue;
                     }
@@ -732,7 +798,7 @@ impl<'a> Runner<'a> {
                         now,
                     )?;
                 }
-                Ok(n > 0)
+                Ok(n > 0 || errors.pending)
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if let Ok(mut guard) = self.outer[index]
@@ -742,7 +808,17 @@ impl<'a> Runner<'a> {
                 {
                     let _ = &mut guard;
                 }
-                Ok(false)
+                Ok(errors.pending)
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(true),
+            Err(e) if crate::udp::is_peer_error(&e) => {
+                self.snapshot.counters.outer_async_errors = self
+                    .snapshot
+                    .counters
+                    .outer_async_errors
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
+                Ok(true)
             }
             Err(_) => Err(RuntimeError::Socket),
         }
@@ -843,6 +919,7 @@ impl<'a> Runner<'a> {
                 });
                 Ok(false)
             }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(true),
             Err(_) => Err(RuntimeError::Socket),
         }
     }
@@ -858,18 +935,30 @@ impl<'a> Runner<'a> {
             let RoleConfig::Server(server) = self.cfg.role() else {
                 return Err(RuntimeError::Transport);
             };
-            if let Some(id) = self.lookup(connection, stream) {
-                self.close_session(id, masque::H3_MESSAGE_ERROR);
-                return Ok(());
+            let reserved = self.lookup(connection, stream);
+            if let Some(id) = reserved {
+                if self.sessions[&id].state != State::Starting
+                    || self.sessions[&id].deferred_headers.is_some()
+                {
+                    self.close_session(id, masque::H3_MESSAGE_ERROR);
+                    return Ok(());
+                }
+                self.sessions.get_mut(&id).unwrap().state = State::Authorizing;
             }
             let request = match masque::request(&list, &server.proxy_authority, &server.path_prefix)
             {
                 Ok(r) => r,
                 Err(WireError::Status(code)) => {
                     self.reject(connection, stream, code);
+                    if let Some(id) = reserved {
+                        self.close_session(id, 0x10b);
+                    }
                     return Ok(());
                 }
                 Err(_) => {
+                    if let Some(id) = reserved {
+                        self.close_session(id, masque::H3_MESSAGE_ERROR);
+                    }
                     if let Some(c) = self.connections.get_mut(&connection) {
                         c.transport.close_stream(stream, masque::H3_MESSAGE_ERROR);
                     }
@@ -878,9 +967,14 @@ impl<'a> Runner<'a> {
             };
             if !more {
                 self.reject(connection, stream, 400);
+                if let Some(id) = reserved {
+                    self.close_session(id, 0x10b);
+                }
                 return Ok(());
             }
-            let id = match self.create_session(connection, stream, None, now) {
+            let id = match reserved
+                .map_or_else(|| self.create_session(connection, stream, None, now), Ok)
+            {
                 Ok(id) => id,
                 Err(_) => {
                     self.reject(connection, stream, 503);
@@ -1166,6 +1260,7 @@ impl<'a> Runner<'a> {
                 Err(RuntimeError::Capability)
             }
             Err(TransportError::Tls) => Err(RuntimeError::Trust),
+            Err(TransportError::Native(code)) => Err(RuntimeError::TransportCode(code)),
             Err(_) => Err(RuntimeError::Transport),
         }
     }
@@ -1186,7 +1281,14 @@ impl<'a> Runner<'a> {
             .get(&s.connection.0)
             .map_or(0, |c| c.transport.payload_ceiling(s.stream));
         if bytes.len() > ceiling {
-            self.drop_packet(crate::diagnostics::DropReason::Oversized, direction)?;
+            self.drop_packet(
+                if bytes.len() > self.cfg.transport().application_max_bytes {
+                    crate::diagnostics::DropReason::Oversized
+                } else {
+                    crate::diagnostics::DropReason::Pmtu
+                },
+                direction,
+            )?;
             return Ok(());
         }
         s.udp_activity(now);
@@ -1198,6 +1300,12 @@ impl<'a> Runner<'a> {
             }
         };
         slab.bytes_mut()[..bytes.len()].copy_from_slice(bytes);
+        self.snapshot.profile.queue_copy_bytes = self
+            .snapshot
+            .profile
+            .queue_copy_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or(RuntimeError::Diagnostics)?;
         let packet = resource(crate::buffers::Datagram::new(
             slab,
             0,
@@ -1248,6 +1356,11 @@ impl<'a> Runner<'a> {
         for id in ids {
             let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
             let packet = s.queue.front(direction).ok_or(RuntimeError::Transport)?;
+            self.snapshot.profile.application_queue_age_max_us =
+                self.snapshot.profile.application_queue_age_max_us.max(
+                    now.saturating_duration_since(packet.received_at())
+                        .as_micros() as u64,
+                );
             if packet.session() != s.generation || packet.connection() != s.connection {
                 s.queue.pop(direction);
                 self.drop_packet(crate::diagnostics::DropReason::StaleGeneration, direction)?;
@@ -1287,6 +1400,71 @@ impl<'a> Runner<'a> {
             .values()
             .any(|s| s.connection.0 == connection && s.queue.front(direction).is_some()))
     }
+    fn defer_headers(
+        &mut self,
+        connection: u64,
+        stream: u64,
+        list: Vec<quiche::h3::Header>,
+        more: bool,
+        now: Instant,
+    ) -> Result<(), RuntimeError> {
+        use quiche::h3::NameValue;
+        if !self.server {
+            return Err(RuntimeError::Capability);
+        }
+        if let Some(id) = self.lookup(connection, stream) {
+            self.close_session(id, masque::H3_MESSAGE_ERROR);
+            return Ok(());
+        }
+        let size = list.iter().try_fold(0usize, |n, h| {
+            n.checked_add(h.name().len())
+                .and_then(|n| n.checked_add(h.value().len()))
+        });
+        if list.len() > 32 || size.is_none_or(|n| n > 16384) {
+            if let Some(c) = self.connections.get_mut(&connection) {
+                c.transport.close_stream(stream, masque::H3_MESSAGE_ERROR);
+            }
+            return Ok(());
+        }
+        let id = match self.create_session(connection, stream, None, now) {
+            Ok(id) => id,
+            Err(_) => {
+                self.reject(connection, stream, 503);
+                return Ok(());
+            }
+        };
+        // Repack into exact bounded native buffers; retain no decoder capacity.
+        let headers = list
+            .iter()
+            .map(|h| quiche::h3::Header::new(h.name(), h.value()))
+            .collect();
+        let s = self.sessions.get_mut(&id).unwrap();
+        s.state = State::Starting;
+        s.deferred_headers = Some((headers, more));
+        Ok(())
+    }
+    fn service_deferred_headers(
+        &mut self,
+        connection: u64,
+        now: Instant,
+    ) -> Result<usize, RuntimeError> {
+        let ids = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| {
+                (s.connection.0 == connection && s.deferred_headers.is_some()).then_some(*id)
+            })
+            .collect();
+        let ids = self.select_sessions(connection, 6, ids, 4);
+        let count = ids.len();
+        for id in ids {
+            let s = self.sessions.get_mut(&id).unwrap();
+            let stream = s.stream;
+            let (headers, more) = s.deferred_headers.take().unwrap();
+            self.headers(connection, stream, headers, more, now)?;
+        }
+        Ok(count)
+    }
     fn h3_work(&mut self, connection: u64, now: Instant) -> Result<bool, RuntimeError> {
         if self
             .connections
@@ -1303,7 +1481,11 @@ impl<'a> Runner<'a> {
         {
             return Ok(false);
         }
-        let mut setup_progress = 0;
+        let mut setup_progress = if ready && self.server {
+            self.service_deferred_headers(connection, now)?
+        } else {
+            0
+        };
         if ready && !self.server {
             let ids: Vec<_> = self
                 .sessions
@@ -1410,9 +1592,10 @@ impl<'a> Runner<'a> {
             match event {
                 Ok((stream, quiche::h3::Event::Headers { list, more_frames })) => {
                     if !self.negotiate_transport(connection)? {
-                        return Err(RuntimeError::Transport);
+                        self.defer_headers(connection, stream, list, more_frames, now)?;
+                    } else {
+                        self.headers(connection, stream, list, more_frames, now)?;
                     }
-                    self.headers(connection, stream, list, more_frames, now)?
                 }
                 Ok((stream, quiche::h3::Event::Data)) => {
                     if let Some(id) = self.lookup(connection, stream)
@@ -1476,7 +1659,9 @@ impl<'a> Runner<'a> {
                     }
                 }
                 Err(quiche::h3::Error::Done) => break,
-                Err(_) => return Err(RuntimeError::Transport),
+                Err(error) => {
+                    return Err(RuntimeError::TransportCode(transport::h3_error_code(error)));
+                }
             }
             serviced += 1;
         }
@@ -1567,6 +1752,12 @@ impl<'a> Runner<'a> {
                         .transport
                         .incoming_consumed();
                     self.datagram(connection, &scratch.bytes()[..n], expiry, Instant::now())?;
+                    self.snapshot.profile.received_datagram_copy_bytes = self
+                        .snapshot
+                        .profile
+                        .received_datagram_copy_bytes
+                        .checked_add(n as u64)
+                        .ok_or(RuntimeError::Diagnostics)?;
                 }
                 Err(quiche::Error::Done) => break,
                 Err(_) => return Err(RuntimeError::Transport),
@@ -1686,6 +1877,12 @@ impl<'a> Runner<'a> {
                     }
                 };
                 slab.bytes_mut()[..decoded.payload.len()].copy_from_slice(decoded.payload);
+                self.snapshot.profile.queue_copy_bytes = self
+                    .snapshot
+                    .profile
+                    .queue_copy_bytes
+                    .checked_add(decoded.payload.len() as u64)
+                    .ok_or(RuntimeError::Diagnostics)?;
                 let packet = resource(crate::buffers::Datagram::new(
                     slab,
                     0,
@@ -1706,6 +1903,26 @@ impl<'a> Runner<'a> {
                 {
                     self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
                 }
+            }
+            Err(e) if e.raw_os_error() == Some(libc::EMSGSIZE) => {
+                self.drop_packet(crate::diagnostics::DropReason::Pmtu, direction)?;
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => {
+                // Kernel egress pressure drops this unreliable packet, not the
+                // immutable association. No accepted payload is replayed.
+                self.drop_packet(crate::diagnostics::DropReason::SocketError, direction)?;
+            }
+            Err(e) if crate::udp::is_peer_error(&e) => {
+                // A delayed ICMP describes an earlier submission, not loss of
+                // this immutable association. This call accepted no payload.
+                let sid = s.id;
+                self.failure(
+                    Failure::Socket,
+                    e.raw_os_error().unwrap_or(0) as u64,
+                    Some(sid),
+                    self.connections.get(&connection).map(|c| c.id),
+                );
+                self.drop_packet(crate::diagnostics::DropReason::SocketError, direction)?;
             }
             Err(_) => {
                 let sid = s.id;
@@ -1776,6 +1993,26 @@ impl<'a> Runner<'a> {
                     });
                     break;
                 }
+                Err(e) if e.raw_os_error() == Some(libc::EMSGSIZE) => {
+                    s.queue.pop(direction);
+                    self.drop_packet(crate::diagnostics::DropReason::Pmtu, direction)?;
+                }
+                Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => {
+                    s.queue.pop(direction);
+                    self.drop_packet(crate::diagnostics::DropReason::SocketError, direction)?;
+                }
+                Err(e) if crate::udp::is_peer_error(&e) => {
+                    let sid = s.id;
+                    let conn = s.connection.0;
+                    s.queue.pop(direction);
+                    self.failure(
+                        Failure::Socket,
+                        e.raw_os_error().unwrap_or(0) as u64,
+                        Some(sid),
+                        self.connections.get(&conn).map(|c| c.id),
+                    );
+                    self.drop_packet(crate::diagnostics::DropReason::SocketError, direction)?;
+                }
                 _ => {
                     let sid = s.id;
                     let conn = s.connection.0;
@@ -1793,6 +2030,46 @@ impl<'a> Runner<'a> {
         Ok(())
     }
     fn relay_input(&mut self, id: u64, now: Instant) -> Result<bool, RuntimeError> {
+        let error_info = self.sessions.get(&id).and_then(|s| {
+            s.relay.as_ref().map(|relay| {
+                (
+                    relay.get_ref().0.borrow_mut().drain_errors(),
+                    s.id,
+                    s.connection.0,
+                )
+            })
+        });
+        let mut error_pending = false;
+        if let Some((errors, sid, connection)) = error_info {
+            let errors = errors.map_err(|_| RuntimeError::Socket)?;
+            error_pending = errors.pending;
+            for error in errors.errors.into_iter().flatten() {
+                if error.mtu.is_some() {
+                    self.snapshot.counters.destination_pmtu_updates = self
+                        .snapshot
+                        .counters
+                        .destination_pmtu_updates
+                        .checked_add(1)
+                        .ok_or(RuntimeError::Diagnostics)?;
+                } else if error.errno != libc::EMSGSIZE as u32 {
+                    self.failure(
+                        Failure::Socket,
+                        u64::from(error.errno),
+                        Some(sid),
+                        self.connections.get(&connection).map(|c| c.id),
+                    );
+                }
+            }
+            self.snapshot
+                .counters
+                .local_drops
+                .add(
+                    crate::diagnostics::DropReason::AncillaryInvalid,
+                    Direction::ToTarget,
+                    errors.malformed as u64,
+                )
+                .map_err(|_| RuntimeError::Diagnostics)?;
+        }
         let Some(s) = self.sessions.get(&id) else {
             return Ok(false);
         };
@@ -1843,13 +2120,24 @@ impl<'a> Runner<'a> {
                         .map_err(|_| RuntimeError::Diagnostics)?;
                     self.queue_outgoing(id, &slabs[p.index].bytes()[..p.length], now)?;
                 }
-                Ok(n > 0)
+                Ok(n > 0 || error_pending)
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 let _ = relay.try_io(tokio::io::Interest::READABLE, |_| {
                     Err::<(), _>(io::ErrorKind::WouldBlock.into())
                 });
-                Ok(false)
+                Ok(error_pending)
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(true),
+            Err(e) if crate::udp::is_peer_error(&e) => {
+                let session_id = self.sessions.get(&id).map(|s| s.id);
+                self.failure(
+                    Failure::Socket,
+                    e.raw_os_error().unwrap_or(0) as u64,
+                    session_id,
+                    self.connections.get(&connection).map(|c| c.id),
+                );
+                Ok(true)
             }
             Err(_) => {
                 let session_id = self.sessions.get(&id).map(|s| s.id);
@@ -1904,6 +2192,20 @@ impl<'a> Runner<'a> {
                     .outer_socket_sent
                     .checked_add(n as u64)
                     .ok_or(RuntimeError::Diagnostics)?;
+                self.snapshot.profile.send_burst_datagrams_max =
+                    self.snapshot.profile.send_burst_datagrams_max.max(n);
+                for packet in c.transport.output.iter().take(n) {
+                    self.snapshot.profile.ciphertext_age_max_us =
+                        self.snapshot.profile.ciphertext_age_max_us.max(
+                            now.saturating_duration_since(packet.generated_at())
+                                .as_micros() as u64,
+                        );
+                    self.snapshot.profile.pacing_lateness_max_us = self
+                        .snapshot
+                        .profile
+                        .pacing_lateness_max_us
+                        .max(now.saturating_duration_since(packet.at()).as_micros() as u64);
+                }
                 for length in lengths.iter().take(n) {
                     self.snapshot.counters.outer_socket_sent_bytes = self
                         .snapshot
@@ -1926,7 +2228,52 @@ impl<'a> Runner<'a> {
                 });
                 Ok(false)
             }
-            Err(_) => Err(RuntimeError::Socket),
+            Err(e) if e.raw_os_error() == Some(libc::EMSGSIZE) => {
+                // Exact failed FIFO front only; no accepted-prefix replay and
+                // no invented per-Session attribution for encrypted packets.
+                c.transport.output.pop_front();
+                // EMSGSIZE can also be an old shared-socket error. Only the
+                // checked error-queue destination may revalidate a QUIC path.
+                self.snapshot.counters.outer_pmtu_errors = self
+                    .snapshot
+                    .counters
+                    .outer_pmtu_errors
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
+                Ok(true)
+            }
+            Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => {
+                // Native netem/qdisc pressure can reject a send synchronously.
+                // None of this FIFO front was accepted. Let QUIC observe normal
+                // unreliable loss and recover its control frames; keep peers
+                // and unaffected Sessions alive, with bounded owner work.
+                c.transport.output.pop_front();
+                self.snapshot.counters.outer_send_pressure = self
+                    .snapshot
+                    .counters
+                    .outer_send_pressure
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
+                Ok(true)
+            }
+            Err(e) if crate::udp::is_peer_error(&e) => {
+                // Shared outer sockets can report an ICMP for destination A
+                // while submitting B. No bytes were accepted; discard only
+                // this FIFO front, without attributing peer/Session failure.
+                // The bounded error-queue path alone has checked destination
+                // metadata. Remaining records are serviced on later turns.
+                c.transport.output.pop_front();
+                self.snapshot.counters.outer_async_errors = self
+                    .snapshot
+                    .counters
+                    .outer_async_errors
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
+                Ok(true)
+            }
+            Err(e) => Err(e
+                .raw_os_error()
+                .map_or(RuntimeError::Socket, RuntimeError::SocketErrno)),
         }
     }
     fn service_transport_timers(&mut self, now: Instant) -> Result<bool, RuntimeError> {
@@ -1934,6 +2281,30 @@ impl<'a> Runner<'a> {
         let mut expired_native = 0usize;
         for c in self.connections.values_mut() {
             expired_native += c.transport.expire_native(now);
+            let lost = c
+                .transport
+                .take_lost_packets()
+                .map_err(|_| RuntimeError::Transport)?;
+            self.snapshot.counters.outer_quic_lost_packets = self
+                .snapshot
+                .counters
+                .outer_quic_lost_packets
+                .checked_add(lost as u64)
+                .ok_or(RuntimeError::Diagnostics)?;
+            let pmtu = c.transport.take_pmtu_drops();
+            self.snapshot
+                .counters
+                .local_drops
+                .add(
+                    crate::diagnostics::DropReason::Pmtu,
+                    if self.server {
+                        Direction::ToClient
+                    } else {
+                        Direction::ToTarget
+                    },
+                    pmtu as u64,
+                )
+                .map_err(|_| RuntimeError::Diagnostics)?;
         }
         self.snapshot
             .counters
@@ -2040,6 +2411,28 @@ impl<'a> Runner<'a> {
         pending
     }
     fn record_resources(&mut self) {
+        let mut io = self.retired_io;
+        for socket in self.outer.iter().chain(self.listener.iter()) {
+            io = io.merge(socket.get_ref().0.borrow().stats());
+        }
+        for s in self.sessions.values() {
+            if let Some(socket) = &s.relay {
+                io = io.merge(socket.get_ref().0.borrow().stats());
+            }
+        }
+        self.snapshot.profile.io = io;
+        self.snapshot.profile.factory = transport::factory_profile();
+        if let Some(allocations) = self
+            .pools
+            .application
+            .allocations()
+            .checked_add(self.pools.ciphertext.allocations())
+            .and_then(|n| n.checked_add(self.pools.scratch.allocations()))
+        {
+            self.snapshot.profile.payload_slab_allocations = allocations;
+        } else {
+            self.snapshot.profile.factory.overflowed = true;
+        }
         use crate::diagnostics::Resources;
         let mut r = Resources {
             connections: self.budgets.connections.used().count,
@@ -2063,6 +2456,15 @@ impl<'a> Runner<'a> {
             r.queued_packets += s.queue.used().count;
             r.queued_bytes += s.queue.used().bytes;
             r.queue_metadata_bytes += s.queue.metadata_capacity_bytes();
+            if let Some((headers, _)) = &s.deferred_headers {
+                use quiche::h3::NameValue;
+                r.control_output_capacity_bytes += headers.capacity()
+                    * std::mem::size_of::<quiche::h3::Header>()
+                    + headers
+                        .iter()
+                        .map(|h| h.name().len() + h.value().len())
+                        .sum::<usize>();
+            }
         }
         for c in self.connections.values() {
             let (send, receive, metadata) = c.transport.resource_usage();
@@ -2127,6 +2529,12 @@ impl<'a> Runner<'a> {
             visits.sort_unstable();
             let (window, next, continuation) = service_window(visits.len(), self.turn);
             for &(kind, id) in &visits[window] {
+                self.snapshot.profile.owner_visits = self
+                    .snapshot
+                    .profile
+                    .owner_visits
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
                 match kind {
                     0 => more |= self.receive_outer(id as usize, now)?,
                     1 => more |= self.client_input(now)?,
@@ -2141,7 +2549,10 @@ impl<'a> Runner<'a> {
                                         RuntimeError::Trust => Failure::Trust,
                                         _ => Failure::Transport,
                                     },
-                                    0,
+                                    match error {
+                                        RuntimeError::TransportCode(code) => code,
+                                        _ => 0,
+                                    },
                                     None,
                                     self.connections.get(&id).map(|c| c.id),
                                 );
@@ -2159,10 +2570,16 @@ impl<'a> Runner<'a> {
                         });
                         match generated {
                             Some(Ok(n)) => more |= n == 4,
-                            Some(Err(_)) => {
+                            Some(Err(error)) => {
                                 self.failure(
                                     Failure::Transport,
-                                    0,
+                                    match error {
+                                        TransportError::Native(code) => code,
+                                        TransportError::Expired => 1001,
+                                        TransportError::Capacity => 1002,
+                                        TransportError::Protocol => 1003,
+                                        _ => 0,
+                                    },
                                     None,
                                     self.connections.get(&id).map(|c| c.id),
                                 );
@@ -2172,10 +2589,13 @@ impl<'a> Runner<'a> {
                             }
                             None => {}
                         }
-                        if self.flush(id, Instant::now()).is_err() {
+                        if let Err(error) = self.flush(id, Instant::now()) {
                             self.failure(
                                 Failure::Socket,
-                                0,
+                                match error {
+                                    RuntimeError::SocketErrno(code) => code as u64,
+                                    _ => 0,
+                                },
                                 None,
                                 self.connections.get(&id).map(|c| c.id),
                             );
@@ -2217,7 +2637,11 @@ impl<'a> Runner<'a> {
                         } else {
                             Failure::Transport
                         },
-                        0,
+                        c.transport
+                            .quic
+                            .local_error()
+                            .or_else(|| c.transport.quic.peer_error())
+                            .map_or(0, |error| error.error_code),
                         None,
                         Some(c.id),
                     );
@@ -2469,6 +2893,135 @@ mod tests {
     use crate::common::{Fixtures, quic::Pair};
     use std::{cell::Cell, rc::Rc};
     #[test]
+    fn intact_outer_above_configured_cap_and_truncation_have_role_specific_drop_counters() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            for (role, name) in [(Role::Client, "client"), (Role::Server, "server")] {
+                let f = Fixtures::new();
+                let file = f.file(&format!("{name}.toml"));
+                let text = std::fs::read_to_string(&file).unwrap();
+                std::fs::write(&file, text + "\n[transport]\nouter_udp_max_bytes = 1200\n")
+                    .unwrap();
+                let cfg = ValidatedConfig::load(&file).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(role, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                // Larger controlled scratch distinguishes an intact message
+                // above the configured cap from a genuinely truncated one.
+                r.pools.scratch = crate::buffers::BufferPool::new(2048, 4096).unwrap();
+                let port = r.outer[0].get_ref().0.borrow().local_addr().port();
+                let sender = if let RoleConfig::Client(client) = cfg.role() {
+                    std::net::UdpSocket::bind(client.server_address).unwrap()
+                } else {
+                    std::net::UdpSocket::bind("127.0.0.1:0").unwrap()
+                };
+                sender.send_to(&[0; 1300], ("127.0.0.1", port)).unwrap();
+                sender.send_to(&[0; 2100], ("127.0.0.1", port)).unwrap();
+                r.receive_outer(0, now).unwrap();
+                let drops = &r.snapshot.counters.local_drops;
+                if name == "client" {
+                    assert_eq!(drops.oversized.to_client, 1);
+                    assert_eq!(drops.socket_truncated.to_client, 1);
+                    assert_eq!(drops.oversized.to_target, 0);
+                    assert_eq!(drops.socket_truncated.to_target, 0);
+                } else {
+                    assert_eq!(drops.oversized.to_target, 1);
+                    assert_eq!(drops.socket_truncated.to_target, 1);
+                    assert_eq!(drops.oversized.to_client, 0);
+                    assert_eq!(drops.socket_truncated.to_client, 0);
+                }
+                assert_eq!(r.snapshot.counters.outer_pmtu_errors, 0);
+                assert_eq!(r.snapshot.counters.outer_quic_lost_packets, 0);
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow, 0);
+            }
+        });
+    }
+
+    #[test]
+    fn requests_before_peer_settings_are_bounded_cancellable_and_do_not_start_policy_work() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let f = Fixtures::new();
+            let path = f.file("server.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, text + "\n[limits]\nmax_pending_setup = 2\n").unwrap();
+            let cfg = ValidatedConfig::load(&path).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let mut p = Pair::new(true);
+            let (a, b) = p.requests();
+            let permit = r.budgets.connections.reserve(1, 0).unwrap();
+            let cid = r.diagnostics.next_id().unwrap();
+            r.connections.insert(
+                2,
+                OwnedConnection {
+                    transport: p.server,
+                    socket: 0,
+                    _permit: permit,
+                    id: cid,
+                    initial_cid: vec![],
+                    cursors: [FairCursor::default(); 7],
+                },
+            );
+            let token = std::fs::read_to_string(f.file("client.token")).unwrap();
+            let ports: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(f.file("ports.json")).unwrap())
+                    .unwrap();
+            let RoleConfig::Server(server) = cfg.role() else {
+                panic!()
+            };
+            let headers = masque::request_headers(
+                &server.proxy_authority,
+                &format!("/.well-known/masque/udp/127.0.0.1/{}/", ports["target"]),
+                token.trim().as_bytes().try_into().unwrap(),
+            );
+            for stream in [a, b] {
+                r.defer_headers(2, stream, headers.clone(), true, now)
+                    .unwrap();
+            }
+            assert_eq!(r.sessions.len(), 2);
+            assert_eq!(r.budgets.setup.used().count, 2);
+            assert!(r.pending.is_empty());
+            assert_eq!(r.budgets.relay_fds.used().count, 0);
+            assert!(
+                r.sessions.values().all(|s| s.state == State::Starting
+                    && s.identity.is_none()
+                    && s.relay.is_none())
+            );
+            r.defer_headers(2, 8, headers.clone(), true, now).unwrap();
+            assert_eq!(r.sessions.len(), 2);
+            assert_eq!(r.budgets.setup.used().count, 2);
+            let old = r.lookup(2, a).unwrap();
+            // A real reset/closure cancels its raw header reservation before
+            // capability/policy work, without affecting the other request.
+            r.close_session(old, 0x10c);
+            assert_eq!(r.budgets.setup.used().count, 1);
+            assert!(r.lookup(2, b).is_some());
+            assert_eq!(r.service_deferred_headers(2, now).unwrap(), 1);
+            assert_eq!(r.pending.len(), 1);
+            assert!(r.sessions.values().all(|s| s.deferred_headers.is_none()));
+            assert_eq!(r.budgets.relay_fds.used().count, 0);
+            let id = r.lookup(2, b).unwrap();
+            assert_eq!(r.sessions[&id].started, now);
+            r.expire_sessions(now + Duration::from_millis(cfg.recovery().setup_timeout_ms));
+            assert!(r.sessions.is_empty());
+            assert!(r.pending.is_empty());
+            assert_eq!(r.budgets.setup.used().count, 0);
+        });
+    }
+
+    #[test]
     fn reset_cancels_partial_capsule_without_inventing_malformed_fin() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -2501,7 +3054,7 @@ mod tests {
                     _permit: permit,
                     id: cid,
                     initial_cid: vec![],
-                    cursors: [FairCursor::default(); 6],
+                    cursors: [FairCursor::default(); 7],
                 },
             );
             let id = r.create_session(2, stream, None, now).unwrap();
@@ -2614,7 +3167,7 @@ mod tests {
                     _permit: permit,
                     id: cid,
                     initial_cid: vec![],
-                    cursors: [FairCursor::default(); 6],
+                    cursors: [FairCursor::default(); 7],
                 },
             );
             let id = r.create_session(2, stream, None, Instant::now()).unwrap();
@@ -2709,7 +3262,7 @@ mod tests {
                     _permit: permit,
                     id: cid,
                     initial_cid: vec![],
-                    cursors: [FairCursor::default(); 6],
+                    cursors: [FairCursor::default(); 7],
                 },
             );
             let now = Instant::now();
@@ -2866,6 +3419,224 @@ mod tests {
             ));
             assert_eq!(diag.pending_failures(), 1);
             assert!(now.elapsed() < Duration::from_millis(250));
+        });
+    }
+
+    #[test]
+    fn outer_pmtu_or_pressure_discards_only_failed_front_without_application_attribution() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for errno in [
+            libc::EMSGSIZE,
+            libc::ENOBUFS,
+            libc::ECONNREFUSED,
+            libc::EHOSTUNREACH,
+        ] {
+            rt.block_on(async {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut p = Pair::new(true);
+                let (a, _) = p.requests();
+                let generation = *r.connections.keys().next().unwrap();
+                for index in 0..3 {
+                    let at = now + Duration::from_millis(index);
+                    p.client
+                        .enqueue(a, &[index as u8], at, at, &mut [0; 1350])
+                        .unwrap();
+                    assert_eq!(p.client.generate(&p.pool, at, 1).unwrap(), 1);
+                }
+                let original: Vec<_> = p.client.output.iter().map(|p| p.bytes().to_vec()).collect();
+                let due = p.client.output.iter().map(|p| p.at()).max().unwrap();
+                r.connections.get_mut(&generation).unwrap().transport = p.client;
+                let accepted = Rc::new(std::cell::RefCell::new(Vec::new()));
+                let capture = accepted.clone();
+                let mut calls = 0;
+                r.outer_send_hook = Some(Box::new(move |packets| {
+                    calls += 1;
+                    if calls == 2 {
+                        return Err(io::Error::from_raw_os_error(errno));
+                    }
+                    capture.borrow_mut().push(packets[0].bytes.to_vec());
+                    Ok(1)
+                }));
+                assert!(!r.flush(generation, due).unwrap());
+                assert!(r.flush(generation, due).unwrap());
+                assert_eq!(
+                    r.connections[&generation]
+                        .transport
+                        .output
+                        .front()
+                        .unwrap()
+                        .bytes(),
+                    original[2]
+                );
+                assert!(r.flush(generation, due).unwrap());
+                assert_eq!(
+                    *accepted.borrow(),
+                    vec![original[0].clone(), original[2].clone()]
+                );
+                assert_eq!(r.snapshot.counters.outer_socket_sent, 2);
+                assert_eq!(
+                    r.snapshot.counters.outer_pmtu_errors,
+                    u64::from(errno == libc::EMSGSIZE)
+                );
+                assert_eq!(
+                    r.snapshot.counters.outer_send_pressure,
+                    u64::from(errno == libc::ENOBUFS)
+                );
+                assert_eq!(r.snapshot.counters.local_drops.pmtu.to_target, 0);
+                assert_eq!(r.snapshot.counters.local_drops.pmtu.to_client, 0);
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow, 0);
+                assert!(!r.connections[&generation].transport.is_stopped());
+            });
+        }
+    }
+
+    #[test]
+    fn shared_outer_socket_error_queue_suffix_cannot_stop_another_connection() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            for generation in [2, 3] {
+                let mut p = Pair::new(true);
+                let (stream, _) = p.requests();
+                p.server.generation = crate::buffers::Generation(generation);
+                r.connections.insert(
+                    generation,
+                    OwnedConnection {
+                        transport: p.server,
+                        socket: 0,
+                        _permit: r.budgets.connections.reserve(1, 0).unwrap(),
+                        id: r.diagnostics.next_id().unwrap(),
+                        initial_cid: vec![],
+                        cursors: [FairCursor::default(); 7],
+                    },
+                );
+                let id = r.create_session(generation, stream, None, now).unwrap();
+                r.sessions.get_mut(&id).unwrap().state = State::Active;
+            }
+            let closed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let old_peer = closed.local_addr().unwrap();
+            drop(closed);
+            let live = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            live.set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let local = r.outer[0].get_ref().0.borrow().local_addr();
+            for _ in 0..6 {
+                let mut socket = r.outer[0].get_ref().0.borrow_mut();
+                let packet = [SendPacket {
+                    bytes: b"old-peer",
+                    from: local,
+                    to: old_peer,
+                }];
+                match socket.send_batch(&packet) {
+                    Ok(1) => {}
+                    Err(e) if crate::udp::is_peer_error(&e) => {
+                        assert_eq!(socket.send_batch(&packet).unwrap(), 1);
+                    }
+                    result => panic!("ICMP fixture submission: {result:?}"),
+                }
+            }
+            let _ready = tokio::time::timeout(
+                Duration::from_secs(1),
+                r.outer[0].ready(tokio::io::Interest::ERROR),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            // Consume one bounded visit only. The remaining error is still for
+            // A, but the next native send belongs to connection B.
+            let first = r.outer[0].get_ref().0.borrow_mut().drain_errors().unwrap();
+            assert!(first.pending);
+            assert_eq!(first.errors.iter().flatten().count(), 4);
+            assert!(
+                first
+                    .errors
+                    .iter()
+                    .flatten()
+                    .all(|e| e.destination == old_peer && e.errno == libc::ECONNREFUSED as u32)
+            );
+            for (sequence, payload) in [b"unaccepted".as_slice(), b"fresh".as_slice()]
+                .into_iter()
+                .enumerate()
+            {
+                let mut slab = r.pools.ciphertext.acquire().unwrap();
+                slab.bytes_mut()[..payload.len()].copy_from_slice(payload);
+                let packet = crate::buffers::Ciphertext::new(
+                    slab,
+                    payload.len(),
+                    local,
+                    live.local_addr().unwrap(),
+                    now,
+                    crate::buffers::Generation(3),
+                    sequence as u64,
+                    now,
+                    now + Duration::from_secs(2),
+                )
+                .unwrap();
+                r.connections
+                    .get_mut(&3)
+                    .unwrap()
+                    .transport
+                    .output
+                    .push_back(packet);
+            }
+            assert!(r.flush(3, now).unwrap());
+            assert_eq!(r.snapshot.counters.outer_async_errors, 1);
+            assert_eq!(r.connections[&3].transport.output.len(), 1);
+            r.receive_outer(0, now).unwrap();
+            assert!(r.flush(3, now).unwrap());
+            assert_eq!(r.snapshot.counters.outer_socket_sent, 1);
+            assert_eq!(r.sessions.len(), 2);
+            assert!(r.sessions.values().all(|s| s.state == State::Active));
+            assert!(r.connections.values().all(|c| !c.transport.is_stopped()));
+            let mut bytes = [0; 64];
+            let (n, from) = live.recv_from(&mut bytes).unwrap();
+            assert_eq!(&bytes[..n], b"fresh");
+            assert_eq!(from, local);
+            assert!(
+                live.recv_from(&mut bytes).is_err(),
+                "unaccepted data was replayed"
+            );
+            r.outer_send_hook = Some(Box::new(|_| Err(io::Error::from_raw_os_error(libc::EBADF))));
+            let mut slab = r.pools.ciphertext.acquire().unwrap();
+            slab.bytes_mut()[0] = 42;
+            r.connections
+                .get_mut(&3)
+                .unwrap()
+                .transport
+                .output
+                .push_back(
+                    crate::buffers::Ciphertext::new(
+                        slab,
+                        1,
+                        local,
+                        live.local_addr().unwrap(),
+                        now,
+                        crate::buffers::Generation(3),
+                        2,
+                        now,
+                        now + Duration::from_secs(2),
+                    )
+                    .unwrap(),
+                );
+            assert_eq!(r.flush(3, now), Err(RuntimeError::SocketErrno(libc::EBADF)));
         });
     }
 
@@ -3089,6 +3860,126 @@ mod tests {
             assert!(r.snapshot.counters.local_drops.queue_expired.to_target > 0);
         });
     }
+    #[test]
+    fn relay_peer_error_on_immediate_or_queued_send_keeps_same_association_without_replay() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for queued in [false, true] {
+            rt.block_on(async {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut p = Pair::new(true);
+                let (stream, _) = p.requests();
+                r.connections.insert(
+                    2,
+                    OwnedConnection {
+                        transport: p.server,
+                        socket: 0,
+                        _permit: r.budgets.connections.reserve(1, 0).unwrap(),
+                        id: r.diagnostics.next_id().unwrap(),
+                        initial_cid: vec![],
+                        cursors: [FairCursor::default(); 7],
+                    },
+                );
+                let id = r.create_session(2, stream, None, now).unwrap();
+                let key = SetupKey {
+                    connection: crate::buffers::Generation(2),
+                    session: crate::buffers::Generation(id),
+                };
+                let target = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+                let address = target.local_addr().unwrap();
+                r.setup_done(
+                    id,
+                    key,
+                    Ok((0, policy::ResolvedTarget { address, key })),
+                    now,
+                )
+                .unwrap();
+                r.sessions.get_mut(&id).unwrap().state = State::Active;
+                drop(target);
+                let mut wire = [0; 128];
+                let len = masque::encode_datagram(stream, b"old-target", &mut wire).unwrap();
+                let expires = now + Duration::from_secs(2);
+                r.datagram(2, &wire[..len], expires, now).unwrap();
+                assert_eq!(
+                    r.snapshot.counters.app_egress_by_direction.to_target, 1,
+                    "initial submission"
+                );
+                // POLLERR is readiness too. Leave the native error undrained so
+                // send, rather than the receive/error-queue path, consumes it.
+                let relay = r.sessions[&id].relay.as_ref().unwrap();
+                let _ready = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    relay.ready(tokio::io::Interest::ERROR),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let target = std::net::UdpSocket::bind(address).unwrap();
+                target
+                    .set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                let relay_local = relay.get_ref().0.borrow().local_addr();
+                if queued {
+                    for payload in [b"unaccepted".as_slice(), b"fresh".as_slice()] {
+                        let mut slab = r.pools.application.acquire().unwrap();
+                        slab.bytes_mut()[..payload.len()].copy_from_slice(payload);
+                        let s = r.sessions.get_mut(&id).unwrap();
+                        s.queue
+                            .push(
+                                crate::buffers::Datagram::new(
+                                    slab,
+                                    0,
+                                    payload.len(),
+                                    Direction::ToTarget,
+                                    s.generation,
+                                    s.connection,
+                                    now,
+                                    expires,
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap();
+                    }
+                    r.flush_relay(id, now).unwrap();
+                } else {
+                    let len = masque::encode_datagram(stream, b"unaccepted", &mut wire).unwrap();
+                    r.datagram(2, &wire[..len], expires, now).unwrap();
+                    assert!(
+                        r.sessions.contains_key(&id),
+                        "ICMP on immediate send closed the association"
+                    );
+                    let len = masque::encode_datagram(stream, b"fresh", &mut wire).unwrap();
+                    r.datagram(2, &wire[..len], expires, now).unwrap();
+                }
+                assert!(
+                    r.sessions.contains_key(&id),
+                    "ICMP on queued send closed the association"
+                );
+                assert_eq!(r.sessions[&id].relay_peer, Some(address));
+                assert_eq!(r.sessions[&id].state, State::Active);
+                assert_eq!(r.sessions[&id].queue.used().count, 0);
+                let mut bytes = [0; 128];
+                let (len, from) = target.recv_from(&mut bytes).unwrap();
+                assert_eq!(&bytes[..len], b"fresh");
+                assert_eq!(from, relay_local);
+                assert!(
+                    target.recv_from(&mut bytes).is_err(),
+                    "failed packet was replayed"
+                );
+                assert_eq!(r.snapshot.counters.local_drops.socket_error.to_target, 1);
+                assert_eq!(r.snapshot.counters.app_egress_by_direction.to_target, 2);
+            });
+        }
+    }
+
     #[test]
     fn queued_wildcard_reply_uses_immutable_local_destination() {
         let rt = tokio::runtime::Builder::new_current_thread()

@@ -84,3 +84,70 @@ or TLS/control allocation. Churn evidence reports process RSS, the existing
 2 MiB diagnostic retention ceiling, effective kernel buffer capacities and
 owned-socket kernel queue allocations separately. Full operational telemetry
 remains T064, rather than inferred from these scoped gauges.
+
+## Incremental Phase 5 numeric profiling fields
+
+Schema 1 snapshots add a fixed `profile` object, with cumulative counters and
+lifetime maxima, never endpoint labels or payload samples. Adapter counters
+are actual receive/send/error-queue syscalls, MTU queries and logical UDP
+messages accepted/received (including empty messages); count accepted prefixes
+once even if a later operation fails. Merge retired relay totals into one
+process accumulator. Arithmetic overflow marks the sample invalid and must not
+turn a successful syscall into an apparent failed send/replay.
+
+`owner_visits` counts scheduler selections, not OS wakeups. CPU/headroom and
+owner voluntary/involuntary context switches are sampled separately by the
+harness. Allocation counters cover payload slabs and custom quiche datagram/
+stream factories; copy-byte counters cover explicit queue/receive/factory
+boundaries. They exclude cryptographic and other allocator/metadata activity.
+Queue/ciphertext age and pacing lateness are maxima in microseconds; burst is
+the largest actually accepted outer-send prefix in logical UDP messages.
+These bounded scalar measurements do not imply full allocator tracing or
+latency histograms, and a lifetime maximum is not a measurement-window p95.
+
+`outer_pmtu_errors` counts synchronous/validated error-queue observations, not
+unique lost packets. `destination_pmtu_updates` counts validated route-update
+observations. `outer_quic_lost_packets` is the delta of quiche's monotonic
+connection lost-packet estimate, including non-application/probe packets.
+Application `local_drops.pmtu`, `kernel_rx_overflow` and sequence-based delivered
+loss remain separate. Error-queue quotes never enter diagnostics.
+
+The native burst characterization exposed synchronous ENOBUFS (errno 105)
+from runner-owned netem queue pressure. Preserve the association: drop only the
+unaccepted outer FIFO front, count `outer_send_pressure`, and allow QUIC control
+recovery. It is not a PMTU observation or fabricated Session application loss.
+Relay ENOBUFS drops the exact application packet with `socket_error` without
+closing its Session. EAGAIN continues to retain its original suffix/deadline;
+hard errors retain numeric errno in the connection failure record. Adapter
+`send_enobufs`/`send_emsgsize` count actual failed native submissions, separately
+from PMTU prechecks. Scripted accepted-prefix tests cover both failure classes;
+original native failures remain retained before the fix.
+
+Asynchronous receive/send peer/ICMP errno observations can race a bounded
+error-queue drain; preserve the original association and continue another owner
+turn rather than treating unauthenticated ICMP as connection/Session closure.
+`outer_async_errors` counts such outer observations, including failed sends on
+a shared socket without attributing failure to its current connection. Relay
+failed sends additionally count their unaccepted application packet under
+`local_drops.socket_error`; target observations use fixed socket failure/numeric
+errno records. These are observations, not unique ICMP/lost-packet estimates.
+EMSGSIZE errno alone cannot identify the affected QUIC path; revalidate only
+with checked error-queue destination metadata matching an active path.
+Bounded interrupted receive retries
+consume nothing and continue without cancellation starvation. Complete outer
+oversize/truncation/ancillary drops use the role's receive direction.
+
+The established trust failure code remains `trust/0` (including TLS certificate
+name failure). Additional native transport diagnostics use fixed categories
+0..22 (Done, BufferTooShort, UnknownVersion, InvalidFrame, InvalidPacket,
+InvalidState, InvalidStreamState, InvalidTransportParam, CryptoFail, TlsFail,
+FlowControl, StreamLimit, StreamStopped, StreamReset, FinalSize,
+CongestionControl, IdLimit, OutOfIdentifiers, KeyUpdate, CryptoBufferExceeded,
+InvalidAckRange, OptimisticAckDetected, InvalidDcidInitialization); associated
+peer stream/error values are omitted. H3 failures use standard wire categories,
+with local transport errors at 0x10000 + native category, StreamBlocked at
+0x20000 and local BufferTooShort at 0x20001. Local expiry/capacity/protocol
+packet-generation failures are 1001/1002/1003. Close observations retain only
+the numeric native local/peer close code, never its reason text. These additions
+do not replace the established authentication/authorization/capability/trust
+refusal contracts or expose network-controlled strings.

@@ -20,7 +20,7 @@ pub(super) fn install(r: &mut Runner<'_>, transport: Connection) {
             _permit: permit,
             id,
             initial_cid: vec![],
-            cursors: [FairCursor::default(); 6],
+            cursors: [FairCursor::default(); 7],
         },
     );
 }
@@ -460,7 +460,7 @@ fn critical_stop_cancels_only_its_connection_and_preserves_close_generation() {
                 _permit: permit,
                 id,
                 initial_cid: vec![],
-                cursors: [FairCursor::default(); 6],
+                cursors: [FairCursor::default(); 7],
             },
         );
         let unaffected = r.create_session(99, other_stream, None, now).unwrap();
@@ -659,7 +659,7 @@ fn rejected_mapping_survives_sender_churn_and_fresh_connection_generation() {
                 _permit: permit,
                 id,
                 initial_cid: vec![],
-                cursors: [FairCursor::default(); 6],
+                cursors: [FairCursor::default(); 7],
             },
         );
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();

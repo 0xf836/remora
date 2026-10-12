@@ -91,6 +91,7 @@ struct StoredSlab {
 }
 struct PoolState {
     free: Vec<StoredSlab>,
+    allocations: usize,
 }
 /// Fixed-size slabs: the exact boxed capacity stays charged while cached or lent.
 /// Acquisition performs at most one bounded allocation; reuse does not allocate.
@@ -107,7 +108,10 @@ impl BufferPool {
         Ok(Self {
             slab_size,
             budget: Budget::new(byte_limit / slab_size, byte_limit),
-            state: Rc::new(RefCell::new(PoolState { free: Vec::new() })),
+            state: Rc::new(RefCell::new(PoolState {
+                free: Vec::new(),
+                allocations: 0,
+            })),
         })
     }
     pub fn acquire(&self) -> Result<Slab, BudgetError> {
@@ -134,6 +138,11 @@ impl BufferPool {
             data.try_reserve_exact(self.slab_size)
                 .map_err(|_| BudgetError::Allocation)?;
             data.resize(self.slab_size, 0);
+            let mut state = self.state.borrow_mut();
+            state.allocations = state
+                .allocations
+                .checked_add(1)
+                .ok_or(BudgetError::Arithmetic)?;
             // Box<[u8]> has exactly this many addressable bytes. Do not cache a
             // Vec with an implementation-dependent excess capacity.
             StoredSlab {
@@ -148,6 +157,10 @@ impl BufferPool {
     }
     pub fn retained(&self) -> Usage {
         self.budget.used()
+    }
+    /// Successful new payload-slab allocations, excluding metadata/native heaps.
+    pub fn allocations(&self) -> usize {
+        self.state.borrow().allocations
     }
     /// Separately reported finite descriptor capacity, not UDP payload bytes.
     pub fn metadata_capacity_bytes(&self) -> usize {

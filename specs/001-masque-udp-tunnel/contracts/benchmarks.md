@@ -112,3 +112,65 @@ Planning packet-rate budget: 500e6/(1200*8) = 52,083 payload datagrams/s/directi
 After correctness/security pass, paired A/B: single vs mmsg; batch ceilings 1/8/16/32/64; GSO/GRO off vs auto; CUBIC vs BBRv2 (Reno diagnostic); pool/queue sizes; timerfd lateness versus coarse timer baseline. Evaluate tokio-quiche/custom-handler reuse against the same resource/pacing contract when relevant API constraints or measured bottlenecks justify it; this is not a mandatory pre-implementation experiment. Measure syscalls, wakeups, copies/allocations, CPU profiles, queue age, bursts, RSS and all delivery/latency criteria. Do not trade correctness/privacy/pacing for isolated throughput.
 
 Characterize 50/100 ms RTT, 0.1%/1% loss, asymmetry, bursts, reduced PMTU and changed network addresses. Report behavior/results, without imposing reference throughput promises on every impaired path. Privileged namespace/WireGuard procedures are reproducible optional test jobs; Remora does not configure VPNs or production hosts.
+
+## Implemented Phase 5 reference method
+
+`benchmarks/reference-x86_64.toml` and `scripts/validate/bench.sh` select schema-2
+full methodology; `--plan-only` emits the exact 18 sustainable searches and
+185 baseline/tunnel pairs. The seed randomizes mode order and pair scheduling.
+The owned namespace runner supplies a full-duplex 1Gbit/s veth with 10ms egress
+delay each way, records complete qdisc/link/feature settings and assigns four
+disjoint available logical cores to each role. Generator/endpoint workers use
+the remaining cores. No host NIC/qdisc/route/sysctl is changed.
+
+Calibration starts at 1% payload bottleneck steps (10Mbit/s) and stops at the
+first >0.1% delivered-loss point, retaining every accepted/rejected measurement.
+Its declared 10-second loaded warmup/30-second sample is preliminary; each
+selected 60-second loaded warmup/300-second paired baseline must independently
+confirm sustainability. Generator scheduling/submission errors, >=0.9-core
+single generator/receiver CPU, integrity/clock/status gaps invalidate capacity
+calibration instead of being labelled Remora loss. Rates exclude encapsulation;
+per-socket IO byte counters and netem qdisc byte counters retain wire information.
+Explicit small per-session rounding is recorded in actual pps.
+
+Full pairs cover capacity, 50% subcapacity and simultaneous 32-session/1200-byte
+>=500Mbit/s each-direction resource workload. Validate each applicable direction
+and pair separately: SC-003 >=80%, SC-004 <=0.1 added percentage points,
+SC-005 <=5ms added p95, SC-007 <=128MiB/<=2 CPU cores per role; 1000-cycle churn
+must settle <=10MiB above warmed RSS within <=60 seconds. Require all workloads,
+>=five pairs, the exact declared intervals, valid loaded generator counts,
+>=10 resource samples/second and >=1000 RTT samples/session, same-sender clock,
+<10ms wall/monotonic drift, info diagnostics and zero recorded coverage/overflow.
+Synthetic result tests reject one bad run without averaging and malformed or
+incomplete evidence before numeric thresholds.
+
+SC-007 requires **delivered**, not merely offered, payload throughput of at
+least 500Mbit/s in each direction, measured as unique datagrams * payload bits
+/ measurement seconds. Both the matched baseline and tunnel must carry that
+load; the baseline must also independently meet <=0.1% loss. Each of all 32
+Sessions must have unique delivery in both directions. Required schema-2
+`unique_per_session` rows are ordered by source Session and must sum exactly
+to aggregate `unique`; missing/unmatched rows invalidate evidence. Older
+schema-2 artifacts lacking this field must be regenerated, not filled with
+invented per-session counts. The runner offers slightly above 500Mbit/s to
+allow the baseline's declared <=0.1% loss while preserving the unchanged
+delivered-load threshold. Low CPU/RSS cannot qualify a run with insufficient
+delivery. No averages or retrospective tolerance waive this gate.
+
+Runner-owned namespace holders have no timed expiry and live until explicit
+teardown; the full matrix alone takes at least 37 hours. Holder exit aborts
+subsequent namespace work. Resource sampling rejects traffic/role exit inside
+the measurement interval. After measurement, expected traffic-worker completion
+is recorded explicitly and that worker is no longer sampled; missing /proc
+paths are tolerated only when verified completion explains the race. No zero
+resource samples are fabricated, and production-role exit remains invalid.
+
+`--development-smoke` executes short, low-rate loaded 1/32-session methodology
+checks with 200ms drain; it intentionally lacks release intervals/search/churn
+and is **invalid for release qualification** even when process checks succeed.
+Full reference execution and numerical final-revision acceptance remain T077.
+The early schema-1 comparator continues to validate separately frozen manifest/
+summary hashes, matching profiles/tool binaries, complete workload coverage and
+per-metric units/bounds; release thresholds cannot be altered by that policy.
+The `--traffic-binary` option preserves the exact retained test-only fixture in
+prospective comparisons after harness source changes.

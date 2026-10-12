@@ -21,14 +21,20 @@ DIRECTIONS = ("forward", "reverse", "simultaneous")
 
 
 def finite_nonnegative(value):
-    return (not isinstance(value, bool) and isinstance(value, (int, float))
-            and math.isfinite(value) and value >= 0)
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value >= 0
+    )
 
 
 def validate_coverage(runs, repetitions):
     if type(repetitions) is not int or not 1 <= repetitions <= 100:
         raise ValueError("invalid repetition count")
-    expected = {(p, m, d) for p in range(repetitions) for m in MODES for d in DIRECTIONS}
+    expected = {
+        (p, m, d) for p in range(repetitions) for m in MODES for d in DIRECTIONS
+    }
     if len(runs) != len(expected):
         raise ValueError("incomplete run coverage")
     seen = set()
@@ -57,7 +63,11 @@ def required_metrics(direction):
 
 
 def validate_policy(policy):
-    if policy.get("schema_version") != 1 or policy.get("frozen") is not True:
+    if (
+        type(policy.get("schema_version")) is not int
+        or policy.get("schema_version") != 1
+        or policy.get("frozen") is not True
+    ):
         raise ValueError("unknown or unfrozen policy")
     expected = {(m, d) for m in MODES for d in DIRECTIONS}
     seen = set()
@@ -76,8 +86,11 @@ def validate_policy(policy):
             for optional in ("candidate_min", "candidate_max"):
                 if optional in bound and not finite_nonnegative(bound[optional]):
                     raise ValueError("invalid policy bound")
-            if ("candidate_min" in bound and "candidate_max" in bound
-                    and bound["candidate_min"] > bound["candidate_max"]):
+            if (
+                "candidate_min" in bound
+                and "candidate_max" in bound
+                and bound["candidate_min"] > bound["candidate_max"]
+            ):
                 raise ValueError("contradictory policy bounds")
     if seen != expected:
         raise ValueError("incomplete policy coverage")
@@ -103,7 +116,9 @@ def compare(reference, candidate, policy):
         if old[key] != new[key]:
             raise ValueError("unmatched workload or environment")
     runs = read(candidate / "summary.json")
-    validate_coverage(read(reference / "summary.json"), old["profile"]["paired_repetitions"])
+    validate_coverage(
+        read(reference / "summary.json"), old["profile"]["paired_repetitions"]
+    )
     validate_coverage(runs, old["profile"]["paired_repetitions"])
     results = []
     for run in runs:

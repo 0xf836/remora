@@ -15,6 +15,41 @@ use std::{
 const BATCH: usize = 64;
 const CONTROL_WORDS: usize = 16;
 const CONTROL_BYTES: usize = CONTROL_WORDS * size_of::<usize>();
+#[derive(Default, Clone, Copy, serde::Serialize)]
+pub struct IoStats {
+    pub receive_syscalls: u64,
+    pub send_syscalls: u64,
+    pub error_queue_syscalls: u64,
+    pub mtu_queries: u64,
+    pub received_datagrams: u64,
+    pub sent_datagrams: u64,
+    pub send_enobufs: u64,
+    pub send_emsgsize: u64,
+    pub overflowed: bool,
+}
+impl IoStats {
+    pub fn merge(mut self, other: Self) -> Self {
+        macro_rules! add {
+            ($field:ident) => {
+                if let Some(next) = self.$field.checked_add(other.$field) {
+                    self.$field = next;
+                } else {
+                    self.overflowed = true;
+                }
+            };
+        }
+        add!(receive_syscalls);
+        add!(send_syscalls);
+        add!(error_queue_syscalls);
+        add!(mtu_queries);
+        add!(received_datagrams);
+        add!(sent_datagrams);
+        add!(send_enobufs);
+        add!(send_emsgsize);
+        self.overflowed |= other.overflowed;
+        self
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReceiveFault {
     Truncated,
@@ -30,10 +65,40 @@ pub struct Received {
     pub overflow: Option<u32>,
     pub fault: Option<ReceiveFault>,
 }
+/// Linux UDP may expose validated/queued ICMP errors on a later normal
+/// operation. These observations do not prove that an application Session died.
+pub fn is_peer_error(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(
+            libc::ECONNREFUSED
+                | libc::EHOSTUNREACH
+                | libc::ENETUNREACH
+                | libc::EMSGSIZE
+                | libc::EPROTO
+                | libc::EACCES
+                | libc::EHOSTDOWN
+                | libc::ENETDOWN
+        )
+    )
+}
 pub struct SendPacket<'a> {
     pub bytes: &'a [u8],
     pub from: SocketAddr,
     pub to: SocketAddr,
+}
+/// Numeric error metadata only; quoted original payloads never leave this module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SocketError {
+    pub destination: SocketAddr,
+    pub errno: u32,
+    pub mtu: Option<usize>,
+}
+#[derive(Default)]
+pub struct ErrorBatch {
+    pub errors: [Option<SocketError>; 4],
+    pub malformed: usize,
+    pub pending: bool,
 }
 struct BatchMemory {
     headers: [libc::mmsghdr; BATCH],
@@ -57,6 +122,9 @@ pub struct Udp {
     overflow_last: u32,
     overflow_pending: u64,
     memory: Box<BatchMemory>,
+    peer: Option<SocketAddr>,
+    outer: bool,
+    stats: std::cell::Cell<IoStats>,
     pub receive_buffer: usize,
     pub send_buffer: usize,
 }
@@ -115,16 +183,31 @@ impl Udp {
                 fd,
                 libc::IPPROTO_IP,
                 libc::IP_MTU_DISCOVER,
-                libc::IP_PMTUDISC_DO,
+                if relay {
+                    libc::IP_PMTUDISC_DO
+                } else {
+                    libc::IP_PMTUDISC_PROBE
+                },
             )?;
+            if !relay {
+                set_int(fd, libc::IPPROTO_IP, libc::IP_RECVERR, 1)?;
+            }
         } else {
             set_int(fd, libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, 1)?;
+            set_int(fd, libc::IPPROTO_IPV6, libc::IPV6_DONTFRAG, 1)?;
             set_int(
                 fd,
                 libc::IPPROTO_IPV6,
                 libc::IPV6_MTU_DISCOVER,
-                libc::IP_PMTUDISC_DO,
+                if relay {
+                    libc::IP_PMTUDISC_DO
+                } else {
+                    libc::IP_PMTUDISC_PROBE
+                },
             )?;
+            if !relay {
+                set_int(fd, libc::IPPROTO_IPV6, libc::IPV6_RECVERR, 1)?;
+            }
         }
         set_int(fd, libc::SOL_SOCKET, libc::SO_RXQ_OVFL, 1)?;
         socket.bind(&address.into())?;
@@ -140,6 +223,9 @@ impl Udp {
             overflow_last: 0,
             overflow_pending: 0,
             memory: Box::new(BatchMemory::new()),
+            peer: None,
+            outer: !relay,
+            stats: std::cell::Cell::new(IoStats::default()),
             receive_buffer,
             send_buffer,
         })
@@ -147,10 +233,151 @@ impl Udp {
     pub fn take_overflow(&mut self) -> u64 {
         std::mem::take(&mut self.overflow_pending)
     }
+    pub fn stats(&self) -> IoStats {
+        self.stats.get()
+    }
+    fn count(&self, select: fn(&mut IoStats) -> &mut u64, amount: usize) {
+        let mut stats = self.stats.get();
+        let value = select(&mut stats);
+        if let Some(next) = value.checked_add(amount as u64) {
+            *value = next;
+        } else {
+            stats.overflowed = true;
+        }
+        self.stats.set(stats);
+    }
     pub fn connect(&mut self, peer: SocketAddr) -> io::Result<()> {
         self.socket.connect(peer)?;
         self.local = self.socket.local_addr()?;
+        self.peer = Some(peer);
+        set_int(
+            self.as_raw_fd(),
+            if peer.is_ipv4() {
+                libc::IPPROTO_IP
+            } else {
+                libc::IPPROTO_IPV6
+            },
+            if peer.is_ipv4() {
+                libc::IP_RECVERR
+            } else {
+                libc::IPV6_RECVERR
+            },
+            1,
+        )?;
         Ok(())
+    }
+    /// Connected destination ceiling from the current kernel route. A duplicate
+    /// application cache must not permanently pin an old, smaller route MTU.
+    pub fn payload_ceiling(&self) -> io::Result<Option<usize>> {
+        // QUIC's DPLPMTUD deliberately probes beyond a cached route estimate.
+        // PROBE still sets DF; the relay's DO policy never introduces fragments.
+        if self.outer {
+            return Ok(None);
+        }
+        let Some(peer) = self.peer else {
+            return Ok(None);
+        };
+        let mut mtu: i32 = 0;
+        self.count(|s| &mut s.mtu_queries, 1);
+        let mut len = size_of::<i32>() as libc::socklen_t;
+        // SAFETY: Owned live socket, aligned initialized int and length storage;
+        // getsockopt writes at most the exact supplied size and retains no pointer.
+        let result = unsafe {
+            libc::getsockopt(
+                self.as_raw_fd(),
+                if peer.is_ipv4() {
+                    libc::IPPROTO_IP
+                } else {
+                    libc::IPPROTO_IPV6
+                },
+                if peer.is_ipv4() {
+                    libc::IP_MTU
+                } else {
+                    libc::IPV6_MTU
+                },
+                (&mut mtu as *mut i32).cast(),
+                &mut len,
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if len as usize != size_of::<i32>() || mtu <= 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(Some(
+            udp_payload_limit(mtu as usize, peer.is_ipv6()).ok_or(io::ErrorKind::InvalidData)?,
+        ))
+    }
+    /// Finite error-queue drain. MSG_TRUNC refers to intentionally ignored quoted
+    /// payload; MSG_CTRUNC invalidates metadata. Unknown origins cannot change MTU.
+    pub fn drain_errors(&mut self) -> io::Result<ErrorBatch> {
+        let mut output = ErrorBatch::default();
+        for slot in &mut output.errors {
+            let mut quoted = [0u8; 1];
+            let mut control = [0usize; CONTROL_WORDS];
+            // SAFETY: Integer/pointer-only C descriptors permit zero initialization.
+            let mut destination: libc::sockaddr_storage = unsafe { zeroed() };
+            let mut iov = libc::iovec {
+                iov_base: quoted.as_mut_ptr().cast(),
+                iov_len: quoted.len(),
+            };
+            // SAFETY: Zeroed msghdr fields are populated with live bounded storage
+            // before the synchronous call. No pointer is retained by the kernel.
+            let mut header: libc::msghdr = unsafe { zeroed() };
+            header.msg_name = (&mut destination as *mut libc::sockaddr_storage).cast();
+            header.msg_namelen = size_of::<libc::sockaddr_storage>() as u32;
+            header.msg_iov = &mut iov;
+            header.msg_iovlen = 1;
+            header.msg_control = control.as_mut_ptr().cast();
+            header.msg_controllen = CONTROL_BYTES;
+            // SAFETY: All writable name/iovec/control spans above are initialized,
+            // stable, disjoint and sized for recvmsg. Payload is never inspected.
+            self.count(|s| &mut s.error_queue_syscalls, 1);
+            let n = unsafe {
+                libc::recvmsg(
+                    self.as_raw_fd(),
+                    &mut header,
+                    libc::MSG_ERRQUEUE | libc::MSG_DONTWAIT,
+                )
+            };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    return Ok(output);
+                }
+                if e.kind() == io::ErrorKind::Interrupted {
+                    output.pending = true;
+                    return Ok(output);
+                }
+                return Err(e);
+            }
+            let Some(to) = address(&destination, header.msg_namelen) else {
+                output.malformed += 1;
+                continue;
+            };
+            if header.msg_flags & libc::MSG_CTRUNC != 0
+                || header.msg_controllen > CONTROL_BYTES
+                || self.peer.is_some_and(|peer| peer != to)
+            {
+                output.malformed += 1;
+                continue;
+            }
+            // SAFETY: Initialized usize storage has CONTROL_BYTES readable bytes;
+            // untrusted kernel length is checked before forming this byte view.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(control.as_ptr().cast::<u8>(), header.msg_controllen)
+            };
+            match decode_error_control(bytes, to) {
+                Ok(Some(error)) => {
+                    *slot = Some(error);
+                }
+                Ok(None) => {}
+                Err(_) => output.malformed += 1,
+            }
+        }
+        output.pending = true;
+        Ok(output)
     }
     pub fn local_addr(&self) -> SocketAddr {
         self.local
@@ -186,6 +413,7 @@ impl Udp {
             header.msg_controllen = CONTROL_BYTES;
         }
         let n = loop {
+            self.count(|s| &mut s.receive_syscalls, 1);
             // SAFETY: memory is boxed and is neither moved nor resized while the
             // kernel uses its header/iovec/address/control pointers. Slabs are
             // exclusive mutable leases with live initialized capacities; all
@@ -222,6 +450,7 @@ impl Udp {
                 return Err(error);
             }
         };
+        self.count(|s| &mut s.received_datagrams, n);
         for i in 0..n {
             let h = &self.memory.headers[i];
             let peer = address(&self.memory.addresses[i], h.msg_hdr.msg_namelen);
@@ -256,7 +485,20 @@ impl Udp {
         if count == 0 {
             return Ok(0);
         }
+        // Preserve accepted-prefix semantics: trim the syscall to the valid
+        // prefix, then the next caller visit observes the oversized suffix.
+        let ceiling = self.payload_ceiling()?;
+        let count = packets[..count]
+            .iter()
+            .position(|p| ceiling.is_some_and(|max| p.bytes.len() > max))
+            .unwrap_or(count);
+        if count == 0 {
+            return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
+        }
         for (i, packet) in packets.iter().take(count).enumerate() {
+            if !self.outer && self.peer.is_some_and(|peer| peer != packet.to) {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
             if packet.to.is_ipv4() != self.local.is_ipv4()
                 || packet.from.is_ipv4() != self.local.is_ipv4()
                 || packet.from.port() != self.local.port()
@@ -293,6 +535,7 @@ impl Udp {
             }
         }
         loop {
+            self.count(|s| &mut s.send_syscalls, 1);
             // SAFETY: Every header points into stable owned memory or a live
             // immutable packet slice. sendmsg never mutates payload bytes and
             // retains no userspace pointers. The accepted prefix is returned
@@ -316,10 +559,17 @@ impl Udp {
                 }
             };
             if result >= 0 {
+                self.count(|s| &mut s.sent_datagrams, result as usize);
                 return Ok(result as usize);
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
+                if error.raw_os_error() == Some(libc::ENOBUFS) {
+                    self.count(|s| &mut s.send_enobufs, 1);
+                }
+                if error.raw_os_error() == Some(libc::EMSGSIZE) {
+                    self.count(|s| &mut s.send_emsgsize, 1);
+                }
                 return Err(error);
             }
         }
@@ -366,6 +616,83 @@ fn aligned(n: usize) -> Option<usize> {
     n.checked_add(size_of::<usize>() - 1)
         .map(|v| v & !(size_of::<usize>() - 1))
 }
+/// IP/UDP headers for this adapter's no-extension-header socket profile.
+pub fn udp_payload_limit(mtu: usize, ipv6: bool) -> Option<usize> {
+    if mtu < if ipv6 { 1280 } else { 68 } {
+        return None;
+    }
+    Some(
+        mtu.checked_sub(if ipv6 { 48 } else { 28 })?
+            .min(if ipv6 { 65527 } else { 65507 }),
+    )
+}
+/// Length-checked extended-error metadata. ICMP is untrusted and can only inform
+/// path sizing, never target identity/authorization or quoted-payload replay.
+pub fn decode_error_control(
+    bytes: &[u8],
+    destination: SocketAddr,
+) -> io::Result<Option<SocketError>> {
+    let mut offset = 0;
+    let mut found = None;
+    while offset < bytes.len() {
+        let h: libc::cmsghdr = read_value(&bytes[offset..]).ok_or(io::ErrorKind::InvalidData)?;
+        let start = aligned(size_of::<libc::cmsghdr>()).ok_or(io::ErrorKind::InvalidData)?;
+        let end = offset
+            .checked_add(h.cmsg_len)
+            .filter(|end| h.cmsg_len >= start && *end <= bytes.len())
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let expected = if destination.is_ipv4() {
+            (libc::IPPROTO_IP, libc::IP_RECVERR)
+        } else {
+            (libc::IPPROTO_IPV6, libc::IPV6_RECVERR)
+        };
+        if (h.cmsg_level, h.cmsg_type) == expected {
+            if found.is_some() {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            let e: libc::sock_extended_err =
+                read_value(&bytes[offset + start..end]).ok_or(io::ErrorKind::InvalidData)?;
+            let local = e.ee_origin == libc::SO_EE_ORIGIN_LOCAL;
+            let icmp = if destination.is_ipv4() {
+                e.ee_origin == libc::SO_EE_ORIGIN_ICMP
+            } else {
+                e.ee_origin == libc::SO_EE_ORIGIN_ICMP6
+            };
+            if local || icmp {
+                let too_big = e.ee_errno == libc::EMSGSIZE as u32
+                    && (local
+                        || if destination.is_ipv4() {
+                            e.ee_type == 3 && e.ee_code == 4
+                        } else {
+                            e.ee_type == 2 && e.ee_code == 0
+                        });
+                let mtu = (too_big && e.ee_info != 0).then_some(e.ee_info as usize);
+                if mtu.is_some_and(|mtu| udp_payload_limit(mtu, destination.is_ipv6()).is_none()) {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                if e.ee_errno == libc::EMSGSIZE as u32 && !too_big {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                found = Some(SocketError {
+                    destination,
+                    errno: e.ee_errno,
+                    mtu,
+                });
+            }
+        }
+        let next = aligned(h.cmsg_len)
+            .and_then(|n| offset.checked_add(n))
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if next > bytes.len() {
+            if end == bytes.len() {
+                break;
+            }
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        offset = next;
+    }
+    Ok(found)
+}
 fn read_value<T: Copy>(bytes: &[u8]) -> Option<T> {
     if bytes.len() < size_of::<T>() {
         return None;
@@ -392,6 +719,12 @@ pub fn decode_control(bytes: &[u8], fallback: SocketAddr) -> (SocketAddr, Option
             _ => return (fallback, None, true),
         };
         let data = &bytes[offset + start..end];
+        // Baseline sockets never enable UDP_GRO. Any UDP-level ancillary
+        // metadata (known or future/unknown segment framing) cannot safely be
+        // presented as one ordinary datagram without an implemented splitter.
+        if h.cmsg_level == libc::IPPROTO_UDP {
+            return (fallback, None, true);
+        }
         if h.cmsg_level == libc::IPPROTO_IP && h.cmsg_type == libc::IP_PKTINFO {
             let Some(v) = read_value::<libc::in_pktinfo>(data) else {
                 return (fallback, None, true);

@@ -101,6 +101,26 @@ def resource(p):
         "cpu_seconds": (int(fields[11]) + int(fields[12])) / hz,
         "owner_cpu_seconds": (int(owner[11]) + int(owner[12])) / hz,
         "rss_bytes": rss,
+        "voluntary_context_switches": int(
+            next(
+                (
+                    l.split()[1]
+                    for l in status
+                    if l.startswith("voluntary_ctxt_switches:")
+                ),
+                0,
+            )
+        ),
+        "involuntary_context_switches": int(
+            next(
+                (
+                    l.split()[1]
+                    for l in status
+                    if l.startswith("nonvoluntary_ctxt_switches:")
+                ),
+                0,
+            )
+        ),
     }
 
 
@@ -110,19 +130,53 @@ def main():
         "--profile", "--manifest", dest="profile", default="benchmarks/mvp-x86_64.toml"
     )
     a.add_argument("--output", required=True)
+    a.add_argument("--traffic-binary", type=Path)
+    a.add_argument("--cpu-profile", action="store_true")
+    a.add_argument("--plan-only", action="store_true")
+    a.add_argument("--development-smoke", action="store_true")
+    a.add_argument("--smoke-selected", action="store_true")
     args = a.parse_args()
     profile = tomllib.loads(Path(args.profile).read_text())
+    if profile.get("coverage") == "full-reference-methodology":
+        from reference import plan
+
+        method = plan(profile)
+        if args.plan_only:
+            out = Path(args.output)
+            out.mkdir(parents=True, exist_ok=False)
+            write(out / "plan.json", method)
+        else:
+            cmd = [
+                str(ROOT / "scripts/validate/network.sh"),
+                "--scenario",
+                "reference",
+                "--output",
+                args.output,
+                "--benchmark-profile",
+                str(Path(args.profile).resolve()),
+            ]
+            if args.development_smoke:
+                cmd.append("--development-smoke")
+            if args.smoke_selected:
+                cmd.append("--smoke-selected")
+            subprocess.run(cmd, check=True)
+        return
+    if args.plan_only or args.development_smoke or args.smoke_selected:
+        raise ValueError("reference-only option")
     if (
         profile["topology"] != "two-leg"
         or profile["sessions"] != 1
         or profile["architecture"] != platform.machine()
         or profile["io"] not in ["single", "mmsg"]
-        or profile["cc"] != "cubic"
+        or profile["cc"] not in ["cubic", "bbr2_gcongestion", "reno"]
         or profile["diagnostics"] != "info"
         or profile["gso_requested"] != "off"
         or profile["gro_requested"] != "off"
     ):
         raise ValueError("unsupported early coverage/topology/platform")
+    tool_path = (
+        args.traffic_binary or ROOT / "tools/traffic/target/release/remora-traffic"
+    ).resolve()
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
     manifest = {
@@ -170,7 +224,7 @@ def main():
         },
         "locks": {p: sha(ROOT / p) for p in ["Cargo.lock", "tools/traffic/Cargo.lock"]},
         "binaries": {
-            p: sha(ROOT / p)
+            p: sha(tool_path if p.startswith("tools/") else ROOT / p)
             for p in [
                 "target/release/remora",
                 "tools/traffic/target/release/remora-traffic",
@@ -196,7 +250,7 @@ def main():
     }
     write(out / "manifest.json", manifest)
     all_summaries = []
-    tool = str(ROOT / "tools/traffic/target/release/remora-traffic")
+    tool = str(tool_path)
     binary = str(ROOT / "target/release/remora")
     for pair in range(profile["paired_repetitions"]):
         for direction in ["forward", "reverse", "simultaneous"]:
@@ -207,6 +261,7 @@ def main():
                 run.mkdir()
                 owned = []
                 samples = []
+                profilers = []
                 try:
                     with tempfile.TemporaryDirectory(prefix="remora-bench-") as tmp:
                         f = Path(tmp) / "fixtures"
@@ -223,6 +278,16 @@ def main():
                             with (f / f"{role}.toml").open("a") as config:
                                 config.write(
                                     f'\n[io]\nmode = "{profile["io"]}"\nbatch_max = {profile["batch_max"]}\n'
+                                    f'\n[transport]\ncc = "{profile["cc"]}"\n'
+                                    + (
+                                        "\n[limits]\n"
+                                        + "".join(
+                                            f"{k} = {v}\n"
+                                            for k, v in profile["limits"].items()
+                                        )
+                                        if profile.get("limits")
+                                        else ""
+                                    )
                                 )
                         ports = json.loads((f / "ports.json").read_text())
                         address = lambda key: f"127.0.0.1:{ports[key]}"
@@ -253,6 +318,14 @@ def main():
                                         address("target"),
                                         "--io",
                                         profile["io"],
+                                        "--batch-max",
+                                        str(profile["batch_max"]),
+                                        "--application-pool-bytes",
+                                        str(
+                                            profile.get("limits", {}).get(
+                                                "application_pool_bytes", 8388608
+                                            )
+                                        ),
                                     ],
                                     run / "server",
                                 )
@@ -268,10 +341,47 @@ def main():
                                         address("proxy"),
                                         "--io",
                                         profile["io"],
+                                        "--batch-max",
+                                        str(profile["batch_max"]),
+                                        "--application-pool-bytes",
+                                        str(
+                                            profile.get("limits", {}).get(
+                                                "application_pool_bytes", 8388608
+                                            )
+                                        ),
                                     ],
                                     run / "client",
                                 )
                             )
+                        wait_udp_bound(owned[0], address("proxy"))
+                        wait_udp_bound(owned[1], address("client"))
+                        if (
+                            args.cpu_profile
+                            and mode == "tunnel"
+                            and pair == 0
+                            and direction == "simultaneous"
+                        ):
+                            for role, proc in zip(["server", "client"], owned):
+                                profilers.append(
+                                    Owned(
+                                        [
+                                            "perf",
+                                            "record",
+                                            "-e",
+                                            "cpu-clock:u",
+                                            "-F",
+                                            "99",
+                                            "-p",
+                                            str(proc.p.pid),
+                                            "-o",
+                                            str(run / f"{role}.cpu.perf.data"),
+                                            "--",
+                                            "sleep",
+                                            "2",
+                                        ],
+                                        run / f"{role}-profiler",
+                                    )
+                                )
                         start = (
                             int(time.time() * 1000) + profile["warmup_seconds"] * 1000
                         )
@@ -298,6 +408,7 @@ def main():
                             run / "receiver",
                         )
                         owned.append(target)
+                        wait_udp_bound(target, address("target"))
                         sender = Owned(
                             [
                                 tool,
@@ -365,6 +476,16 @@ def main():
                             ) / elapsed
                             stats[role] = {
                                 "average_cpu_cores": cpu,
+                                "owner_voluntary_context_switches": final["roles"][
+                                    role
+                                ]["voluntary_context_switches"]
+                                - initial["roles"][role]["voluntary_context_switches"],
+                                "owner_involuntary_context_switches": final["roles"][
+                                    role
+                                ]["involuntary_context_switches"]
+                                - initial["roles"][role][
+                                    "involuntary_context_switches"
+                                ],
                                 "peak_rss_bytes": max(
                                     s["roles"][role]["rss_bytes"] for s in samples
                                 ),
@@ -478,7 +599,7 @@ def main():
                     )
                     raise
                 finally:
-                    for proc in owned:
+                    for proc in profilers + owned:
                         if not proc.reaped:
                             proc.stop()
     write(out / "summary.json", all_summaries)

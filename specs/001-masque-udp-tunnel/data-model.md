@@ -49,3 +49,25 @@ No forward eligibility before Active on the corresponding accepted request. Clos
 ## Persistent state and updates
 
 Only configuration, trust material, client secret files, server credential digests and optional bounded diagnostics persist; no persistent port-reservation store is mandated. Config/credential/policy updates require a controlled process restart; the revocation completion point is old-process exit plus new-process readiness. No migration/database schema is needed. Config schema_version=1 rejects unknown fields; future incompatible schemas require explicit migration guidance.
+
+## Phase 5 request ordering and numeric observations
+
+A server pending Session may retain request headers before its peer SETTINGS
+are available: State::Starting, <=32 fields/16KiB, charged to the existing
+global/per-connection Session and pending-setup permits. Preserve its original
+setup start/deadline; no identity/DNS/relay/acceptance/forwarding work starts
+until required peer capabilities are verified. Reset, duplicate headers,
+expiry/close and connection capability failure cancel this bounded header
+reservation. An independent seventh four-item cursor services ready deferred
+requests; these fields are not diagnostics, metric labels or a new unbounded
+connection queue. Count their exact retained field/metadata bytes in resource
+snapshots. Existing commitment, generations and cleanup permits are unchanged.
+
+PMTU observations retain only numeric errno/MTU and the current validated
+original destination while handled; quotes are discarded. Target route ceilings
+are re-queried at send, and current native/verified QUIC limits at enqueue and
+generation. Outer pressure/PMTU/lost-packet estimates have no invented Session
+application-loss attribution. Fixed lifetime counters/maxima cover controlled
+I/O/copy/factory/slab boundaries; overflow invalidates measurements without
+changing already accepted send prefixes. Retired relay totals fold into one
+process accumulator rather than unbounded per-flow history.

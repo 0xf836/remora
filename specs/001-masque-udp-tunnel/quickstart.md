@@ -200,3 +200,45 @@ lifecycle tests. Production remains 120000 ms; shorter operator values require
 a deployment rationale and can cause repeated setup/source-port changes/first
 packet loss. See [concurrency evidence](../../docs/validation/concurrency.md)
 and [ADR-0008](../../docs/adr/0008-concurrent-admission-and-fair-service.md).
+
+## Phase 5 native development and reference method
+
+After locked release builds for the root and test-only traffic package:
+
+```bash
+./scripts/validate/profile.sh --output benchmarks/results/profile-NEW
+./scripts/validate/network.sh --output benchmarks/results/network-NEW
+./scripts/validate/bench.sh --profile benchmarks/reference-x86_64.toml \
+  --plan-only --output benchmarks/results/reference-plan-NEW
+./scripts/validate/bench.sh --profile benchmarks/reference-x86_64.toml \
+  --development-smoke --smoke-selected \
+  --output benchmarks/results/reference-smoke-NEW
+```
+
+Profiling runs sequential low-rate parameter cases and freezes its reference
+before selecting an acceleration. The network runner uses only anonymous owned
+user/network namespaces and recorded veth/netem/feature settings. Host-state
+mutation is not part of setup. Smoke checks loaded warmup/1-or-32-source plumbing
+and deliberately produces an invalid **release** criterion result because its
+intervals/search/repetitions/churn are incomplete; it must still complete schema
+and process/integrity checks without an execution failure.
+
+The full method command below is the later T077 qualification job, not a quick
+smoke: 18 baseline searches plus 185 full baseline/tunnel pairs and churn can
+take at least 37 hours even before searches/churn. Owned namespace holders
+remain alive until explicit runner teardown, without a one-hour expiry. It
+requires native x86_64, ip/tc/nsenter/unshare, read-only
+feature-query support, >=10 available logical cores for disjoint four-core role
+placement plus tools, a built traffic executable and generator headroom. Failed
+or invalid calibration cannot establish Remora capacity.
+
+```bash
+./scripts/validate/bench.sh --profile benchmarks/reference-x86_64.toml \
+  --output benchmarks/results/reference-full-NEW
+```
+
+Keep each output path fresh and retain rejected/failed artifacts. No raw
+credentials/keys belong in Git. [Performance](../../docs/performance.md),
+[network characterization](../../docs/validation/network.md) and
+[Phase 5 validation](../../docs/validation/phase5.md) distinguish native checks,
+retrospective development acceptance and the unchanged full release criteria.

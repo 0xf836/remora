@@ -18,12 +18,14 @@ use std::{
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportError {
+    Native(u64),
     Configuration,
     Tls,
     Capability,
     Protocol,
     Capacity,
     Oversized,
+    Pmtu,
     Expired,
     Stopped,
 }
@@ -76,6 +78,7 @@ pub fn config(settings: &ValidatedConfig) -> Result<quiche::Config, TransportErr
     q.set_max_idle_timeout(settings.transport().idle_timeout_ms);
     q.set_max_recv_udp_payload_size(settings.transport().outer_udp_max_bytes);
     q.set_max_send_udp_payload_size(settings.transport().outer_udp_max_bytes);
+    q.discover_pmtu(true);
     q.set_initial_max_data(256 * 1024);
     q.set_initial_max_stream_data_bidi_local(16384);
     q.set_initial_max_stream_data_bidi_remote(16384);
@@ -123,6 +126,31 @@ pub fn random_cid() -> Result<[u8; 16], TransportError> {
 std::thread_local! { static RESPONSE_RECEIPT: std::cell::RefCell<Option<std::sync::Arc<()>>> = const { std::cell::RefCell::new(None) }; }
 #[derive(Clone, Default, Debug)]
 pub struct TrackedFactory;
+#[derive(Default, Clone, Copy, serde::Serialize)]
+pub struct FactoryProfile {
+    pub datagram_allocations: u64,
+    pub datagram_copy_bytes: u64,
+    pub stream_allocations: u64,
+    pub stream_copy_bytes: u64,
+    pub encoded_payload_bytes: u64,
+    pub overflowed: bool,
+}
+std::thread_local! { static FACTORY_PROFILE: std::cell::Cell<FactoryProfile> = std::cell::Cell::new(FactoryProfile::default()); }
+pub fn factory_profile() -> FactoryProfile {
+    FACTORY_PROFILE.with(std::cell::Cell::get)
+}
+fn count_factory(select: fn(&mut FactoryProfile) -> &mut u64, amount: usize) {
+    FACTORY_PROFILE.with(|cell| {
+        let mut stats = cell.get();
+        let slot = select(&mut stats);
+        if let Some(next) = slot.checked_add(amount as u64) {
+            *slot = next;
+        } else {
+            stats.overflowed = true;
+        }
+        cell.set(stats);
+    });
+}
 #[derive(Clone)]
 pub struct TrackedBuf {
     bytes: std::sync::Arc<[u8]>,
@@ -144,12 +172,19 @@ impl quiche::BufFactory for TrackedFactory {
     type Buf = TrackedBuf;
     type DgramBuf = Vec<u8>;
     fn buf_from_slice(bytes: &[u8]) -> TrackedBuf {
+        count_factory(|s| &mut s.stream_allocations, 1);
+        count_factory(|s| &mut s.stream_copy_bytes, bytes.len());
         TrackedBuf {
             bytes: std::sync::Arc::from(bytes),
             _receipt: RESPONSE_RECEIPT.with(|slot| slot.borrow().clone()),
         }
     }
     fn dgram_buf_from_slice(bytes: &[u8]) -> Vec<u8> {
+        count_factory(
+            |s| &mut s.datagram_allocations,
+            usize::from(!bytes.is_empty()),
+        );
+        count_factory(|s| &mut s.datagram_copy_bytes, bytes.len());
         bytes.to_vec()
     }
 }
@@ -173,6 +208,7 @@ pub fn track_response<T>(send: impl FnOnce() -> T) -> (T, std::sync::Weak<()>) {
 
 struct Native {
     stream: u64,
+    length: usize,
     _reservation: Reservation,
 }
 struct ClosedStream {
@@ -206,6 +242,8 @@ pub struct Connection {
     stopped: bool,
     critical_streams: [Option<u64>; 3],
     critical_failed: bool,
+    pmtu_drops: usize,
+    lost_observed: usize,
 }
 impl Connection {
     pub fn new(
@@ -245,6 +283,8 @@ impl Connection {
             stopped: false,
             critical_streams: [None; 3],
             critical_failed: false,
+            pmtu_drops: 0,
+            lost_observed: 0,
         }
     }
     /// All incoming native messages share a conservative oldest receive epoch.
@@ -299,7 +339,7 @@ impl Connection {
         if self.h3.is_none() {
             self.h3 = Some(
                 quiche::h3::Connection::with_transport(&mut self.quic, &h3_config(self.server)?)
-                    .map_err(|_| TransportError::Protocol)?,
+                    .map_err(|error| TransportError::Native(h3_error_code(error)))?,
             );
             // Pinned quiche opens control, optional QPACK, then optional GREASE
             // uni streams synchronously in with_transport. Remora opens no
@@ -496,11 +536,58 @@ impl Connection {
         self.server || self.draining.is_none_or(|cutoff| id < cutoff)
     }
     pub fn payload_ceiling(&self, stream: u64) -> usize {
+        self.native_datagram_ceiling()
+            .saturating_sub(masque::varint_len(stream / 4).unwrap_or(8) + 1)
+            .min(self.application_max)
+    }
+    fn native_datagram_ceiling(&self) -> usize {
+        // Writable capacity already excludes QUIC overhead. During revalidation
+        // or probing, recovery's allowance can exceed the verified active PMTU.
+        // Subtract only that allowance gap; never subtract QUIC headers twice.
+        let verified = self
+            .quic
+            .path_stats()
+            .find(|p| p.active)
+            .map_or(1200, |p| p.pmtu)
+            .min(self.outer_max);
         self.quic
             .dgram_max_writable_len()
             .unwrap_or(0)
-            .saturating_sub(masque::varint_len(stream / 4).unwrap_or(8) + 1)
-            .min(self.application_max)
+            .saturating_sub(
+                self.quic
+                    .max_send_udp_payload_size()
+                    .saturating_sub(verified),
+            )
+    }
+    /// Discard still-cancellable oversized native messages after path reduction.
+    /// Reservation order stays aligned with the actual quiche queue predicate.
+    fn prune_pmtu(&mut self) -> Result<(), TransportError> {
+        let limit = self.native_datagram_ceiling();
+        let count = self.native.iter().filter(|n| n.length > limit).count();
+        self.quic.dgram_purge_outgoing(|bytes| bytes.len() > limit);
+        self.native.retain(|n| n.length <= limit);
+        // Each accumulation is bounded by the admitted native queue capacity;
+        // the owner consumes this count after every packet generation visit.
+        self.pmtu_drops = self
+            .pmtu_drops
+            .checked_add(count)
+            .ok_or(TransportError::Capacity)?;
+        if self.native.is_empty() {
+            self.native_expiry = None;
+        }
+        Ok(())
+    }
+    pub fn take_pmtu_drops(&mut self) -> usize {
+        std::mem::take(&mut self.pmtu_drops)
+    }
+    /// Outer QUIC estimates, separate from endpoint sequence loss/kernel overflow.
+    pub fn take_lost_packets(&mut self) -> Result<usize, TransportError> {
+        let lost = self.quic.stats().lost;
+        let delta = lost
+            .checked_sub(self.lost_observed)
+            .ok_or(TransportError::Protocol)?;
+        self.lost_observed = lost;
+        Ok(delta)
     }
     pub fn enqueue(
         &mut self,
@@ -523,11 +610,15 @@ impl Connection {
         if expiry <= now {
             return Err(TransportError::Expired);
         }
-        if payload.len() > self.payload_ceiling(stream) {
+        if payload.len() > self.application_max {
             return Err(TransportError::Oversized);
+        }
+        if payload.len() > self.payload_ceiling(stream) {
+            return Err(TransportError::Pmtu);
         }
         let len = masque::encode_datagram(stream, payload, scratch)
             .map_err(|_| TransportError::Protocol)?;
+        count_factory(|s| &mut s.encoded_payload_bytes, payload.len());
         let reservation = self
             .native_budget
             .reserve(1, len)
@@ -537,6 +628,7 @@ impl Connection {
             .map_err(|_| TransportError::Capacity)?;
         self.native.push_back(Native {
             stream,
+            length: len,
             _reservation: reservation,
         });
         self.native_expiry = Some(self.native_expiry.map_or(expiry, |old| old.min(expiry)));
@@ -615,6 +707,7 @@ impl Connection {
         quota: usize,
     ) -> Result<usize, TransportError> {
         self.expire_native(now);
+        self.prune_pmtu()?;
         if self
             .output
             .front()
@@ -664,7 +757,7 @@ impl Connection {
                     }
                 }
                 Err(quiche::Error::Done) => break,
-                Err(_) => return Err(TransportError::Protocol),
+                Err(error) => return Err(TransportError::Native(native_error_code(error))),
             }
         }
         Ok(produced)
@@ -761,5 +854,63 @@ impl Retry {
             return Err(TransportError::Expired);
         }
         Ok(token[9..9 + n].to_vec())
+    }
+}
+
+/// Fixed privacy-safe native error categories; associated peer values omitted.
+pub fn native_error_code(error: quiche::Error) -> u64 {
+    use quiche::Error::*;
+    match error {
+        Done => 0,
+        BufferTooShort => 1,
+        UnknownVersion => 2,
+        InvalidFrame => 3,
+        InvalidPacket => 4,
+        InvalidState => 5,
+        InvalidStreamState(_) => 6,
+        InvalidTransportParam => 7,
+        CryptoFail => 8,
+        TlsFail => 9,
+        FlowControl => 10,
+        StreamLimit => 11,
+        StreamStopped(_) => 12,
+        StreamReset(_) => 13,
+        FinalSize => 14,
+        CongestionControl => 15,
+        IdLimit => 16,
+        OutOfIdentifiers => 17,
+        KeyUpdate => 18,
+        CryptoBufferExceeded => 19,
+        InvalidAckRange => 20,
+        OptimisticAckDetected => 21,
+        InvalidDcidInitialization => 22,
+    }
+}
+
+/// Standard H3 wire categories plus fixed local API categories. No native
+/// message text or peer-associated stream/error data is reflected.
+pub fn h3_error_code(error: quiche::h3::Error) -> u64 {
+    use quiche::h3::Error::*;
+    match error {
+        TransportError(error) => 0x10000 + native_error_code(error),
+        StreamBlocked => 0x20000,
+        BufferTooShort => 0x20001,
+        Done => 0,
+        InternalError => 0x102,
+        ExcessiveLoad => 0x107,
+        IdError => 0x108,
+        StreamCreationError => 0x103,
+        ClosedCriticalStream => 0x104,
+        MissingSettings => 0x10a,
+        FrameUnexpected => 0x105,
+        FrameError => 0x106,
+        QpackDecompressionFailed => 0x200,
+        SettingsError => 0x109,
+        RequestRejected => 0x10b,
+        RequestCancelled => 0x10c,
+        RequestIncomplete => 0x10d,
+        MessageError => 0x10e,
+        ConnectError => 0x10f,
+        VersionFallback => 0x110,
     }
 }

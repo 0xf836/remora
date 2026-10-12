@@ -1,7 +1,7 @@
 pub mod baseline;
 pub mod measurement;
 use serde::Serialize;
-use std::collections::HashSet;
+
 pub const PREFIX: usize = 40;
 fn checksum(bytes: &[u8]) -> u32 {
     bytes.iter().fold(0x811c9dc5u32, |v, b| {
@@ -51,7 +51,7 @@ pub fn decode(bytes: &[u8]) -> Result<Header, &'static str> {
         stamp: u64::from_be_bytes(bytes[24..32].try_into().unwrap()),
     })
 }
-#[derive(Default, Serialize)]
+#[derive(Serialize)]
 pub struct Collection {
     pub unique: u64,
     pub bytes: u64,
@@ -61,11 +61,37 @@ pub struct Collection {
     pub wrong_direction: u64,
     pub overflow: u64,
     #[serde(skip)]
-    seen: HashSet<u64>,
+    seen: Vec<u64>,
+    #[serde(skip)]
+    sequence_limit: u64,
     #[serde(skip)]
     highest: Option<u64>,
 }
+impl Default for Collection {
+    fn default() -> Self {
+        Self::with_limit(1_000_000).expect("bounded default")
+    }
+}
 impl Collection {
+    /// Exact bounded bitmap: release workloads need hundreds of millions of
+    /// sequences, not an unbounded HashSet or silent million-packet truncation.
+    pub fn with_limit(limit: u64) -> Result<Self, &'static str> {
+        if limit == 0 || limit > 400_000_000 {
+            return Err("invalid sequence bound");
+        }
+        Ok(Self {
+            unique: 0,
+            bytes: 0,
+            duplicates: 0,
+            reordered: 0,
+            corrupt: 0,
+            wrong_direction: 0,
+            overflow: 0,
+            seen: Vec::new(),
+            highest: None,
+            sequence_limit: limit,
+        })
+    }
     pub fn observe(&mut self, bytes: &[u8], session: u64, direction: u8) {
         let Ok(header) = decode(bytes) else {
             self.corrupt += 1;
@@ -75,14 +101,28 @@ impl Collection {
             self.wrong_direction += 1;
             return;
         }
-        if header.sequence >= 1_000_000 || self.seen.len() >= 1_000_000 {
+        if header.sequence >= self.sequence_limit {
             self.overflow += 1;
             return;
         }
-        if !self.seen.insert(header.sequence) {
+        let word = (header.sequence / 64) as usize;
+        if word >= self.seen.len() {
+            if self
+                .seen
+                .try_reserve_exact(word + 1 - self.seen.len())
+                .is_err()
+            {
+                self.overflow += 1;
+                return;
+            }
+            self.seen.resize(word + 1, 0);
+        }
+        let bit = 1u64 << (header.sequence % 64);
+        if self.seen[word] & bit != 0 {
             self.duplicates += 1;
             return;
         }
+        self.seen[word] |= bit;
         if self.highest.is_some_and(|h| header.sequence < h) {
             self.reordered += 1;
         }

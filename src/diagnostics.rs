@@ -234,12 +234,27 @@ pub struct Resources {
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct Snapshot {
+    pub profile: ProfileCounters,
     pub resources: Resources,
     pub sessions_active: u64,
     pub connections_active: u64,
     pub counters: Counters,
     pub offloads: OffloadState,
     pub socket_buffers: SocketBuffers,
+}
+/// Controlled boundaries only, not all allocations/copies inside crypto/quiche.
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct ProfileCounters {
+    pub owner_visits: u64,
+    pub queue_copy_bytes: u64,
+    pub received_datagram_copy_bytes: u64,
+    pub payload_slab_allocations: usize,
+    pub application_queue_age_max_us: u64,
+    pub ciphertext_age_max_us: u64,
+    pub pacing_lateness_max_us: u64,
+    pub send_burst_datagrams_max: usize,
+    pub io: crate::udp::IoStats,
+    pub factory: crate::transport::FactoryProfile,
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct Counters {
@@ -256,6 +271,11 @@ pub struct Counters {
     pub outer_socket_received: u64,
     pub outer_socket_received_bytes: u64,
     pub kernel_rx_overflow: u64,
+    pub outer_pmtu_errors: u64,
+    pub outer_send_pressure: u64,
+    pub outer_async_errors: u64,
+    pub destination_pmtu_updates: u64,
+    pub outer_quic_lost_packets: u64,
     pub local_drops: DropCounters,
 }
 #[derive(Default, Clone, Copy, Serialize)]

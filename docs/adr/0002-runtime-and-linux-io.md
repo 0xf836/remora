@@ -72,3 +72,37 @@ One packet owner is a capacity hypothesis. The SC-007 two-core process budget in
 Baseline works without runtime network-administration privileges or qdisc setup. Timerfd accuracy is measured through lateness/burst histograms; it is not a latency promise. Native syscall/FFI qualification remains necessary for each claimed release target; start x86_64 development/checks first and add ARM64 validation without blocking that work. Default queue/batch values can be revised before release through measured results while preserving SC thresholds. Sharding/io_uring/SO_TXTIME are deferred until a recorded bottleneck and ADR justify them.
 
 Evidence: [Tokio AsyncFd](https://docs.rs/tokio/1.53.2/tokio/io/unix/struct.AsyncFd.html), [timerfd](https://man7.org/linux/man-pages/man2/timerfd_create.2.html), [published tokio-quiche metadata](https://docs.rs/crate/tokio-quiche/0.20.0), [ApplicationOverQuic](https://docs.quic.tech/tokio_quiche/trait.ApplicationOverQuic.html), [official H3 driver source](https://docs.quic.tech/src/tokio_quiche/http3/driver/mod.rs.html), [official worker source](https://docs.quic.tech/src/tokio_quiche/quic/io/worker.rs.html), [tagged package version](https://raw.githubusercontent.com/cloudflare/quiche/0.30.0/tokio-quiche/Cargo.toml).
+
+## Phase 5 measured selection — 2026-10-12
+
+The ten low-rate parameter experiments and five-pair prospective reference are
+recorded in `docs/performance.md` before candidate work. CPU is substantial at
+5000 packets/s/direction, but short overlapping batch/CC results and sparse CPU
+samples do not justify selecting an acceleration or changing default policy.
+Retain mmsg32, CUBIC, timerfd and current finite pools/queues. Defer GSO/GRO,
+backend/sharding and allocator changes until a separately referenced high-rate
+profile identifies a repeatable bottleneck and a candidate preserves all
+ownership/pacing/resource/security criteria. This is a measured decision to
+retain the baseline, not a performance success claim.
+
+`auto` remains accepted with effective off and fixed reason `not_implemented`;
+it performs no capability probe and makes no hardware-unavailable claim. Native
+off/auto tests therefore exercise the same datagram I/O path. Without a GRO
+splitter, reject every UDP-level ancillary segment marker (known, malformed or
+unknown future type) rather than feeding an aggregate to QUIC as one datagram.
+No packet grouping or additional mutable ownership is introduced. Existing
+scripted owner checks retain future deadlines, mixed ciphertext, EMSGSIZE
+failed-front and accepted-prefix invariants. The applicable T055 comparison
+uses the already frozen Phase 5 policy and exact retained test-only traffic
+executable, despite subsequent test-harness evolution.
+
+The native burst characterization exposed synchronous ENOBUFS (errno 105)
+from runner-owned netem queue pressure. Preserve the association: drop only the
+unaccepted outer FIFO front, count `outer_send_pressure`, and allow QUIC control
+recovery. It is not a PMTU observation or fabricated Session application loss.
+Relay ENOBUFS drops the exact application packet with `socket_error` without
+closing its Session. EAGAIN continues to retain its original suffix/deadline;
+hard errors retain numeric errno in the connection failure record. Adapter
+`send_enobufs`/`send_emsgsize` count actual failed native submissions, separately
+from PMTU prechecks. Scripted accepted-prefix tests cover both failure classes;
+original native failures remain retained before the fix.

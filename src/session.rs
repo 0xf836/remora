@@ -51,6 +51,9 @@ pub struct Session {
     pub started: Instant,
     pub queue: SessionQueue,
     pub capsules: CapsuleParser,
+    /// At most 32 headers/16 KiB, charged to pending-setup admission. QUIC
+    /// stream delivery can present a request before peer SETTINGS arrives.
+    pub deferred_headers: Option<(Vec<quiche::h3::Header>, bool)>,
     pub body_pending: bool,
     pub capsule_counts: crate::masque::CapsuleCounts,
     pub _identity: Option<Reservation>,

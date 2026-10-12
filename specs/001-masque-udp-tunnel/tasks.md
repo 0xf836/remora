@@ -167,16 +167,74 @@ No additional phase/checklist is advanced and no commit/publication is performed
 
 ### Implementation and required verification
 
-- [ ] T048 [US3] Complete changing outer/target payload ceilings and error-queue PMTU handling in `src/udp.rs`, `src/transport.rs` and `src/reactor.rs` after T047: query current writable DATAGRAM capacity and subtract only association/context prefixes, enforce configured/destination limits at enqueue and actual relay send, keep outer probes separate from application drops, reject complete outer messages above receive cap and prevent IPv4/IPv6 fragmentation without reliable fallback.
-- [ ] T049 [P] [US3] Add dynamic-size/PMTU/burst/congestion tests in `tests/io/pmtu.rs` and `tests/e2e/sizes.rs` after T048: empty/at/above limits, path reduction between enqueue and send, EMSGSIZE and malformed metadata, blocked cwnd expiry, corruption/truncation/private-fragment prohibition and separate local/kernel/outer-loss counters.
-- [ ] T050 [US3] Profile the working x86_64 path and run paired single-vs-mmsg, batch 1/8/16/32/64, CUBIC-vs-explicit bbr2_gcongestion (Reno diagnostic), pool/queue and pacing experiments through `scripts/validate/profile.sh` and `benchmarks/experiments.toml` after T048/T034; freeze the pre-change revision/manifest, workload-specific metric bounds, units and comparison/noise method before any candidate datapath change (T051); record syscalls/wakeups/allocations/copies, owner-thread CPU/headroom, 32-session fairness/control servicing, queue age, burst/lateness and delivery/resource trade-offs in `docs/performance.md` before selecting changes.
-- [ ] T051 [US3] Implement only justified measured datapath refinements in `src/udp.rs`, `src/buffers.rs` and `src/reactor.rs` after T050, updating `docs/adr/0002-runtime-and-linux-io.md`: if outer GSO/GRO is selected, probe per socket/path, use only compatible already-due groups <=64 segments with optional shorter last segment, retain group ownership through partial/failing submission and split validated GRO in bounded 64 KiB scratch before quiche; otherwise accept auto with effective off and fixed reason not_implemented, without a capability probe or a hardware-unavailable claim; implemented auto reports requested/effective state and capability_unavailable/path_ineligible/enabled as appropriate. Sharding/io_uring/SO_TXTIME/backend changes require a recorded need and prospective ADR, not a mandatory implementation detour.
-- [ ] T052 [P] [US3] Add targeted regression/offload ownership and fallback tests in `tests/io/offloads.rs` after T051: exercised selected changes, unknown/malformed GRO ancillary data, empty/mixed/probe/future-deadline baseline paths, logical segment versus syscall accounting, deferred implementation versus actual capability failure, requested/effective modes and fixed reason reporting without fabricated probes, EMSGSIZE, accepted-prefix preservation and no duplicate replay; compare off/auto natively only where implemented/supported, and mark unsupported cases explicitly.
-- [ ] T053 [US3] Extend the runner/harness in `scripts/validate/bench.sh`, `tools/traffic/src/measurement.rs` and `benchmarks/reference-x86_64.toml` after T050 for the complete benchmark contract: one/32 sessions; 128/512/1200 bytes; matching separate/simultaneous sustainable baselines at <=0.1% loss; declared 1% bottleneck search steps; 50% subcapacity loss/RTT runs; >=five paired repetitions with randomized order, 60-second warmup/five-minute measurement, spread/sample counts, 500 Mbit/s/direction resource load and 1000-cycle churn.
-- [ ] T054 [P] [US3] Add deterministic benchmark-result validation tests in `tools/traffic/tests/results.rs` after T053: each applicable run separately enforces >=80% throughput, <=0.1 percentage-point added loss, <=5 ms added p95 RTT, per-role peak RSS <=128 MiB/average CPU <=2 cores and churn <=10 MiB/<=60 seconds; fail/invalid on generator saturation, wrong topology/diagnostics, insufficient samples/pairs or bad clock evidence, with no averaging away failures or retrospective thresholds; validate separately frozen regression reference/policy and per-metric bounds, rejecting missing/unmatched evidence and preserving failed/inconclusive comparisons without changing SC criteria.
-- [ ] T055 [US3] Run post-refinement paired x86_64 regression measurements with `scripts/validate/bench.sh`, retaining selected optimization A/B evidence in `benchmarks/results/refinement-x86_64/` after T049/T052/T054; compare against the frozen pre-change revision/reference-manifest selected before T051 (using T034 only when still applicable), enforce its predeclared per-metric regression bounds under matching workload/settings, preserve unsuccessful choices/results, and record remaining release-target gaps and next actions in `docs/performance.md`. Full final-revision reference qualification remains T077.
-- [ ] T056 [P] [US3] Implement isolated network scenario setup/teardown in `scripts/validate/network.sh` after T048: controlled 1 Gbit/s/20 ms reference path plus 50/100 ms RTT, 0.1%/1% loss, asymmetry, bursts and reduced MTU, requiring capabilities only for runner-owned namespaces; record all qdisc/NIC/offload settings, reject generator/link mismatch, and never change production/operator network state.
-- [ ] T057 [US3] Run size/impairment characterization through `scripts/validate/network.sh` after T049/T056, preserving outcomes in `docs/validation/network.md`: payload integrity, counted loss/pressure, responsive timer/control work and effective PMTU; disclose environment limits and avoid extending reference throughput guarantees to every impaired path.
+- [X] T048 [US3] Complete changing outer/target payload ceilings and error-queue PMTU handling in `src/udp.rs`, `src/transport.rs` and `src/reactor.rs` after T047: query current writable DATAGRAM capacity and subtract only association/context prefixes, enforce configured/destination limits at enqueue and actual relay send, keep outer probes separate from application drops, reject complete outer messages above receive cap and prevent IPv4/IPv6 fragmentation without reliable fallback.
+- [X] T049 [P] [US3] Add dynamic-size/PMTU/burst/congestion tests in `tests/io/pmtu.rs` and `tests/e2e/sizes.rs` after T048: empty/at/above limits, path reduction between enqueue and send, EMSGSIZE and malformed metadata, blocked cwnd expiry, corruption/truncation/private-fragment prohibition and separate local/kernel/outer-loss counters.
+- [X] T050 [US3] Profile the working x86_64 path and run paired single-vs-mmsg, batch 1/8/16/32/64, CUBIC-vs-explicit bbr2_gcongestion (Reno diagnostic), pool/queue and pacing experiments through `scripts/validate/profile.sh` and `benchmarks/experiments.toml` after T048/T034; freeze the pre-change revision/manifest, workload-specific metric bounds, units and comparison/noise method before any candidate datapath change (T051); record syscalls/wakeups/allocations/copies, owner-thread CPU/headroom, 32-session fairness/control servicing, queue age, burst/lateness and delivery/resource trade-offs in `docs/performance.md` before selecting changes.
+- [X] T051 [US3] Implement only justified measured datapath refinements in `src/udp.rs`, `src/buffers.rs` and `src/reactor.rs` after T050, updating `docs/adr/0002-runtime-and-linux-io.md`: if outer GSO/GRO is selected, probe per socket/path, use only compatible already-due groups <=64 segments with optional shorter last segment, retain group ownership through partial/failing submission and split validated GRO in bounded 64 KiB scratch before quiche; otherwise accept auto with effective off and fixed reason not_implemented, without a capability probe or a hardware-unavailable claim; implemented auto reports requested/effective state and capability_unavailable/path_ineligible/enabled as appropriate. Sharding/io_uring/SO_TXTIME/backend changes require a recorded need and prospective ADR, not a mandatory implementation detour.
+- [X] T052 [P] [US3] Add targeted regression/offload ownership and fallback tests in `tests/io/offloads.rs` after T051: exercised selected changes, unknown/malformed GRO ancillary data, empty/mixed/probe/future-deadline baseline paths, logical segment versus syscall accounting, deferred implementation versus actual capability failure, requested/effective modes and fixed reason reporting without fabricated probes, EMSGSIZE, accepted-prefix preservation and no duplicate replay; compare off/auto natively only where implemented/supported, and mark unsupported cases explicitly.
+- [X] T053 [US3] Extend the runner/harness in `scripts/validate/bench.sh`, `tools/traffic/src/measurement.rs` and `benchmarks/reference-x86_64.toml` after T050 for the complete benchmark contract: one/32 sessions; 128/512/1200 bytes; matching separate/simultaneous sustainable baselines at <=0.1% loss; declared 1% bottleneck search steps; 50% subcapacity loss/RTT runs; >=five paired repetitions with randomized order, 60-second warmup/five-minute measurement, spread/sample counts, 500 Mbit/s/direction resource load and 1000-cycle churn.
+- [X] T054 [P] [US3] Add deterministic benchmark-result validation tests in `tools/traffic/tests/results.rs` after T053: each applicable run separately enforces >=80% throughput, <=0.1 percentage-point added loss, <=5 ms added p95 RTT, per-role peak RSS <=128 MiB/average CPU <=2 cores and churn <=10 MiB/<=60 seconds; fail/invalid on generator saturation, wrong topology/diagnostics, insufficient samples/pairs or bad clock evidence, with no averaging away failures or retrospective thresholds; validate separately frozen regression reference/policy and per-metric bounds, rejecting missing/unmatched evidence and preserving failed/inconclusive comparisons without changing SC criteria.
+- [X] T055 [US3] Run post-refinement paired x86_64 regression measurements with `scripts/validate/bench.sh`, retaining selected optimization A/B evidence in `benchmarks/results/refinement-x86_64/` after T049/T052/T054; compare against the frozen pre-change revision/reference-manifest selected before T051 (using T034 only when still applicable), enforce its predeclared per-metric regression bounds under matching workload/settings, preserve unsuccessful choices/results, and record remaining release-target gaps and next actions in `docs/performance.md`. Full final-revision reference qualification remains T077.
+- [X] T056 [P] [US3] Implement isolated network scenario setup/teardown in `scripts/validate/network.sh` after T048: controlled 1 Gbit/s/20 ms reference path plus 50/100 ms RTT, 0.1%/1% loss, asymmetry, bursts and reduced MTU, requiring capabilities only for runner-owned namespaces; record all qdisc/NIC/offload settings, reject generator/link mismatch, and never change production/operator network state.
+- [X] T057 [US3] Run size/impairment characterization through `scripts/validate/network.sh` after T049/T056, preserving outcomes in `docs/validation/network.md`: payload integrity, counted loss/pressure, responsive timer/control work and effective PMTU; disclose environment limits and avoid extending reference throughput guarantees to every impaired path.
+
+
+**Phase 5 outcome (2026-10-12)**: T048/T049 add current route/native payload
+limits, bounded validated error queues, no-fragment policies, native/error/
+blocked-cwnd/size tests and separate local/kernel/outer observations. Native
+impairment failures exposed ENOBUFS connection closure and legal request-before-
+SETTINGS ordering; both are fixed with original failures retained, exact-prefix/
+no-replay and pending-setup/cancellation/expiry regression tests. All 129 Rust
+tests pass with one separately qualified independent-peer case; the separate
+traffic package passes ten tests, Python validators/runner guards pass 33 tests,
+and the final binary passes all 29 pinned independent Go cases. Formatting,
+locked release builds and both package Clippy checks pass.
+
+T050 retains 120 valid low-rate parameter measurements, a separate 60s/32-flow
+fairness/control experiment and a five-pair prospective pre-T051 reference.
+No performance acceleration/default switch is selected; auto remains off/
+not_implemented. T053/T054 implement the complete schema-2 reference method,
+18 searches/185 full pairs, loaded warmup, bounded sequence tracking and
+per-run numeric/evidence validation, with native short methodology checks
+explicitly invalid for release. T056/T057 isolate all shaping to owned fresh
+namespaces and pass nine declared IPv4 scenarios, integrity/actual-endpoint
+size rejection, control progress, PMTU and zero observed/capture-dropped IPv4
+fragments; evidence is bound to the recorded binary and IPv6 limitations.
+
+**T055 is measured, not a strict regression pass**: original candidate 24/30,
+pre-review trust/0 candidate 25/30 under the unchanged prospective policy. CPU alone fails,
+including the unchanged plaintext baseline; all delivery/loss/RTT/RSS bounds
+pass. Strict failures/policy remain retained. Under the already authorized
+ADR-0007 one-session low-rate 0.5-core development exception, a separately
+labelled retrospective assessment passes 30/30 with every other Phase 5 bound
+unchanged. This existing exception permits incremental development acceptance;
+it is not proof of no regression and changes no release target. The checked
+T055 task records execution, enforcement/failures and the allowed development
+assessment; it does not certify performance. See `docs/performance.md` and
+`docs/validation/network.md`. Complete final-revision SC-003/004/005/007 and
+claimed-platform qualification remain required by T077. No later phase or
+requirements-quality checklist is advanced, no independent reviewer is invoked
+for Phase 5 without a new explicit request, and no commit/publication occurs.
+
+The owner subsequently requested independent Phase 5 review and authorized
+fixing its five findings. Shared-socket and relay send ICMP errors now preserve
+unrelated connections/the pinned association; only checked active-path metadata
+can revalidate PMTU. Native regressions cover six queued errors beyond a bounded
+drain, two connections, immediate/queued relay sends, fresh delivery/no replay
+and retained hard-error handling. The reference runner retains namespaces until
+teardown, detects holder exit, and tolerates verified traffic completion only
+after measurement without fabricated resource samples. SC-007 now requires
+actual >=500Mbit/s/direction delivery and matched per-session evidence for all
+32 Sessions plus a sustainable baseline; synthetic one-packet resource results
+are rejected. Root/tool/Python suites, native selected methodology smoke,
+reduced-MTU characterization and independent Go interoperability pass for the
+corrected tree; see `docs/validation/phase5.md`. The full matrix/resource/duration
+acceptance remains T077; no later phase or checklist is advanced.
+The corrected executable's clean frozen-reference comparison is 26/30 strict
+checks passed (overall FAIL, owner CPU only), with all non-CPU bounds passed.
+The separately labelled existing ADR-0007 development assessment is 30/30; no
+strict failure/reference/threshold is rewritten. Original and clean-series
+artifacts are retained with their exact binary scope in `docs/performance.md`.
 
 **Checkpoint**: The measured datapath and complete reference methodology exist. First MVP measurements have already occurred; optional accelerations are evidence-driven. Full numerical qualification applies to the final release revision.
 

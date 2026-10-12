@@ -74,3 +74,55 @@ Test peer settings ordering, absent DATAGRAM/Extended CONNECT, early datagrams, 
 The first transport/MVP tests must verify the initial GOAWAY cutoff, refusal of new/excluded requests and continued accepted lower-ID flows without reassignment or replay. Verified replacement-connection creation and new request placement are additional recovery tests in the later increment; they do not postpone the initial behavior's checks.
 
 Pin quic-go/masque-go fixture from research for both client->independent proxy and independent client->Remora server. Bearer headers and local test CA provide compatible credentials/trust. The Go fixture performs policy/auth checks but implements no Remora-specific wire codec. The declared unreliable profile and limitations must accompany independent test results.
+
+## Phase 5 dynamic payload limits
+
+The configured application limit is an upper bound, not a promise on every
+path. Before enqueue, query the native DATAGRAM capacity, apply the current
+verified QUIC path limit, then subtract only the association and Context ID
+prefixes from that native payload allowance. Quiche already accounts for QUIC
+packet/frame overhead. Its public writable-length API can retain a larger
+recovery send allowance while PMTU revalidation has reset the verified path
+size; the adapter clamps that difference before admitting application data.
+It does not subtract the IP/UDP/QUIC overhead twice. Recheck the same limit
+before native packet generation and purge oversized queued native entries with
+matching reservations, retaining eligible entries in order.
+
+Connected destination sockets query the current kernel route MTU before actual
+submission, including deferred sends; do not retain a sticky maximum that
+prevents a later increase. EMSGSIZE drops the failed application packet and
+preserves the association. The outer QUIC socket permits DF probes above its
+cached path MTU (PROBE), while target sockets enforce DO. IPv6 additionally
+uses DONTFRAG. Neither role introduces IP/private fragmentation or reliable
+payload fallback. Reject an intact received outer UDP message above the
+configured outer cap as well as truncated messages.
+
+Delayed peer/ICMP errors on receive or send do not close a Session or an
+unrelated connection sharing its outer socket. A failed submission discards
+only its unaccepted packet; accepted prefixes are never replayed. An errno
+alone does not identify the connection/path of an earlier packet. Apply outer
+PMTU revalidation only to a checked error-queue destination matching an active
+path; hard socket failures retain their explicit terminal handling.
+
+Drain at most four error-queue entries per selected socket visit. Validate
+ancillary lengths/alignment/family/origin and the original destination; accept
+only valid local/ICMP packet-too-big metadata for PMTU handling. Ignore quoted
+payloads and never retain/log them. Outer errors revalidate only matching
+connection paths and have no fabricated Session attribution. Non-PMTU target
+errors are numeric observations; they are not unconditional application-session
+closure based on unauthenticated ICMP. See ADR-0009 for API and privacy details.
+
+Reduced-MTU native testing reproduced legal request-before-SETTINGS ordering:
+loss of the client's control-stream packet let its later request stream arrive
+first. HTTP/3 streams have no cross-stream delivery order. The server now
+retains at most 32 fields/16 KiB in a pending Session charged to the existing
+global/per-connection Session and pending-setup budgets, with the original
+five-second setup deadline. It starts no authentication/DNS/relay/response/data
+forwarding until peer SETTINGS and required DATAGRAM capability are verified.
+Repack native header capacities into exact buffers, include their fixed memory
+in control metadata accounting, and service four deferred requests with a
+separate rotating cursor per connection. Expiry, reset, duplicate headers,
+close and unsupported settings release the reserved Session and its headers.
+Missing settings is not a success or permission to bypass capability checks.
+The MTU 1280 namespace reproduction passes after this change; its original
+failures remain retained.

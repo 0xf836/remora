@@ -54,9 +54,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "--start-ms",
         "--drain-ms",
         "--sessions",
+        "--batch-max",
+        "--application-pool-bytes",
+        "--warmup-seconds",
+        "--input",
+        "--output",
     ];
     if a.keys().any(|key| !known.contains(&key.as_str())) {
         return Err("unknown option".into());
+    }
+    if cmd == "validate-results" {
+        let path = std::path::Path::new(required(&a, "--input")?);
+        if std::fs::metadata(path)?.len() > 32 * 1024 * 1024 {
+            return Err("oversized measurement input".into());
+        }
+        let suite: measurement::Suite = serde_json::from_slice(&std::fs::read(path)?)?;
+        let result = suite.evaluate();
+        let bytes = serde_json::to_vec_pretty(&result)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(required(&a, "--output")?)?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        println!("{}", serde_json::to_string(&result)?);
+        if result.status != "passed" {
+            return Err("measurement failed or invalid; original evidence retained".into());
+        }
+        return Ok(());
     }
     if cmd == "exercise" {
         return exercise(
@@ -70,6 +94,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             required(&a, "--listen")?.parse()?,
             required(&a, "--to")?.parse()?,
             a.get("--io").map_or("mmsg", String::as_str),
+            number(&a, "--batch-max", 32)? as usize,
+            number(&a, "--application-pool-bytes", 8 * 1024 * 1024)? as usize,
         )
         .map_err(Into::into);
     }
@@ -77,6 +103,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unknown command".into());
     }
     let seconds = number(&a, "--seconds", 3)?;
+    let warmup = number(&a, "--warmup-seconds", 0)?;
+    let sessions = number(&a, "--sessions", 1)?;
     let pps = number(&a, "--pps", 1000)?;
     let reverse = number(&a, "--reverse-pps", 0)?;
     let size = number(&a, "--size", 128)? as usize;
@@ -84,10 +112,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let drain = number(&a, "--drain-ms", 200)?;
     if seconds == 0
         || seconds > 300
-        || pps > 100_000
-        || reverse > 100_000
-        || pps * seconds >= 1_000_000
-        || reverse * seconds >= 1_000_000
+        || warmup > 60
+        || ![1, 32].contains(&sessions)
+        || pps > 1_000_000 / sessions
+        || reverse > 1_000_000 / sessions
         || !(40..=1200).contains(&size)
         || drain == 0
         || drain > 5000
@@ -96,11 +124,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let start_ms = number(&a, "--start-ms", millis() + 1000)?;
     let wall = millis();
-    if start_ms < wall || start_ms > wall + 60_000 {
+    if start_ms < wall || start_ms > wall + 120_000 {
         return Err("start clock outside bounded window".into());
     }
     let base = Instant::now();
     let start = base + Duration::from_millis(start_ms - wall);
+    let warm_start = start
+        .checked_sub(Duration::from_secs(warmup))
+        .ok_or("warmup clock range")?;
+    if warmup > 0 && warm_start < base {
+        return Err("incomplete warmup start".into());
+    }
     let finish = start + Duration::from_secs(seconds);
     let end = finish + Duration::from_millis(drain);
     let sender = cmd == "sender";
@@ -120,12 +154,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut peers: HashMap<u64, SocketAddr> = HashMap::new();
     let mut sequences: HashMap<u64, u64> = HashMap::new();
     let mut collected: HashMap<u64, Collection> = HashMap::new();
-    let mut reverse_collection = Collection::default();
+    let sequence_limit = (pps.max(reverse) * seconds + 1).max(1);
+    let mut reverse_collection = Collection::with_limit(sequence_limit)?;
     let mut rtt = Vec::new();
     let mut sent = 0u64;
     let mut enqueue_failures = 0u64;
     let mut offered = 0u64;
-    let mut next_send = start;
+    let mut next_send = warm_start;
+    let mut send_ticks = 0u64;
+    let mut warm_sequence = 0;
+    let mut warm_sequences: HashMap<u64, u64> = HashMap::new();
+    let mut warm_offered = 0u64;
+    let mut warm_failures = 0u64;
+    const WARM: u64 = 1 << 63;
     let mut next_probe = base;
     let mut probe_seq = 0u64;
     let mut sequence = 0u64;
@@ -134,7 +175,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let now = Instant::now();
         if sender && now < finish && now >= next_probe {
             let bytes = packet(
-                size,
+                128,
                 session,
                 2,
                 probe_seq,
@@ -145,45 +186,76 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             next_probe += Duration::from_millis(100);
         }
         let rate = if sender { pps } else { reverse };
-        if rate > 0 && now >= start && now < finish && now >= next_send {
+        if rate > 0 && now >= warm_start && now < finish && now >= next_send {
             // A generator catches up at most 32 packets; enqueue errors and scheduling
             // inability remain evidence, rather than changing offered rate silently.
             for _ in 0..32 {
                 if Instant::now() < next_send || next_send >= finish {
                     break;
                 }
+                let measured = next_send >= start;
                 if sender {
                     let bytes = packet(
                         size,
                         session,
                         0,
-                        sequence,
+                        if measured {
+                            sequence
+                        } else {
+                            WARM | warm_sequence
+                        },
                         base.elapsed().as_micros() as u64,
                     )?;
-                    offered += 1;
+                    if measured {
+                        offered += 1;
+                    } else {
+                        warm_offered += 1;
+                    }
                     if socket
                         .send_to(&bytes, peer.unwrap())
                         .is_ok_and(|n| n == bytes.len())
                     {
-                        sent += 1
-                    } else {
+                        if measured {
+                            sent += 1;
+                        }
+                    } else if measured {
                         enqueue_failures += 1;
+                    } else {
+                        warm_failures += 1;
                     }
-                    sequence += 1;
+                    if measured {
+                        sequence += 1;
+                    } else {
+                        warm_sequence += 1;
+                    }
                 } else {
                     for (id, to) in &peers {
-                        let seq = sequences.entry(*id).or_default();
-                        let bytes = packet(size, *id, 1, *seq, 0)?;
-                        offered += 1;
-                        if socket.send_to(&bytes, *to).is_ok_and(|n| n == bytes.len()) {
-                            sent += 1
+                        let seq = if measured {
+                            sequences.entry(*id).or_default()
                         } else {
+                            warm_sequences.entry(*id).or_default()
+                        };
+                        let bytes =
+                            packet(size, *id, 1, if measured { *seq } else { WARM | *seq }, 0)?;
+                        if measured {
+                            offered += 1;
+                        } else {
+                            warm_offered += 1;
+                        }
+                        if socket.send_to(&bytes, *to).is_ok_and(|n| n == bytes.len()) {
+                            if measured {
+                                sent += 1;
+                            }
+                        } else if measured {
                             enqueue_failures += 1;
+                        } else {
+                            warm_failures += 1;
                         }
                         *seq += 1;
                     }
                 }
-                next_send += Duration::from_nanos(1_000_000_000 / rate);
+                send_ticks += 1;
+                next_send = warm_start + Duration::from_nanos(send_ticks * 1_000_000_000 / rate);
             }
         }
         for _ in 0..32 {
@@ -204,10 +276,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     rtt.push(age.saturating_sub(h.stamp));
                                 }
                             }
+                            Ok(h)
+                                if h.sequence & WARM != 0
+                                    && h.direction == 1
+                                    && h.session == session => {}
                             _ => reverse_collection.observe(bytes, session, 1),
                         }
                     } else if let Ok(h) = decode(bytes) {
-                        if peers.len() < 32 || peers.contains_key(&h.session) {
+                        if peers.len() < sessions as usize || peers.contains_key(&h.session) {
                             if peers.get(&h.session).is_some_and(|old| *old != from) {
                                 continue;
                             }
@@ -217,10 +293,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if h.direction == 2 {
                             socket.send_to(bytes, from)?;
-                        } else {
+                        } else if h.sequence & WARM == 0 {
                             collected
                                 .entry(h.session)
-                                .or_default()
+                                .or_insert_with(|| {
+                                    Collection::with_limit(sequence_limit).expect("validated bound")
+                                })
                                 .observe(bytes, h.session, 0);
                         }
                     } else if cmd == "responder" {
@@ -239,7 +317,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let p95 = measurement::percentile(&mut rtt.clone(), 95);
     println!(
         "{}",
-        serde_json::json!({"schema_version":1,"role":cmd,"size":size,"sessions":if sender{1}else{peers.len()},"interval_seconds":seconds,"drain_ms":drain,"offered":offered,"submitted":sent,"enqueue_failures":enqueue_failures,"generator_unscheduled":generator_unscheduled,"reverse_received":reverse_collection,"forward_received":collected,"rtt_samples_us":rtt,"rtt_p95_us":p95,"start_ms":start_ms,"elapsed_ms":base.elapsed().as_millis()})
+        serde_json::json!({"schema_version":1,"role":cmd,"size":size,"sessions":if sender{1}else{peers.len()},"interval_seconds":seconds,"drain_ms":drain,"warmup_seconds":warmup,"warmup_offered":warm_offered,"warmup_failures":warm_failures,"offered":offered,"submitted":sent,"enqueue_failures":enqueue_failures,"generator_unscheduled":generator_unscheduled,"generator_excess":offered.saturating_sub(expected),"reverse_received":reverse_collection,"forward_received":collected,"rtt_samples_us":rtt,"rtt_p95_us":p95,"start_ms":start_ms,"elapsed_ms":base.elapsed().as_millis()})
     );
     Ok(())
 }

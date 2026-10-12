@@ -11,3 +11,5 @@ mod forwarding;
 mod overload;
 #[path = "e2e/security.rs"]
 mod security;
+#[path = "e2e/sizes.rs"]
+mod sizes;

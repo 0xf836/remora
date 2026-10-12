@@ -1,0 +1,61 @@
+schema_version = 1
+coverage = "incremental-x86_64-loopback-parameter-exploration"
+# Each case is paired with the same two-leg plaintext relay and repeats all
+# directions twice. Low offered load is not a sustainable-capacity experiment.
+pps = 5000
+warmup_seconds = 1
+measurement_seconds = 2
+paired_repetitions = 2
+seed = 502050
+[[cases]]
+name = "baseline-mmsg32"
+io = "mmsg"
+batch_max = 32
+cc = "cubic"
+[[cases]]
+name = "single"
+io = "single"
+batch_max = 1
+cc = "cubic"
+[[cases]]
+name = "mmsg1"
+io = "mmsg"
+batch_max = 1
+cc = "cubic"
+[[cases]]
+name = "mmsg8"
+io = "mmsg"
+batch_max = 8
+cc = "cubic"
+[[cases]]
+name = "mmsg16"
+io = "mmsg"
+batch_max = 16
+cc = "cubic"
+[[cases]]
+name = "mmsg64"
+io = "mmsg"
+batch_max = 64
+cc = "cubic"
+[[cases]]
+name = "bbr2"
+io = "mmsg"
+batch_max = 32
+cc = "bbr2_gcongestion"
+[[cases]]
+name = "reno-diagnostic"
+io = "mmsg"
+batch_max = 32
+cc = "reno"
+[[cases]]
+name = "smaller-pools"
+io = "mmsg"
+batch_max = 32
+cc = "cubic"
+limits = { application_pool_bytes = 1048576, ciphertext_pool_bytes = 524288, scratch_pool_bytes = 262144 }
+[[cases]]
+name = "smaller-queues"
+io = "mmsg"
+batch_max = 32
+cc = "cubic"
+limits = { session_queue_packets = 8, session_queue_bytes = 16384 }

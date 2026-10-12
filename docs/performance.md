@@ -322,3 +322,174 @@ baseline rate, <=0.1% loss search, five paired five-minute runs, 32 sessions,
 500-Mbit/s resource load, 1000-cycle churn, diagnostics overhead, ARM64 or
 network impairments. None of those missing results is a pass or a guaranteed
 outcome. Native ARM64 does not block initial x86_64 development.
+
+## Phase 5 pre-refinement profiling — 2026-10-12
+
+Ten sequential parameter cases in `benchmarks/experiments.toml` each ran two paired repetitions in forward, reverse and simultaneous directions (120 valid-low-rate runs). Each case offers 5000 packets/s, 128 bytes, one-second setup/probe warmup, two-second measurement and 200ms drain on the two-leg same-host loopback topology. This warmup is not a sustained traffic warmup; full reference tooling below requires 60 seconds of actual load. All observed integrity/generator errors are zero; these runs do not establish sustainable capacity or release criteria.
+
+| Variant | Simultaneous owner CPU, client/server range (cores) | RTT p95 range (ms) |
+|---|---|---|
+| baseline-mmsg32 | 0.576–0.627 / 0.576–0.597 | 0.444–0.515 |
+| bbr2 | 0.528–0.567 / 0.523–0.567 | 0.607–0.673 |
+| mmsg1 | 0.430–0.502 / 0.435–0.517 | 0.379–0.539 |
+| mmsg16 | 0.481–0.523 / 0.491–0.518 | 0.438–0.510 |
+| mmsg64 | 0.521–0.532 / 0.527–0.546 | 0.511–0.560 |
+| mmsg8 | 0.370–0.551 / 0.390–0.551 | 0.368–0.552 |
+| reno-diagnostic | 0.522–0.588 / 0.527–0.583 | 0.567–0.729 |
+| single | 0.421–0.430 / 0.416–0.445 | 0.406–0.487 |
+| smaller-pools | 0.540–0.553 / 0.548–0.550 | 0.469–0.775 |
+| smaller-queues | 0.537–0.542 / 0.537–0.537 | 0.386–0.572 |
+
+The working path is expensive at this load: 5.12 Mbit/s per direction already uses about 0.6 of its one packet owner. Batch/CC results overlap and short pairs cannot isolate a robust winner. No default switch, sharding, backend change or GSO/GRO acceleration is selected from this evidence. Preserve mmsg32/CUBIC/timerfd and investigate under a separately referenced high-packet-rate workload before optimizing. Smaller pools/queues do not demonstrate a reliable advantage. Plaintext baseline uses the same selected adapter mode/batch/payload pool, fixed 100us polling and no sustainable-capacity claim; its lack of application queue pressure here does not prove matched high-load queue behavior.
+
+Controlled lifetime server counters for the first simultaneous mmsg32 run: `{"application_queue_age_max_us": 577, "ciphertext_age_max_us": 118, "factory": {"datagram_allocations": 9980, "datagram_copy_bytes": 1297400, "encoded_payload_bytes": 1277440, "overflowed": false, "stream_allocations": 13, "stream_copy_bytes": 120}, "io": {"error_queue_syscalls": 90019, "mtu_queries": 9979, "overflowed": false, "receive_syscalls": 90019, "received_datagrams": 28376, "send_syscalls": 28964, "sent_datagrams": 28968}, "owner_visits": 135031, "pacing_lateness_max_us": 105, "payload_slab_allocations": 68, "queue_copy_bytes": 1277440, "received_datagram_copy_bytes": 1297270, "send_burst_datagrams_max": 4}`. They include setup/drain, not only the measurement window. They count actual adapter calls and controlled copy/allocation boundaries, not all crypto/allocator activity. Maxima are lifetime maxima, not p95 histograms. Owner context-switch deltas and actual sampled CPU/headroom are retained in each summary/samples file.
+
+CPU-clock user IP sampling produced 37 server samples in the selected two-second mmsg32 run, zero lost samples. The largest observed symbol is payload Slab drop (10.81%); recv_batch and Tokio driver/wake work also appear. This sparse sample is an investigation lead, not an optimization justification. No raw stack/callgraph/payload capture is used. Kernel syscall tracepoints remain unavailable because tracefs access is denied even outside the sandbox; actual adapter counters provide syscall counts without claiming syscall latency. The independent 1ms-sleep coarse timer baseline retains 400 actual lateness samples; actual timerfd path lateness/bursts are recorded above, without substituting a coarse production pacing backend.
+
+The first profiler wrapper used overlapping stderr filenames; CPU perf data, process samples and final cumulative snapshots remained intact, but those logs cannot establish diagnostic coverage. Fixed future profiler log names are independent. A wrong concurrency CLI option halted the runner after completed experiments; the corrected resume validated and retained all 120 completed measurements, then performed the missing stages. The original invocation failure is not a passed stage.
+
+A separate 60-second, 32-session isolation/control run passes integrity and surviving-flow progress, with zero cross-delivery and zero reported diagnostic coverage loss. Session 0 is deliberately closed/recreated: its 98.25% forward/96.49% reverse one-second ratios are excluded by that scenario’s lifecycle rule and do not meet SC-009 if naively treated as continuously admitted. The other 31 flows have 100% one-second replies. This is a short control/fairness experiment, not 30-minute or saturation qualification.
+
+The prospective reference was collected **before T051**: revision `0301c9239e0bfcf2cf0238da69393dfd3bb60262` plus the recorded dirty-source hashes, executable `b45fe7e5fd68d95f225503be30169834312be3bd98bfb29e1ca3800904abf174`, manifest `b935bfa11571818cf1f0d4646621af828fdcb789084d3318a6effc7b9fc0a81d`, summary `f661d57dd399178f03651514c4846bb141bc7dcdeba7d05f59675e628c3d5a97`. It covers five pairs, 128-byte/1000pps, separate/simultaneous directions, two-second setup warmup and three-second measurement, 200ms drain. All 30 runs are valid. The immutable bound policy is `benchmarks/results/phase5-profile/comparison-policy.json`; the versioned numeric template is `benchmarks/policies/phase5-x86_64.json`.
+
+Every matched candidate run must satisfy the reference extrema plus two observed repeat spreads or predeclared measurement floors: two delivered messages/three seconds, 0.25ms RTT, 0.02 CPU cores and 256KiB RSS. Units, direction/role coverage and interpretation are explicit in the template; no averaging failures. This is a limited noise observation, not a confidence interval or permission to change SC targets. New workloads need independent prospective references. The exact generator/plaintext-relay executable is retained as `benchmarks/results/phase5-profile/reference-traffic` for comparisons after test-harness changes.
+
+Raw artifacts: `benchmarks/results/phase5-profile/`. Native x86_64 evidence only; ARM64 and final-revision complete numerical qualification remain pending T077.
+
+## Phase 5 implementation outcome and reference tooling
+
+No acceleration/default switch is selected. Functional profiling exposed two
+correctness failures: synchronous ENOBUFS from owned netem pressure closed a
+connection, and a request arriving before delayed client SETTINGS closed the
+server connection. Their original failures are preserved. The corrected owner
+discards only the unaccepted pressured FIFO front, preserves control recovery
+and admitted flows, and defers <=32 headers/16KiB under existing Session/setup
+budgets and the original five-second deadline until required capabilities are
+verified. Tests cover prefix preservation/no replay, cancellation, admission
+limits, no premature DNS/relay and unchanged setup expiry. Unknown/malformed UDP
+segment ancillary data is rejected while GRO is unimplemented. Auto reports
+effective off/not_implemented with no production capability probe.
+
+Batch 1/8/16/32/64 experiments are requested adapter ceilings; production owner
+receive is capped at 32 and per-connection outer submission at four selected
+packets. Requested batch 64 does not imply 64-packet outer syscalls. The perf
+attach window starts after role readiness and includes setup and the first
+measurement portion; its sparse IP samples are not a phase-aligned full-run
+profile. Initial plaintext profile snapshots accidentally discarded the return
+value of IoStats.merge and therefore count outer I/O only; production Remora
+counters were merged correctly. The final test-only baseline fixes that merge.
+Do not reinterpret archived partial baseline counters as all-socket syscall
+counts. CPU/RSS and end-to-end measurements are independent of this issue.
+
+`benchmarks/reference-x86_64.toml` and the schema-2 runner implement 18
+sustainable-rate searches, 185 paired repetitions covering capacity/subcapacity
+and resources, 1/32 sessions, 128/512/1200-byte payloads and every directional
+case. Mode order uses reproducible SplitMix64 decisions tied to the workload
+and seed; pair scheduling is shuffled with the recorded seed. Calibrate in 1%
+bottleneck steps, retain rejected/invalid rates, then require each baseline to
+confirm sustainability during the full 60s loaded warmup/300s measurement.
+Include 50% subcapacity loss/RTT, 500Mbit/s each-direction resource load and
+1000-cycle warmed-RSS churn. Native generator sequence tracking uses bounded
+bitmaps instead of the old million-entry HashSet limit; warmup has a separate
+sequence namespace and is not counted as measurement traffic.
+
+The plaintext two-leg harness uses the same adapter/batch/socket buffers,
+source/endpoint mapping, 32-flow limit, 32-packet/65536-byte application queues,
+64-packet/262144-byte outer queues and 20/100ms residence bounds. Pending bytes
+lease the same 8MiB application/4MiB wire pools with 2MiB receive scratch; no
+independent uncharged retained packet Vec queue. It sleeps only when idle;
+accepted prefixes and expired leases are native-tested. It is test-only and
+adds no second production package or executable.
+
+Each row is checked for generator submission/scheduling/headroom, corruption,
+clock, samples, collector gaps and source/executable identity before thresholds.
+Every applicable direction/pair independently enforces unchanged SC-003/004/005
+and SC-007 limits. Strict Rust tests and the separate frozen-policy Python
+comparator reject malformed/missing/duplicate workloads, mismatched units,
+boolean schema versions, missing references, bad seeds and invalid evidence.
+The runner records actual core placement, hardware/kernel/compiler/build/locks,
+qdisc/netdev features, requested/effective buffers and kernel UDP queue/drop
+charges separately from RSS; queue charges exclude total socket struct overhead.
+
+The initial development matrix executed all 18 short calibration cases and
+37 low-rate pairs, then caught a producer/validator owner-CPU schema mismatch.
+That original failure remains preserved. The corrected selected native check
+executes one-session forward and 32-session simultaneous capacity/subcapacity
+plus a resource-shaped smoke, validates its actual schema, and returns
+**invalid for release** for deliberately short intervals/incomplete searches,
+pairs/churn. No smoke is relabelled full numerical qualification. Complete
+full-duration/final-revision execution remains T077.
+
+## Phase 5 T055 comparison and development exception
+
+The original pre-T051 reference and strict policy remain immutable. The first
+candidate passes 24/30 strict comparisons; the final trust/0-corrected executable
+`bd9f20254da298ac43e7a46c8fdfccf58a4d59837b0f2d3fa3175f47694120f5` (before independent-review corrections) passes 25/30. All runs retain valid low-rate traffic/clock/integrity
+coverage, and every delivery/loss/RTT/RSS bound passes. Failures are exclusively
+CPU: final baseline simultaneous server owner/process in four pairs and one
+reverse tunnel pair's owner CPU. The unchanged retained baseline executable
+also exceeds its own reference bounds; this is evidence of reference/environment
+variability, not proof that a Remora code change caused all increases. No bound
+is changed and no failure averaged away. A strict no-regression pass is **not**
+asserted.
+
+The existing owner-authorized ADR-0007 development exception applies to this
+same one-session 128-byte/1000pps loopback profile: process/owner <=0.5 cores per
+role. The separate `benchmarks/policies/phase5-development.json` assessment
+applies that previously authorized ceiling, retaining **every other original
+Phase 5 bound**, and passes 30/30 saved final runs. It is explicitly retrospective
+development acceptance, not a prospective regression/noise proof, and changes
+no SC release criterion. This permits the checked incremental Phase 5 method/
+correctness work under the existing exception without selecting a speculative
+speed change. Retain the strict failures and collect a stable, separately
+referenced high-rate profile before any subsequent optimization.
+
+Artifacts: `benchmarks/results/refinement-x86_64/` and its `final-binary/`.
+Next release work: native complete five-pair reference matrix and 500Mbit/s/
+direction resources/churn on the final candidate (T077), sustained high-rate
+generator headroom, packet-owner capacity, complete diagnostic qualification
+and each claimed architecture. Current data does not establish SC-003/004/005/
+007 or ARM64 support.
+
+## Phase 5 independent-review corrections and comparison
+
+The owner-requested review found inconsistent delayed-ICMP send handling and
+three complete-method defects: one-hour namespace holders, offered-only SC-007
+acceptance and sampling exited workers. Corrected behavior and focused/native
+evidence are recorded in [phase5.md](validation/phase5.md). No throughput
+optimization or offload was selected. Required schema-2 per-session delivery
+counts are emitted by the producer and checked against aggregate counts.
+SC-007 requires actual >=500Mbit/s payload delivery in both directions on the
+matched sustainable baseline and tunnel, with all 32 Sessions carrying traffic.
+The producer provides <=0.1%-loss offered-load headroom without relaxing that
+delivered threshold. Namespace holders live until explicit teardown; expected
+post-measurement worker exit is recorded without fabricated zero samples.
+
+After correctness/static checks and independent Go interoperability, the
+corrected executable
+`c90e055f2b2d995c5a35a58cb700887b2fbfb53f9ce4ab6aca4d02865ba02611`
+was measured with the original retained plaintext/generator fixture, matching
+one-session/128-byte/1000pps settings, five pairs and all three directions. The
+first series overlapped a short validator test and is retained but excluded
+from performance evidence (`phase5-review-fixes-regression/evidence-note.json`).
+The separate clean series runs without competing builds/tests and retains all
+30 valid rows in `benchmarks/results/phase5-review-fixes-regression-clean/`.
+
+The unchanged pre-T051 policy yields **26/30 strict checks passed; overall FAIL**.
+All delivery/loss/RTT/RSS bounds pass. Failed owner-CPU checks are:
+
+| Run | Observed owner cores | Frozen maximum |
+| --- | --- | --- |
+| Baseline simultaneous server, pair 0 | 0.114943 | 0.111797 |
+| Baseline simultaneous server, pair 1 | 0.123330 | 0.111797 |
+| Baseline simultaneous server, pair 4 | 0.116558 | 0.111797 |
+| Tunnel reverse client, pair 2 | 0.138795 | 0.129372 |
+| Tunnel reverse server, pair 2 | 0.199729 | 0.194058 |
+
+The last two metrics belong to one failed run. No original bound, reference or
+failure is changed; this is not strict no-regression proof or evidence of the
+cause of reference/environment variability. A separately labelled saved-data
+assessment using the existing ADR-0007/Phase-5 development policy passes 30/30
+at the already authorized 0.5-core ceilings with every non-CPU bound unchanged.
+It remains retrospective development acceptance, not SC/release qualification.
+Full native-duration/resource/churn/platform acceptance remains T077.

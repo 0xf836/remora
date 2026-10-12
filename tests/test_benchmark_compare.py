@@ -71,6 +71,11 @@ class FrozenComparison(unittest.TestCase):
         change(value)
         path.write_text(json.dumps(value))
 
+    def test_boolean_schema_version_is_not_a_policy_version(self):
+        policy=copy.deepcopy(self.policy)
+        policy["schema_version"]=True
+        with self.assertRaises(ValueError):comparison.validate_policy(policy)
+
     def test_reference_identity_and_every_run(self):
         self.assertEqual(
             comparison.compare(self.reference, self.candidate, self.policy)["status"],

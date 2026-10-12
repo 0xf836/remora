@@ -1,0 +1,37 @@
+schema_version = 2
+coverage = "full-reference-methodology"
+architecture = "x86_64"
+topology = "two-leg"
+link_mbit_s_each_direction = 1000
+reference_rtt_ms = 20
+sessions = [1, 32]
+payload_bytes = [128, 512, 1200]
+directions = ["forward", "reverse", "simultaneous"]
+io = "mmsg"
+batch_max = 32
+cc = "cubic"
+gso_requested = "off"
+gro_requested = "off"
+diagnostics = "info"
+warmup_seconds = 60
+measurement_seconds = 300
+drain_ms = 2000
+paired_repetitions = 5
+pair_order_seed = 5053054
+# Calibration bracket is preliminary; every 300-second paired baseline must
+# independently confirm <=0.1% loss. No averaging or automatic relabelling.
+search_step_percent = 1
+search_warmup_seconds = 10
+search_measurement_seconds = 30
+search_max_steps = 100
+sustainable_loss_percent_max = 0.1
+subcapacity_fraction = 0.5
+resource_mbit_s_each_direction = 500
+resource_sessions = 32
+resource_payload_bytes = 1200
+churn_cycles = 1000
+churn_settle_seconds_max = 60
+generator_cpu_core_max_exclusive = 0.9
+# Four disjoint available logical cores per role; generator/endpoint use the
+# remaining cores. Record actual affinity and CPU/kernel/veth/offload inventory.
+role_cores = 4
