@@ -175,6 +175,12 @@ struct Native {
     stream: u64,
     _reservation: Reservation,
 }
+struct ClosedStream {
+    stream: u64,
+    expires: Instant,
+    _session: Option<Reservation>,
+    _identity: Option<Reservation>,
+}
 pub struct Connection {
     pub quic: quiche::Connection<TrackedFactory>,
     pub h3: Option<quiche::h3::Connection>,
@@ -187,6 +193,10 @@ pub struct Connection {
     native_expiry: Option<Instant>,
     received_expiry: Option<Instant>,
     next_sequence: u64,
+    writable_cursor: crate::session::FairCursor,
+    closing_remaining: usize,
+    closed_streams: VecDeque<ClosedStream>,
+    closed_limit: usize,
     application_residence: Duration,
     output_residence: Duration,
     application_max: usize,
@@ -194,6 +204,8 @@ pub struct Connection {
     started: Instant,
     setup_timeout: Duration,
     stopped: bool,
+    critical_streams: [Option<u64>; 3],
+    critical_failed: bool,
 }
 impl Connection {
     pub fn new(
@@ -218,6 +230,10 @@ impl Connection {
             native_expiry: None,
             received_expiry: None,
             next_sequence: 0,
+            writable_cursor: crate::session::FairCursor::default(),
+            closing_remaining: 0,
+            closed_streams: VecDeque::with_capacity(settings.limits().max_sessions_per_connection),
+            closed_limit: settings.limits().max_sessions_per_connection,
             application_residence: Duration::from_millis(
                 settings.limits().application_residence_ms,
             ),
@@ -227,6 +243,8 @@ impl Connection {
             started: now,
             setup_timeout: Duration::from_millis(settings.recovery().setup_timeout_ms),
             stopped: false,
+            critical_streams: [None; 3],
+            critical_failed: false,
         }
     }
     /// All incoming native messages share a conservative oldest receive epoch.
@@ -267,7 +285,7 @@ impl Connection {
         }
     }
     pub fn negotiate(&mut self) -> Result<bool, TransportError> {
-        if self.stopped {
+        if self.stopped || self.critical_failed {
             return Err(TransportError::Stopped);
         }
         if !self.quic.is_established() || self.quic.is_in_early_data() {
@@ -283,6 +301,18 @@ impl Connection {
                 quiche::h3::Connection::with_transport(&mut self.quic, &h3_config(self.server)?)
                     .map_err(|_| TransportError::Protocol)?,
             );
+            // Pinned quiche opens control, optional QPACK, then optional GREASE
+            // uni streams synchronously in with_transport. Remora opens no
+            // other local uni streams. Capture the existing unfinished streams
+            // through public QUIC state, excluding GREASE's already queued FIN.
+            // Do not infer that every uni stream (including GREASE) is critical.
+            let base = if self.server { 3 } else { 2 };
+            let mut critical = (0..4).map(|n| base + 4 * n).filter(|&id| {
+                !self.quic.stream_closed(id) && self.quic.stream_capacity(id).is_ok()
+            });
+            for slot in &mut self.critical_streams {
+                *slot = critical.next();
+            }
         }
         let h3 = self.h3.as_ref().ok_or(TransportError::Protocol)?;
         if h3.peer_settings_raw().is_none() {
@@ -306,11 +336,161 @@ impl Connection {
         self.draining = Some(id);
         Ok(())
     }
+    /// Observe stopped write sides even after the application Session retired.
+    /// quiche only collects a completed STOP_SENDING stream when its writable
+    /// notification is consumed through stream_capacity/send. H3 polls reads.
+    /// Visit four IDs at a time and finish a finite cycle before sleeping.
+    pub fn reap_stopped_streams(&mut self) -> (bool, [Option<(u64, u64)>; 2]) {
+        if self.critical_failed || self.stopped {
+            return (false, [None; 2]);
+        }
+        // Reserved checks cannot be delayed by a large request writable set.
+        // Observing capacity can collect a stopped uni stream; remember IDs
+        // at H3 creation so native absence remains a critical error too.
+        for id in self.critical_streams.into_iter().flatten() {
+            if matches!(
+                self.quic.stream_capacity(id),
+                Err(quiche::Error::StreamStopped(_) | quiche::Error::InvalidStreamState(_))
+            ) {
+                self.critical_failed = true;
+                // Connection failure discards unsent old ciphertext, unlike a
+                // scoped Session close, which preserves committed mixed output.
+                self.output.clear();
+                self.native.clear();
+                self.native_expiry = None;
+                self.quic.dgram_purge_outgoing(|_| true);
+                let _ = self.quic.close(true, 0x104, b"");
+                // Keep close-packet generation enabled. The owner cancels only
+                // this connection's sessions and skips further H3 work.
+                return (false, [None; 2]);
+            }
+        }
+        // Closing control work owns two reserved visits independently of active
+        // writable streams. FIFO rotation covers older IDs despite continual
+        // additions; a finite initial count prevents an ACK-wait busy spin.
+        if self.closing_remaining == 0 {
+            self.closing_remaining = self.closed_streams.len();
+        }
+        self.closing_remaining = self.closing_remaining.min(self.closed_streams.len());
+        let count = self.closing_remaining.min(2);
+        let mut ids: Vec<_> = self
+            .closed_streams
+            .iter()
+            .take(count)
+            .map(|s| s.stream)
+            .collect();
+        self.closed_streams.rotate_left(count);
+        self.closing_remaining -= count;
+        let writable: Vec<_> = self
+            .quic
+            .writable()
+            .filter(|id| !self.closed_streams.iter().any(|s| s.stream == *id))
+            .collect();
+        ids.extend(crate::session::round_robin(
+            writable.clone(),
+            &mut self.writable_cursor,
+            2,
+        ));
+        let mut collected = Vec::with_capacity(4);
+        let mut stopped = [None; 2];
+        let mut notifications = 0;
+        for id in ids {
+            let closing = self.closed_streams.iter().any(|s| s.stream == id);
+            let capacity = self.quic.stream_capacity(id);
+            if let Err(quiche::Error::StreamStopped(code)) = capacity
+                && !closing
+            {
+                stopped[notifications] = Some((id, code));
+                notifications += 1;
+            }
+            if matches!(
+                capacity,
+                Err(quiche::Error::StreamStopped(_) | quiche::Error::InvalidStreamState(_))
+            ) && closing
+                && let Some(h3) = self.h3.as_mut()
+            {
+                // Only the stopped/error paths can remove completed H3 state.
+                // Both calls fail before enqueueing bytes on this write side.
+                let _ = h3.send_body(&mut self.quic, id, &[], true);
+                if self.server {
+                    let _ =
+                        h3.send_response(&mut self.quic, id, &masque::response_headers(503), true);
+                }
+            }
+            // stream_closed only means FIN is signalled, not ACK/collection.
+            // Keep the ID and its permits until the native entry is absent,
+            // including one final H3 error-path visit after ACK collection.
+            if matches!(
+                self.quic.stream_capacity(id),
+                Err(quiche::Error::InvalidStreamState(_))
+            ) {
+                collected.push(id);
+            }
+        }
+        self.closed_streams
+            .retain(|s| !collected.contains(&s.stream));
+        self.closing_remaining = self.closing_remaining.min(self.closed_streams.len());
+        (
+            // Ordinary live writability is not pending control work. Requesting
+            // another owner turn for it can perpetually restart a cyclic visit.
+            // A new STOP and a finite closing cycle do require continuation.
+            self.closing_remaining > 0 || notifications > 0,
+            stopped,
+        )
+    }
+    pub fn cleanup_count(&self) -> usize {
+        self.closed_streams.len()
+    }
+    /// Retain only bounded control metadata/permits after relay/payload release.
+    /// Peer omission cannot retain it beyond 60s; a genuinely stalled native
+    /// control association fails its connection, never reassigns old payload.
+    pub(crate) fn retain_cleanup(
+        &mut self,
+        stream: u64,
+        session: Option<Reservation>,
+        identity: Option<Reservation>,
+    ) {
+        if self.stopped {
+            return;
+        }
+        if let Some(closed) = self.closed_streams.iter_mut().find(|s| s.stream == stream) {
+            if session.is_some() {
+                closed._session = session;
+                closed._identity = identity;
+            }
+            return;
+        }
+        if self.closed_streams.len() == self.closed_limit {
+            self.stop();
+            return;
+        }
+        self.closed_streams.push_back(ClosedStream {
+            stream,
+            expires: Instant::now() + Duration::from_secs(60),
+            _session: session,
+            _identity: identity,
+        });
+        // Even a natively collected stream needs one final public H3 error-path
+        // visit to release its metadata. Do not silently omit that cleanup.
+    }
+    /// Retained transport queue ownership, separate from application slabs.
+    pub fn resource_usage(&self) -> (usize, usize, usize) {
+        (
+            self.native_budget.used().bytes,
+            self.quic.dgram_recv_queue_byte_size(),
+            self.output.capacity() * std::mem::size_of::<Ciphertext>()
+                + self.native.capacity() * std::mem::size_of::<Native>()
+                + self.closed_streams.capacity() * std::mem::size_of::<ClosedStream>(),
+        )
+    }
     pub fn is_stopped(&self) -> bool {
         self.stopped
     }
+    pub(crate) fn critical_failed(&self) -> bool {
+        self.critical_failed
+    }
     pub fn may_open(&self) -> bool {
-        !self.stopped && self.draining.is_none()
+        !self.stopped && !self.critical_failed && self.draining.is_none()
     }
     pub fn allowed_stream(&self, id: u64) -> bool {
         self.server || self.draining.is_none_or(|cutoff| id < cutoff)
@@ -331,6 +511,7 @@ impl Connection {
         scratch: &mut [u8],
     ) -> Result<(), TransportError> {
         if self.stopped
+            || self.critical_failed
             || !self.allowed_stream(stream)
             || self.quic.stream_capacity(stream).is_err()
         {
@@ -371,16 +552,27 @@ impl Connection {
         }
     }
     pub fn close_stream(&mut self, stream: u64, code: u64) {
+        self.retain_cleanup(stream, None, None);
         self.purge_stream_datagrams(stream);
         let _ = self
             .quic
             .stream_shutdown(stream, quiche::Shutdown::Read, code);
+        // Mark H3's local side finished using its public API before reset.
+        // Any newly queued empty FIN is immediately discarded by Write shutdown
+        // below, before packet generation under exclusive ownership. This keeps
+        // H3 from retaining closed entries when the peer's RESET is polled.
+        if let Some(h3) = self.h3.as_mut() {
+            let _ = h3.send_body(&mut self.quic, stream, &[], true);
+        }
         let _ = self
             .quic
             .stream_shutdown(stream, quiche::Shutdown::Write, code);
         // Immutable already-generated mixed ciphertext deliberately survives.
     }
     pub fn expire_native(&mut self, now: Instant) -> usize {
+        if self.closed_streams.iter().any(|s| s.expires <= now) {
+            self.stop();
+        }
         if self.native_expiry.is_some_and(|at| at <= now) {
             let count = self.quic.dgram_send_queue_len();
             self.quic.dgram_purge_outgoing(|_| true);
@@ -394,6 +586,7 @@ impl Connection {
     pub fn stop(&mut self) {
         self.stopped = true;
         self.output.clear();
+        self.closed_streams.clear();
         self.native.clear();
         self.native_expiry = None;
         self.quic.dgram_purge_outgoing(|_| true);
@@ -403,6 +596,7 @@ impl Connection {
         [
             self.quic.timeout_instant(),
             self.native_expiry,
+            self.closed_streams.iter().map(|s| s.expires).min(),
             self.received_expiry,
             self.output.front().map(|p| p.expires_at()),
             self.output.front().map(|p| p.at()).filter(|at| *at > now),

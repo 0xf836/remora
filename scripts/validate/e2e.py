@@ -4,17 +4,43 @@ from pathlib import Path
 from benchmark import Owned, ROOT, wait_udp_bound
 
 p = argparse.ArgumentParser()
-p.add_argument("--fixtures", required=True)
+p.add_argument("--fixtures")
+p.add_argument("--output")
+p.add_argument("--seconds", type=int)
+p.add_argument("--cycles", type=int, default=1000)
+p.add_argument(
+    "--suite", choices=["isolation", "overload", "churn"], default="isolation"
+)
 p.add_argument(
     "--scenario",
     choices=["smoke", "security", "shutdown", "concurrency", "recovery"],
     default="smoke",
 )
 a = p.parse_args()
+if a.scenario == "concurrency":
+    if not a.output:
+        p.error("concurrency requires a fresh --output directory")
+    import sys
+
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/validate/concurrency.py"),
+        "--scenario",
+        a.suite,
+        "--output",
+        a.output,
+        "--cycles",
+        str(a.cycles),
+    ]
+    if a.seconds is not None:
+        command += ["--seconds", str(a.seconds)]
+    raise SystemExit(subprocess.run(command, cwd=ROOT).returncode)
+if not a.fixtures:
+    p.error("this scenario requires --fixtures")
 f = Path(a.fixtures).resolve()
 client = tomllib.loads((f / "client.toml").read_text())["client"]
 server = tomllib.loads((f / "server.toml").read_text())["server"]
-if a.scenario in ["concurrency", "recovery"]:
+if a.scenario == "recovery":
     raise SystemExit(
         "full concurrency/recovery qualification belongs to later phases; no pass recorded"
     )

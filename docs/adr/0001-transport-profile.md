@@ -52,3 +52,20 @@ The [wire contract](../../specs/001-masque-udp-tunnel/contracts/masque-wire.md) 
 Remora owns a small audited framing/lifecycle layer and conformance tests. No claim that standard valid DATAGRAM capsules are malformed. No early data, private fragmentation, alternative protocols or reliable payload fallback. Configuration and compatibility changes require explicit version/migration documentation. Independent quic-go/masque-go verification covers both roles.
 
 Evidence: [research](../../specs/001-masque-udp-tunnel/research.md), [wire contract](../../specs/001-masque-udp-tunnel/contracts/masque-wire.md), [RFC 9298](https://www.rfc-editor.org/rfc/rfc9298.html), [RFC 9297](https://www.rfc-editor.org/rfc/rfc9297.html), [quiche H3 API](https://docs.rs/quiche/0.30.0/quiche/h3/struct.Connection.html).
+
+## Phase 4 controlled UDP reuse characterization
+
+The native test closes an old UDP endpoint, binds its exact local tuple again,
+connects to the same authorized target, and sends a delayed reply from that
+target. Linux delivers the reply to the new socket: its opaque payload has no
+process/session-generation field. A same-tuple application restart while its
+Remora mapping remains active has the same information limit. Wrong-source
+packets to the connected socket are filtered. This is a characterization of
+external provenance, not a cross-client isolation pass or a quarantine promise.
+
+Owner tests separately close a stream with queued native data, create another
+association and inject the old stream's DATAGRAM and setup callback. No relay
+or queue is reassigned; known stale data is discarded and permits stay exact.
+The 32-flow runner validates distinct live associations, expiry/recreation and
+churn; a tuple observed from a previously expired association is not classified
+as simultaneously active merely because the test retained its historical value.

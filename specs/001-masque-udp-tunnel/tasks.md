@@ -112,15 +112,50 @@ incremental gate. No Phase 4+ or release checklist is advanced by these fixes. T
 
 ### Implementation and required verification
 
-- [ ] T039 [US2] Complete concurrent session/identity/connection/setup/relay-FD admission and generation-safe cleanup in `src/session.rs`, `src/policy.rs` and `src/buffers.rs` after T034: count pending/active/cleanup against global limits, preserve one connected target socket per accepted stream and all quoted model relationships, reject newest arrivals on full queues and release closed associations without quarantine or retained payload reassignment; retain the fixed mapping rejection latch while accepted unrelated flows continue.
-- [ ] T040 [US2] Extend scheduling/admission integration in `src/reactor.rs` and `src/transport.rs` after T039 for per-session deficit/round-robin progress before the small shared native queue, bounded connections/source buckets and setup work, reserved control servicing and per-connection output FIFO; rotate body/Capsule servicing across all pending streams instead of repeatedly selecting the first four HashMap entries, and test at least five continuously pending streams for bounded progress without starving the fifth, alongside timer/cancellation/control progress; a session fault must not close unrelated streams, while genuine shared-connection failure affects only that connection's flows.
-- [ ] T041 [US2] Complete application-idle expiry in `src/session.rs` and `src/reactor.rs` after T040 (R4): 120000 ms of valid UDP activity in either direction, keepalives excluded, joint stream/socket close and bounded closed-resource reclamation distinct from idle retention; validate positive finite overrides and document shorter values as RFC SHOULD deviations with operational rationale.
-- [ ] T042 [P] [US2] Add lifecycle/property/component tests in `tests/lifecycle/sessions.rs` after T041 for admission/debit/credit invariants, source/stream/connection generation uniqueness, duplicate/stale events, cancellation during DNS/cleanup, mapping latch surviving source churn and reconnect, sparse UDP activity inside two minutes, keepalive-only expiry, unrelated flow progress and joint stream/socket release.
-- [ ] T043 [P] [US2] Add 32-session process isolation cases in `tests/e2e/concurrency.rs` after T041, wired to the existing concurrency runner: multiple processes/listener senders/credentials, identical and distinct destinations, both directions, reset/closure/individual overload and recreated flows; verify tagged byte equality and zero cross-delivery across live associations.
-- [ ] T044 [P] [US2] Add controllable old-reply/stale-work cases in `tests/lifecycle/udp_reuse.rs` after T041 and document observed reuse behavior in `docs/adr/0001-transport-profile.md`: assert rejection of identifiable old queued responses/callbacks/closed-stream data, separately characterize indistinguishable authorized replies after tuple reuse/restart and same-tuple application restart, and never assert impossible unconditional external provenance or a 30-second quarantine guarantee (A1).
-- [ ] T045 [P] [US2] Add admission/queue/malformed-input saturation and low-rate probe scenarios in `tests/e2e/overload.rs` after T041: 128-byte probes at one request/s/session, 10-minute budget saturation, finite diagnostics/FD/setup/queue state and >=99% responses within 1 second for each admitted probe under the responsive reference path, preserving exact failures and excluding external link exhaustion from the claim.
-- [ ] T046 [P] [US2] Add 1000-cycle session churn and reclamation accounting in `tests/e2e/churn.rs` after T041: retained slab/native/control/diagnostic capacities and kernel socket memory recorded separately, bounded cleanup interval <=60 seconds, stable counts and no leaked FDs/listeners; report RSS against the warmed baseline and unchanged <=10 MiB release criterion rather than hiding retained capacity.
-- [ ] T047 [US2] Run the US2 isolation/overload/churn suites and 30-minute isolation scenario through `scripts/validate/e2e.sh`, preserving revision/config/counters/outcomes in `docs/validation/concurrency.md` after T042–T046; investigate any unauthorized/cross-delivered traffic or unbounded growth before accepting the increment, compare affected implemented workloads against their frozen pre-change regression reference, and feed owner/control/fairness bottlenecks and regression outcomes into the existing performance record.
+- [X] T039 [US2] Complete concurrent session/identity/connection/setup/relay-FD admission and generation-safe cleanup in `src/session.rs`, `src/policy.rs` and `src/buffers.rs` after T034: count pending/active/cleanup against global limits, preserve one connected target socket per accepted stream and all quoted model relationships, reject newest arrivals on full queues and release closed associations without quarantine or retained payload reassignment; retain the fixed mapping rejection latch while accepted unrelated flows continue.
+- [X] T040 [US2] Extend scheduling/admission integration in `src/reactor.rs` and `src/transport.rs` after T039 for per-session deficit/round-robin progress before the small shared native queue, bounded connections/source buckets and setup work, reserved control servicing and per-connection output FIFO; rotate body/Capsule servicing across all pending streams instead of repeatedly selecting the first four HashMap entries, and test at least five continuously pending streams for bounded progress without starving the fifth, alongside timer/cancellation/control progress; a session fault must not close unrelated streams, while genuine shared-connection failure affects only that connection's flows.
+- [X] T041 [US2] Complete application-idle expiry in `src/session.rs` and `src/reactor.rs` after T040 (R4): 120000 ms of valid UDP activity in either direction, keepalives excluded, joint stream/socket close and bounded closed-resource reclamation distinct from idle retention; validate positive finite overrides and document shorter values as RFC SHOULD deviations with operational rationale.
+- [X] T042 [P] [US2] Add lifecycle/property/component tests in `tests/lifecycle/sessions.rs` after T041 for admission/debit/credit invariants, source/stream/connection generation uniqueness, duplicate/stale events, cancellation during DNS/cleanup, mapping latch surviving source churn and reconnect, sparse UDP activity inside two minutes, keepalive-only expiry, unrelated flow progress and joint stream/socket release.
+- [X] T043 [P] [US2] Add 32-session process isolation cases in `tests/e2e/concurrency.rs` after T041, wired to the existing concurrency runner: multiple processes/listener senders/credentials, identical and distinct destinations, both directions, reset/closure/individual overload and recreated flows; verify tagged byte equality and zero cross-delivery across live associations.
+- [X] T044 [P] [US2] Add controllable old-reply/stale-work cases in `tests/lifecycle/udp_reuse.rs` after T041 and document observed reuse behavior in `docs/adr/0001-transport-profile.md`: assert rejection of identifiable old queued responses/callbacks/closed-stream data, separately characterize indistinguishable authorized replies after tuple reuse/restart and same-tuple application restart, and never assert impossible unconditional external provenance or a 30-second quarantine guarantee (A1).
+- [X] T045 [P] [US2] Add admission/queue/malformed-input saturation and low-rate probe scenarios in `tests/e2e/overload.rs` after T041: 128-byte probes at one request/s/session, 10-minute budget saturation, finite diagnostics/FD/setup/queue state and >=99% responses within 1 second for each admitted probe under the responsive reference path, preserving exact failures and excluding external link exhaustion from the claim.
+- [X] T046 [P] [US2] Add 1000-cycle session churn and reclamation accounting in `tests/e2e/churn.rs` after T041: retained slab/native/control/diagnostic capacities and kernel socket memory recorded separately, bounded cleanup interval <=60 seconds, stable counts and no leaked FDs/listeners; report RSS against the warmed baseline and unchanged <=10 MiB release criterion rather than hiding retained capacity.
+- [X] T047 [US2] Run the US2 isolation/overload/churn suites and 30-minute isolation scenario through `scripts/validate/e2e.sh`, preserving revision/config/counters/outcomes in `docs/validation/concurrency.md` after T042–T046; investigate any unauthorized/cross-delivered traffic or unbounded growth before accepting the increment, compare affected implemented workloads against their frozen pre-change regression reference, and feed owner/control/fairness bottlenecks and regression outcomes into the existing performance record.
+
+**Phase 4 execution evidence before independent review corrections (2026-10-12)**: T039–T047 are complete for their US2 increment;
+see [concurrency validation](../../docs/validation/concurrency.md),
+[ADR-0008](../../docs/adr/0008-concurrent-admission-and-fair-service.md) and
+[performance](../../docs/performance.md). The final native x86_64 binary passes
+1800-second/32-session isolation with zero cross-delivery/integrity errors,
+600-second configured-budget saturation with worst per-flow timely forward
+progress 598/600 and reverse 600/600, and 1000-cycle churn with cleanup in
+0.4904 seconds and maximum warmed RSS growth 0.1641 MiB. Release build,
+formatting, Clippy and 114 verified Rust tests (113 full-suite plus one added
+targeted regression), 28 Python tests and 29 separately run independent Go
+peer cases pass. The unchanged prospective development comparison passes 12/12.
+Original churn, premature FIN cleanup and writable-continuation failures remain
+recorded; corrected native collection and bounded control service are regression
+tested, with a separate allocator investigation. Diagnostic overflow under
+hostile saturation remains an explicit coverage gap, not SC-010 correlation
+qualification. No later phase or requirements-quality checklist is advanced;
+native ARM64 and full release qualification remain pending their later tasks.
+
+**Phase 4 independent review corrections (2026-10-12)**: The requested read-only
+audit confirmed the recorded T047 outcomes and reported two P2 issues. T040 now
+handles local control/QPACK STOP as H3_CLOSED_CRITICAL_STREAM at connection scope,
+retains close generation, and services commitment/active-capacity work with
+independent four-Session cursors and progress-only continuation. ADR-0006/0008
+remove the unsupported 32-native-operation/256-operation guarantee and state
+per-class selected-item bounds. Regression tests reproduce both findings before
+their fixes; the hostile-peer test covers all three critical streams in both
+roles and owner integration checks actual unaffected-connection UDP delivery.
+The final full Rust suite passes 117 tests with one separate independent-peer
+case; [the concurrency record](../../docs/validation/concurrency.md) distinguishes
+new checks from the original duration/allocator qualification tied to its binary.
+The final correction binary passes 12/12 unchanged development comparisons,
+29/29 independent peer cases, a 60-second/32-session isolation smoke and 1000
+churn cycles (cleanup 0.6757 seconds, max warmed RSS growth 0.1680 MiB).
+No additional phase/checklist is advanced and no commit/publication is performed.
 
 **Checkpoint**: US2's active/stale association guarantees and resource invariants are checked; external UDP provenance limits remain explicit. US2 needs the MVP checkpoint, not independent-peer or WireGuard tool availability.
 

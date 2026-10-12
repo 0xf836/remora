@@ -54,8 +54,13 @@ new connection. Final HTTP rejection headers/FIN retain their connection-owned
 STREAM buffers while the rejected session and cancellable datagrams retire;
 ordinary abort cleanup must not cancel that queued refusal.
 
-Rotate finite socket/connection/session visits (at most 32 operations each,
-256 packet/control operations before timer and cancellation checks). Setup
+Rotate finite socket/connection/session visits, with at most eight owner visits
+before timer and cancellation checks. Socket batches select at most 32 packets;
+connection work uses the per-class item quotas clarified in
+[ADR-0008](0008-concurrent-admission-and-fair-service.md). The earlier statement
+of 32 operations per visit / 256 packet/control operations did not account for
+all Session checks and is superseded; neither metadata enumeration nor internal
+quiche work is a fixed API-call/instruction budget. Setup
 futures are polled in slices of at most 32 after cancellation checks, with
 explicit continuation to register every waker. Native H3/datagram work and
 successful relay reads request continuation even when a socket batch was short.

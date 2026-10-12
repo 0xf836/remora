@@ -211,7 +211,30 @@ pub struct SocketBuffers {
     pub application_send_max_per_socket: usize,
 }
 #[derive(Default, Clone, Copy, Serialize)]
+pub struct Resources {
+    pub connections: usize,
+    pub sessions: usize,
+    pub setup: usize,
+    pub relay_fds: usize,
+    pub fd_reservations: usize,
+    pub connections_peak: usize,
+    pub sessions_peak: usize,
+    pub setup_peak: usize,
+    pub relay_fds_peak: usize,
+    pub queued_packets: usize,
+    pub queued_bytes: usize,
+    pub application_retained_bytes: usize,
+    pub ciphertext_retained_bytes: usize,
+    pub scratch_retained_bytes: usize,
+    pub queue_metadata_bytes: usize,
+    pub pool_metadata_bytes: usize,
+    pub native_send_bytes: usize,
+    pub native_receive_bytes: usize,
+    pub control_output_capacity_bytes: usize,
+}
+#[derive(Default, Clone, Copy, Serialize)]
 pub struct Snapshot {
+    pub resources: Resources,
     pub sessions_active: u64,
     pub connections_active: u64,
     pub counters: Counters,

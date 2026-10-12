@@ -439,6 +439,13 @@ impl ResourceBudgets {
             fds: Budget::new(fd_limit, 0),
         }
     }
+    /// Configured identities own independent pending+active permits. The finite
+    /// vector is startup-only; network identity strings never allocate a ledger.
+    pub fn identity_budgets(limits: &Limits, identities: usize) -> Vec<Budget> {
+        (0..identities)
+            .map(|_| Budget::new(limits.max_sessions_per_identity, 0))
+            .collect()
+    }
     /// A separate two-direction DATAGRAM budget for each admitted connection.
     pub fn native_datagrams(limits: &Limits) -> Result<NativeDatagrams, BudgetError> {
         Ok(NativeDatagrams {

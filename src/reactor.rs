@@ -1,11 +1,11 @@
 //! One current-thread owner. Finite visits precede timer/cancellation work.
 use crate::{
-    buffers::{Direction, Generations, Pools, ResourceBudgets, SessionQueue},
+    buffers::{Budget, Direction, Generations, Pools, ResourceBudgets, SessionQueue},
     config::{RoleConfig, ValidatedConfig},
     diagnostics::{Diagnostics, Event, Failure, Role, Snapshot},
     masque::{self, CapsuleParser, Response, WireError},
     policy::{self, PolicyError, SetupKey, SystemResolver},
-    session::{MappingLatch, PollSocket, Session, State},
+    session::{FairCursor, MappingLatch, PollSocket, Session, State, round_robin},
     transport::{self, Connection, TrackedFactory, TransportError},
     udp::{MonotonicTimer, ReceiveFault, SendPacket, Udp},
 };
@@ -35,6 +35,7 @@ struct OwnedConnection {
     _permit: crate::buffers::Reservation,
     id: crate::diagnostics::OpaqueId,
     initial_cid: Vec<u8>,
+    cursors: [FairCursor; 6],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -74,6 +75,7 @@ struct Runner<'a> {
     resolver: &'a SystemResolver,
     generations: Generations,
     budgets: ResourceBudgets,
+    identities: Vec<Budget>,
     pools: Pools,
     diagnostics: Diagnostics,
     snapshot: Snapshot,
@@ -196,6 +198,12 @@ impl<'a> Runner<'a> {
             resolver,
             generations: Generations::default(),
             budgets: ResourceBudgets::new(cfg.limits(), cfg.required_fds()),
+            identities: match cfg.role() {
+                RoleConfig::Server(server) => {
+                    ResourceBudgets::identity_budgets(cfg.limits(), server.identities.len())
+                }
+                RoleConfig::Client(_) => Vec::new(),
+            },
             pools,
             diagnostics,
             snapshot: Snapshot::default(),
@@ -270,6 +278,7 @@ impl<'a> Runner<'a> {
                     _permit: permit,
                     id,
                     initial_cid: cid.to_vec(),
+                    cursors: [FairCursor::default(); 6],
                 },
             );
         }
@@ -323,6 +332,23 @@ impl<'a> Runner<'a> {
         event.connection_id = connection;
         let _ = self.diagnostics.event(Instant::now(), event);
     }
+    // A denied new request has no admitted session ID. Do not turn this into
+    // a shared-connection failure and misattribute it to accepted streams.
+    fn request_failure(
+        &mut self,
+        reason: Failure,
+        code: u64,
+        session: Option<crate::diagnostics::OpaqueId>,
+        connection: Option<crate::diagnostics::OpaqueId>,
+    ) {
+        let _ = self
+            .diagnostics
+            .failure(Instant::now(), connection, session, reason, code, false);
+        let mut event = Event::failure(crate::config::Level::Warn, reason, code);
+        event.session_id = session;
+        event.connection_id = connection;
+        let _ = self.diagnostics.event(Instant::now(), event);
+    }
     fn close_session(&mut self, generation: u64, code: u64) {
         self.retire_session(generation, code, true);
     }
@@ -340,12 +366,16 @@ impl<'a> Runner<'a> {
             }
             let _ = self.diagnostics.finish_session(s.id);
             s.state = State::Closed;
-            if let (Some(sender), Some(local)) = (s.sender, s.sender_local) {
+            if let (Some(sender), Some(local)) = (s.sender, s.sender_local)
+                && self.senders.get(&(sender, local)) == Some(&generation)
+            {
                 self.senders.remove(&(sender, local));
             }
             if let Some(c) = self.connections.get_mut(&s.connection.0)
                 && s.stream != u64::MAX
             {
+                c.transport
+                    .retain_cleanup(s.stream, Some(s._session), s._identity.take());
                 if abort_write {
                     c.transport.close_stream(s.stream, code);
                 } else {
@@ -368,12 +398,13 @@ impl<'a> Runner<'a> {
                     )
                     .is_ok();
             }
+            c.transport.retain_cleanup(stream, None, None);
             let _ = c
                 .transport
                 .quic
                 .stream_shutdown(stream, quiche::Shutdown::Read, 0x10b);
         }
-        self.failure(
+        self.request_failure(
             match status {
                 401 => Failure::Authentication,
                 403 | 404 => Failure::Authorization,
@@ -407,11 +438,22 @@ impl<'a> Runner<'a> {
         sender: Option<(SocketAddr, SocketAddr)>,
         now: Instant,
     ) -> Result<u64, RuntimeError> {
+        if self.stopping
+            || !self.connections.contains_key(&connection)
+            || sender.is_some_and(|tuple| self.senders.contains_key(&tuple))
+            || (stream != u64::MAX && self.lookup(connection, stream).is_some())
+        {
+            return Err(RuntimeError::Resource);
+        }
         if self
             .sessions
             .values()
             .filter(|s| s.connection.0 == connection)
             .count()
+            + self
+                .connections
+                .get(&connection)
+                .map_or(0, |c| c.transport.cleanup_count())
             >= self.cfg.limits().max_sessions_per_connection
         {
             return Err(RuntimeError::Resource);
@@ -450,6 +492,7 @@ impl<'a> Runner<'a> {
                 capsules: CapsuleParser::default(),
                 body_pending: false,
                 capsule_counts: crate::masque::CapsuleCounts::default(),
+                _identity: None,
                 _session: session,
                 _setup: Some(setup),
                 _relay: None,
@@ -597,6 +640,7 @@ impl<'a> Runner<'a> {
                     _permit: permit,
                     id,
                     initial_cid: header.dcid.as_ref().to_vec(),
+                    cursors: [FairCursor::default(); 6],
                 },
             );
             generation.0
@@ -789,34 +833,7 @@ impl<'a> Runner<'a> {
                         )?;
                         continue;
                     }
-                    let connection = s.connection.0;
-                    let stream = s.stream;
-                    let mut scratch = resource(self.pools.scratch.acquire())?;
-                    let result = self
-                        .connections
-                        .get_mut(&connection)
-                        .ok_or(RuntimeError::Transport)?
-                        .transport
-                        .enqueue(
-                            stream,
-                            &slabs[p.index].bytes()[..p.length],
-                            now,
-                            now,
-                            scratch.bytes_mut(),
-                        );
-                    if result.is_ok() {
-                        if let Some(s) = self.sessions.get_mut(&id) {
-                            s.activity = now;
-                        }
-                        self.snapshot.counters.quic_dgram_enqueued = self
-                            .snapshot
-                            .counters
-                            .quic_dgram_enqueued
-                            .checked_add(1)
-                            .ok_or(RuntimeError::Diagnostics)?;
-                    } else if let Err(error) = result {
-                        self.drop_packet(native_drop(error), Direction::ToTarget)?;
-                    }
+                    self.queue_outgoing(id, &slabs[p.index].bytes()[..p.length], now)?;
                 }
                 Ok(n > 0)
             }
@@ -841,10 +858,8 @@ impl<'a> Runner<'a> {
             let RoleConfig::Server(server) = self.cfg.role() else {
                 return Err(RuntimeError::Transport);
             };
-            if self.lookup(connection, stream).is_some() {
-                if let Some(c) = self.connections.get_mut(&connection) {
-                    c.transport.close_stream(stream, masque::H3_MESSAGE_ERROR);
-                }
+            if let Some(id) = self.lookup(connection, stream) {
+                self.close_session(id, masque::H3_MESSAGE_ERROR);
                 return Ok(());
             }
             let request = match masque::request(&list, &server.proxy_authority, &server.path_prefix)
@@ -872,6 +887,19 @@ impl<'a> Runner<'a> {
                     return Ok(());
                 }
             };
+            let identity = match policy::authenticate(&server.identities, &request.token) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    self.reject(connection, stream, 401);
+                    self.close_session(id, 0x10b);
+                    return Ok(());
+                }
+            };
+            if self.bind_identity(id, identity).is_err() {
+                self.reject(connection, stream, 503);
+                self.close_session(id, 0x10b);
+                return Ok(());
+            }
             let key = SetupKey {
                 connection: crate::buffers::Generation(connection),
                 session: crate::buffers::Generation(id),
@@ -883,9 +911,8 @@ impl<'a> Runner<'a> {
                 session: id,
                 key,
                 future: Box::pin(async move {
-                    policy::prepare(
-                        identities,
-                        &request.token,
+                    policy::prepare_authenticated(
+                        &identities[identity],
                         &request.host,
                         request.port,
                         resolver,
@@ -893,6 +920,7 @@ impl<'a> Runner<'a> {
                         timeout,
                     )
                     .await
+                    .map(|target| (identity, target))
                 }),
             });
         } else if let Some(id) = self.lookup(connection, stream) {
@@ -904,7 +932,7 @@ impl<'a> Runner<'a> {
                         if s.state == State::AwaitingAcceptance {
                             self.ever_active = true;
                             s.state = State::Active;
-                            s.activity = now;
+                            s.udp_activity(now);
                             s._setup = None;
                         } else {
                             self.close_session(id, masque::H3_MESSAGE_ERROR);
@@ -943,6 +971,25 @@ impl<'a> Runner<'a> {
         }
         Ok(())
     }
+    fn bind_identity(&mut self, id: u64, identity: usize) -> Result<(), RuntimeError> {
+        let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Resource)?;
+        if let Some(previous) = s.identity {
+            return if previous == identity {
+                Ok(())
+            } else {
+                Err(RuntimeError::Resource)
+            };
+        }
+        let permit = resource(
+            self.identities
+                .get(identity)
+                .ok_or(RuntimeError::Resource)?
+                .reserve(1, 0),
+        )?;
+        s.identity = Some(identity);
+        s._identity = Some(permit);
+        Ok(())
+    }
     fn setup_done(
         &mut self,
         id: u64,
@@ -953,7 +1000,10 @@ impl<'a> Runner<'a> {
         let Some(s) = self.sessions.get(&id) else {
             return Ok(());
         };
-        if s.generation != key.session || s.connection != key.connection {
+        if s.generation != key.session
+            || s.connection != key.connection
+            || s.state != State::Authorizing
+        {
             return Ok(());
         }
         let connection = s.connection.0;
@@ -981,20 +1031,14 @@ impl<'a> Runner<'a> {
                 return Ok(());
             }
         };
-        if self
-            .sessions
-            .values()
-            .filter(|s| s.identity == Some(identity))
-            .count()
-            >= self.cfg.limits().max_sessions_per_identity
-        {
+        if self.bind_identity(id, identity).is_err() {
             self.reject(connection, stream, 503);
             self.close_session(id, 0x10b);
             return Ok(());
         }
-        let address = target
-            .for_current(key)
-            .map_err(|_| RuntimeError::Transport)?;
+        let Ok(address) = target.for_current(key) else {
+            return Ok(());
+        };
         let relay = match self.budgets.relay_fds.reserve(1, 0) {
             Ok(r) => r,
             Err(_) => {
@@ -1003,7 +1047,14 @@ impl<'a> Runner<'a> {
                 return Ok(());
             }
         };
-        let fd = resource(self.budgets.fds.reserve(1, 0))?;
+        let fd = match self.budgets.fds.reserve(1, 0) {
+            Ok(fd) => fd,
+            Err(_) => {
+                self.reject(connection, stream, 503);
+                self.close_session(id, 0x10b);
+                return Ok(());
+            }
+        };
         let bind = if address.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -1050,7 +1101,14 @@ impl<'a> Runner<'a> {
             .socket_buffers
             .application_send_max_per_socket
             .max(socket.send_buffer);
-        let socket = PollSocket::register(socket).map_err(|_| RuntimeError::Socket)?;
+        let socket = match PollSocket::register(socket) {
+            Ok(socket) => socket,
+            Err(_) => {
+                self.reject(connection, stream, 502);
+                self.close_session(id, 0x10b);
+                return Ok(());
+            }
+        };
         let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
         s.identity = Some(identity);
         s.relay = Some(socket);
@@ -1058,7 +1116,7 @@ impl<'a> Runner<'a> {
         s._relay = Some(relay);
         s._fd = Some(fd);
         s.state = State::AwaitingCommitment;
-        s.activity = now;
+        s.udp_activity(now);
         let c = self
             .connections
             .get_mut(&connection)
@@ -1111,7 +1169,132 @@ impl<'a> Runner<'a> {
             Err(_) => Err(RuntimeError::Transport),
         }
     }
+    fn queue_outgoing(&mut self, id: u64, bytes: &[u8], now: Instant) -> Result<(), RuntimeError> {
+        let direction = if self.server {
+            Direction::ToClient
+        } else {
+            Direction::ToTarget
+        };
+        let Some(s) = self.sessions.get_mut(&id) else {
+            return Ok(());
+        };
+        if s.state != State::Active {
+            return Ok(());
+        }
+        let ceiling = self
+            .connections
+            .get(&s.connection.0)
+            .map_or(0, |c| c.transport.payload_ceiling(s.stream));
+        if bytes.len() > ceiling {
+            self.drop_packet(crate::diagnostics::DropReason::Oversized, direction)?;
+            return Ok(());
+        }
+        s.udp_activity(now);
+        let mut slab = match self.pools.application.acquire() {
+            Ok(slab) => slab,
+            Err(_) => {
+                self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
+                return Ok(());
+            }
+        };
+        slab.bytes_mut()[..bytes.len()].copy_from_slice(bytes);
+        let packet = resource(crate::buffers::Datagram::new(
+            slab,
+            0,
+            bytes.len(),
+            direction,
+            s.generation,
+            s.connection,
+            now,
+            now + Duration::from_millis(self.cfg.limits().application_residence_ms),
+        ))?;
+        if s.queue.push(packet).is_err() {
+            self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
+        }
+        Ok(())
+    }
+    fn select_sessions(
+        &mut self,
+        connection: u64,
+        class: usize,
+        ids: Vec<u64>,
+        limit: usize,
+    ) -> Vec<u64> {
+        let Some(c) = self.connections.get_mut(&connection) else {
+            return Vec::new();
+        };
+        round_robin(ids, &mut c.cursors[class], limit)
+    }
+    /// One datagram/session/round before the shared native queue. A blocked
+    /// native queue retains each original packet and expiry, without replay.
+    fn schedule_datagrams(&mut self, connection: u64, now: Instant) -> Result<bool, RuntimeError> {
+        let direction = if self.server {
+            Direction::ToClient
+        } else {
+            Direction::ToTarget
+        };
+        let ids = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| {
+                (s.connection.0 == connection
+                    && s.state == State::Active
+                    && s.queue.front(direction).is_some())
+                .then_some(*id)
+            })
+            .collect();
+        let ids = self.select_sessions(connection, 3, ids, 4);
+        let mut scratch = resource(self.pools.scratch.acquire())?;
+        for id in ids {
+            let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
+            let packet = s.queue.front(direction).ok_or(RuntimeError::Transport)?;
+            if packet.session() != s.generation || packet.connection() != s.connection {
+                s.queue.pop(direction);
+                self.drop_packet(crate::diagnostics::DropReason::StaleGeneration, direction)?;
+                continue;
+            }
+            let result = self
+                .connections
+                .get_mut(&connection)
+                .ok_or(RuntimeError::Transport)?
+                .transport
+                .enqueue(
+                    s.stream,
+                    packet.bytes(),
+                    packet.received_at(),
+                    now,
+                    scratch.bytes_mut(),
+                );
+            match result {
+                Ok(()) => {
+                    s.queue.pop(direction);
+                    self.snapshot.counters.quic_dgram_enqueued = self
+                        .snapshot
+                        .counters
+                        .quic_dgram_enqueued
+                        .checked_add(1)
+                        .ok_or(RuntimeError::Diagnostics)?;
+                }
+                Err(TransportError::Capacity) => {}
+                Err(error) => {
+                    s.queue.pop(direction);
+                    self.drop_packet(native_drop(error), direction)?;
+                }
+            }
+        }
+        Ok(self
+            .sessions
+            .values()
+            .any(|s| s.connection.0 == connection && s.queue.front(direction).is_some()))
+    }
     fn h3_work(&mut self, connection: u64, now: Instant) -> Result<bool, RuntimeError> {
+        if self
+            .connections
+            .get(&connection)
+            .is_some_and(|c| c.transport.critical_failed())
+        {
+            return Ok(false);
+        }
         let ready = self.negotiate_transport(connection)?;
         if self
             .connections
@@ -1120,6 +1303,7 @@ impl<'a> Runner<'a> {
         {
             return Ok(false);
         }
+        let mut setup_progress = 0;
         if ready && !self.server {
             let ids: Vec<_> = self
                 .sessions
@@ -1128,7 +1312,8 @@ impl<'a> Runner<'a> {
                     (s.connection.0 == connection && s.state == State::Starting).then_some(*id)
                 })
                 .collect();
-            for id in ids.into_iter().take(4) {
+            let ids = self.select_sessions(connection, 0, ids, 4);
+            for id in ids {
                 let RoleConfig::Client(client) = self.cfg.role() else {
                     return Err(RuntimeError::Transport);
                 };
@@ -1156,11 +1341,15 @@ impl<'a> Runner<'a> {
                     .send_request(&mut c.transport.quic, &headers, false);
                 match stream {
                     Ok(stream) => {
+                        setup_progress += 1;
                         let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
                         s.stream = stream;
                         s.state = State::AwaitingAcceptance;
                     }
-                    Err(quiche::h3::Error::StreamBlocked) => {}
+                    Err(
+                        quiche::h3::Error::StreamBlocked
+                        | quiche::h3::Error::TransportError(quiche::Error::StreamLimit),
+                    ) => {}
                     Err(_) => self.close_session(id, 0x10b),
                 }
             }
@@ -1174,9 +1363,9 @@ impl<'a> Runner<'a> {
                         && s.state == State::AwaitingCommitment
                         && s.receipt.is_none()
                 })
-                .take(4)
                 .map(|(id, _)| *id)
                 .collect();
+            let ids = self.select_sessions(connection, 1, ids, 4);
             for id in ids {
                 let stream = self.sessions[&id].stream;
                 let c = self
@@ -1194,6 +1383,7 @@ impl<'a> Runner<'a> {
                 });
                 match result {
                     Ok(()) => {
+                        setup_progress += 1;
                         self.sessions
                             .get_mut(&id)
                             .ok_or(RuntimeError::Transport)?
@@ -1294,9 +1484,9 @@ impl<'a> Runner<'a> {
             .sessions
             .iter()
             .filter(|(_, s)| s.connection.0 == connection && s.body_pending)
-            .take(4)
             .map(|(id, _)| *id)
             .collect();
+        let body_ids = self.select_sessions(connection, 2, body_ids, 4);
         for id in body_ids {
             let stream = self.sessions[&id].stream;
             let mut scratch = resource(self.pools.scratch.acquire())?;
@@ -1354,39 +1544,7 @@ impl<'a> Runner<'a> {
                 Err(_) => self.close_session(id, masque::H3_MESSAGE_ERROR),
             }
         }
-        if self.server {
-            for s in self
-                .sessions
-                .values_mut()
-                .filter(|s| s.connection.0 == connection && s.state == State::AwaitingCommitment)
-            {
-                if self.connections.get_mut(&connection).is_some_and(|c| {
-                    !c.transport.quic.stream_closed(s.stream)
-                        && c.transport.quic.stream_capacity(s.stream).is_ok()
-                }) && s.receipt.as_ref().is_some_and(|r| r.strong_count() == 0)
-                {
-                    s.receipt = None;
-                    s.state = State::Active;
-                    s._setup = None;
-                }
-            }
-        }
-        let ids: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|(_, s)| s.connection.0 == connection && s.state == State::Active)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            let stream = self.sessions[&id].stream;
-            let c = self
-                .connections
-                .get_mut(&connection)
-                .ok_or(RuntimeError::Transport)?;
-            if c.transport.quic.stream_capacity(stream).is_err() {
-                self.close_session(id, 0x10c);
-            }
-        }
+        let controls_pending = self.service_session_controls(connection)?;
         let mut scratch = resource(self.pools.scratch.acquire())?;
         for _ in 0..4 {
             let expiry = self
@@ -1414,15 +1572,19 @@ impl<'a> Runner<'a> {
                 Err(_) => return Err(RuntimeError::Transport),
             }
         }
-        Ok(self
-            .connections
-            .get(&connection)
-            .is_some_and(|c| c.transport.quic.dgram_recv_queue_len() > 0)
+        let outgoing = self.schedule_datagrams(connection, now)?;
+        Ok(outgoing
+            || self
+                .connections
+                .get(&connection)
+                .is_some_and(|c| c.transport.quic.dgram_recv_queue_len() > 0)
             || self
                 .sessions
                 .values()
                 .any(|s| s.connection.0 == connection && s.body_pending)
+            || setup_progress == 4
             || serviced == 4
+            || controls_pending
             || (!ready && self.negotiate_transport(connection)?))
     }
     fn datagram(
@@ -1485,6 +1647,7 @@ impl<'a> Runner<'a> {
             self.drop_packet(crate::diagnostics::DropReason::Oversized, direction)?;
             return Ok(());
         }
+        s.udp_activity(now);
         let result = if self.server {
             let relay = s.relay.as_ref().ok_or(RuntimeError::Socket)?;
             let mut socket = relay.get_ref().0.borrow_mut();
@@ -1506,7 +1669,7 @@ impl<'a> Runner<'a> {
         };
         match result {
             Ok(1) => {
-                s.activity = now;
+                s.udp_activity(now);
                 self.snapshot
                     .counters
                     .egress(direction, decoded.payload.len())
@@ -1601,7 +1764,7 @@ impl<'a> Runner<'a> {
                 Ok(1) => {
                     let len = packet.bytes().len();
                     s.queue.pop(direction);
-                    s.activity = now;
+                    s.udp_activity(now);
                     self.snapshot
                         .counters
                         .egress(direction, len)
@@ -1640,7 +1803,6 @@ impl<'a> Runner<'a> {
             return Ok(false);
         };
         let connection = s.connection.0;
-        let stream = s.stream;
         let mut slabs = Vec::with_capacity(self.cfg.io().batch_max.min(28));
         for _ in 0..self.cfg.io().batch_max.min(28) {
             if let Ok(s) = self.pools.application.acquire() {
@@ -1667,7 +1829,6 @@ impl<'a> Runner<'a> {
             .ok_or(RuntimeError::Diagnostics)?;
         match result {
             Ok(n) => {
-                let mut scratch = resource(self.pools.scratch.acquire())?;
                 for p in packets {
                     if p.fault.is_some() {
                         self.drop_packet(
@@ -1680,31 +1841,7 @@ impl<'a> Runner<'a> {
                         .counters
                         .ingress(Direction::ToClient, p.length)
                         .map_err(|_| RuntimeError::Diagnostics)?;
-                    let result = self
-                        .connections
-                        .get_mut(&connection)
-                        .ok_or(RuntimeError::Transport)?
-                        .transport
-                        .enqueue(
-                            stream,
-                            &slabs[p.index].bytes()[..p.length],
-                            now,
-                            now,
-                            scratch.bytes_mut(),
-                        );
-                    if result.is_ok() {
-                        if let Some(s) = self.sessions.get_mut(&id) {
-                            s.activity = now;
-                        }
-                        self.snapshot.counters.quic_dgram_enqueued = self
-                            .snapshot
-                            .counters
-                            .quic_dgram_enqueued
-                            .checked_add(1)
-                            .ok_or(RuntimeError::Diagnostics)?;
-                    } else if let Err(error) = result {
-                        self.drop_packet(native_drop(error), Direction::ToClient)?;
-                    }
+                    self.queue_outgoing(id, &slabs[p.index].bytes()[..p.length], now)?;
                 }
                 Ok(n > 0)
             }
@@ -1823,6 +1960,149 @@ impl<'a> Runner<'a> {
         }
         Ok(more)
     }
+    /// Each class selects at most four sessions, including under source churn.
+    /// Enumeration is bounded by configured counts, not an instruction budget.
+    fn service_session_controls(&mut self, connection: u64) -> Result<bool, RuntimeError> {
+        let mut more = false;
+        if self.server {
+            let ids: Vec<_> = self
+                .sessions
+                .iter()
+                .filter_map(|(id, s)| {
+                    (s.connection.0 == connection && s.state == State::AwaitingCommitment)
+                        .then_some(*id)
+                })
+                .collect();
+            let remaining = ids.len() > 4;
+            let mut activated = 0;
+            for id in self.select_sessions(connection, 4, ids, 4) {
+                let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
+                if self.connections.get_mut(&connection).is_some_and(|c| {
+                    !c.transport.quic.stream_closed(s.stream)
+                        && c.transport.quic.stream_capacity(s.stream).is_ok()
+                }) && s.receipt.as_ref().is_some_and(|r| r.strong_count() == 0)
+                {
+                    s.receipt = None;
+                    s.state = State::Active;
+                    s._setup = None;
+                    activated += 1;
+                }
+            }
+            more |= remaining && activated == 4;
+        }
+        let ids: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| {
+                (s.connection.0 == connection && s.state == State::Active).then_some(*id)
+            })
+            .collect();
+        let remaining = ids.len() > 4;
+        let mut retired = 0;
+        for id in self.select_sessions(connection, 5, ids, 4) {
+            let stream = self.sessions[&id].stream;
+            let c = self
+                .connections
+                .get_mut(&connection)
+                .ok_or(RuntimeError::Transport)?;
+            if c.transport.quic.stream_capacity(stream).is_err() {
+                self.close_session(id, 0x10c);
+                retired += 1;
+            }
+        }
+        // Continue only after a full quota made progress with candidates left.
+        // ACK-pending receipts and ordinary live capacity never busy-spin.
+        Ok(more || (remaining && retired == 4))
+    }
+    fn reclaim_control(&mut self, connection: u64) -> bool {
+        let Some(c) = self.connections.get_mut(&connection) else {
+            return false;
+        };
+        let previously_failed = c.transport.critical_failed();
+        let (pending, stopped) = c.transport.reap_stopped_streams();
+        if !previously_failed && c.transport.critical_failed() {
+            let connection_id = c.id;
+            self.failure(Failure::Transport, 0x104, None, Some(connection_id));
+            let ids: Vec<_> = self
+                .sessions
+                .iter()
+                .filter_map(|(id, s)| (s.connection.0 == connection).then_some(*id))
+                .collect();
+            for id in ids {
+                self.close_session(id, 0x104);
+            }
+        }
+        for (stream, code) in stopped.into_iter().flatten() {
+            if let Some(id) = self.lookup(connection, stream) {
+                self.close_session(id, code);
+            }
+        }
+        pending
+    }
+    fn record_resources(&mut self) {
+        use crate::diagnostics::Resources;
+        let mut r = Resources {
+            connections: self.budgets.connections.used().count,
+            sessions: self.budgets.sessions.used().count,
+            setup: self.budgets.setup.used().count,
+            relay_fds: self.budgets.relay_fds.used().count,
+            fd_reservations: self.budgets.fds.used().count,
+            connections_peak: self.budgets.connections.peak().count,
+            sessions_peak: self.budgets.sessions.peak().count,
+            setup_peak: self.budgets.setup.peak().count,
+            relay_fds_peak: self.budgets.relay_fds.peak().count,
+            application_retained_bytes: self.pools.application.retained().bytes,
+            ciphertext_retained_bytes: self.pools.ciphertext.retained().bytes,
+            scratch_retained_bytes: self.pools.scratch.retained().bytes,
+            pool_metadata_bytes: self.pools.application.metadata_capacity_bytes()
+                + self.pools.ciphertext.metadata_capacity_bytes()
+                + self.pools.scratch.metadata_capacity_bytes(),
+            ..Resources::default()
+        };
+        for s in self.sessions.values() {
+            r.queued_packets += s.queue.used().count;
+            r.queued_bytes += s.queue.used().bytes;
+            r.queue_metadata_bytes += s.queue.metadata_capacity_bytes();
+        }
+        for c in self.connections.values() {
+            let (send, receive, metadata) = c.transport.resource_usage();
+            r.native_send_bytes += send;
+            r.native_receive_bytes += receive;
+            r.control_output_capacity_bytes += metadata;
+        }
+        self.snapshot.resources = r;
+    }
+    fn expire_sessions(&mut self, now: Instant) {
+        let expired: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| {
+                (s.deadline(
+                    Duration::from_millis(self.cfg.limits().idle_session_ms),
+                    Duration::from_millis(self.cfg.recovery().setup_timeout_ms),
+                ) <= now)
+                    .then_some(*id)
+            })
+            .collect();
+        for id in expired {
+            if self
+                .sessions
+                .get(&id)
+                .is_some_and(|s| s.state != State::Active)
+            {
+                self.failure(
+                    Failure::SetupTimeout,
+                    0,
+                    self.sessions.get(&id).map(|s| s.id),
+                    self.sessions
+                        .get(&id)
+                        .and_then(|s| self.connections.get(&s.connection.0))
+                        .map(|c| c.id),
+                );
+            }
+            self.close_session(id, 0x100);
+        }
+    }
     async fn run(&mut self) -> Result<(), RuntimeError> {
         let mut term = signal(SignalKind::terminate()).map_err(|_| RuntimeError::Signal)?;
         let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| RuntimeError::Signal)?;
@@ -1830,8 +2110,9 @@ impl<'a> Runner<'a> {
             let now = Instant::now();
             // Timers/cancellation are checked between bounded owner turns.
             let mut more = self.service_transport_timers(now)?;
-            // Each visit consumes at most 32 packet/control operations. Rotate
-            // the complete work set; cancellation/timers run every <=256 work.
+            // At most eight owner visits before timers/cancellation. Connection
+            // work has per-class item quotas; metadata enumeration and internal
+            // quiche work are not a fixed number of API calls/instructions.
             let mut visits: Vec<(u8, u64)> = (0..self.outer.len()).map(|i| (0, i as u64)).collect();
             if self.listener.is_some() {
                 visits.push((1, 0));
@@ -1850,6 +2131,7 @@ impl<'a> Runner<'a> {
                     0 => more |= self.receive_outer(id as usize, now)?,
                     1 => more |= self.client_input(now)?,
                     2 => {
+                        more |= self.reclaim_control(id);
                         match self.h3_work(id, now) {
                             Ok(pending) => more |= pending,
                             Err(error) => {
@@ -1915,37 +2197,7 @@ impl<'a> Runner<'a> {
                     c.initial_cid.clear();
                 }
             }
-            let expired: Vec<_> = self
-                .sessions
-                .iter()
-                .filter_map(|(id, s)| {
-                    ((s.state != State::Active
-                        && now.duration_since(s.started)
-                            >= Duration::from_millis(self.cfg.recovery().setup_timeout_ms))
-                        || (s.state == State::Active
-                            && now.duration_since(s.activity)
-                                >= Duration::from_millis(self.cfg.limits().idle_session_ms)))
-                    .then_some(*id)
-                })
-                .collect();
-            for id in expired {
-                if self
-                    .sessions
-                    .get(&id)
-                    .is_some_and(|s| s.state != State::Active)
-                {
-                    self.failure(
-                        Failure::SetupTimeout,
-                        0,
-                        self.sessions.get(&id).map(|s| s.id),
-                        self.sessions
-                            .get(&id)
-                            .and_then(|s| self.connections.get(&s.connection.0))
-                            .map(|c| c.id),
-                    );
-                }
-                self.close_session(id, 0x100);
-            }
+            self.expire_sessions(Instant::now());
             let closed: Vec<_> = self
                 .connections
                 .iter()
@@ -1984,6 +2236,7 @@ impl<'a> Runner<'a> {
                 }
             }
             if now >= self.next_snapshot {
+                self.record_resources();
                 self.snapshot.sessions_active = self
                     .sessions
                     .values()
@@ -2003,20 +2256,16 @@ impl<'a> Runner<'a> {
                 .values()
                 .filter_map(|c| c.transport.deadline(now))
                 .chain(self.sessions.values().map(|s| {
-                    if s.state == State::Active {
-                        s.activity + Duration::from_millis(self.cfg.limits().idle_session_ms)
-                    } else {
-                        s.started + Duration::from_millis(self.cfg.recovery().setup_timeout_ms)
-                    }
+                    s.deadline(
+                        Duration::from_millis(self.cfg.limits().idle_session_ms),
+                        Duration::from_millis(self.cfg.recovery().setup_timeout_ms),
+                    )
                 }))
                 .chain(self.sessions.values().filter_map(|s| {
-                    s.queue
-                        .front(if self.server {
-                            Direction::ToTarget
-                        } else {
-                            Direction::ToClient
-                        })
-                        .map(|p| p.expires_at())
+                    [Direction::ToTarget, Direction::ToClient]
+                        .into_iter()
+                        .filter_map(|d| s.queue.front(d).map(|p| p.expires_at()))
+                        .min()
                 }))
                 .chain(std::iter::once(self.next_snapshot))
                 .filter(|at| *at > now)
@@ -2252,6 +2501,7 @@ mod tests {
                     _permit: permit,
                     id: cid,
                     initial_cid: vec![],
+                    cursors: [FairCursor::default(); 6],
                 },
             );
             let id = r.create_session(2, stream, None, now).unwrap();
@@ -2364,14 +2614,56 @@ mod tests {
                     _permit: permit,
                     id: cid,
                     initial_cid: vec![],
+                    cursors: [FairCursor::default(); 6],
                 },
             );
             let id = r.create_session(2, stream, None, Instant::now()).unwrap();
+            // Deliver the peer FIN without delivering any server output/ACK.
+            p.client
+                .h3
+                .as_mut()
+                .unwrap()
+                .send_body(&mut p.client.quic, stream, &[], true)
+                .unwrap();
+            let mut bytes = [0; 1350];
+            while let Ok((n, info)) = p.client.quic.send(&mut bytes) {
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .receive(
+                        &mut bytes[..n],
+                        quiche::RecvInfo {
+                            from: info.from,
+                            to: info.to,
+                        },
+                        Instant::now(),
+                    )
+                    .unwrap();
+            }
             r.reject(2, stream, 401);
             r.close_session(id, 0x10b);
             assert!(!r.sessions.contains_key(&id));
-            assert_eq!(r.budgets.sessions.used().count, 0);
+            assert_eq!(r.budgets.sessions.used().count, 1);
+            assert_eq!(r.connections[&2].transport.cleanup_count(), 1);
             assert_eq!(r.budgets.relay_fds.used().count, 0);
+            assert!(r.connections[&2].transport.quic.stream_closed(stream));
+            r.connections
+                .get_mut(&2)
+                .unwrap()
+                .transport
+                .reap_stopped_streams();
+            r.connections
+                .get_mut(&2)
+                .unwrap()
+                .transport
+                .reap_stopped_streams();
+            assert_eq!(
+                r.connections[&2].transport.cleanup_count(),
+                1,
+                "FIN on both sides is not native collection before ACK"
+            );
+            assert_eq!(r.budgets.sessions.used().count, 1);
             p.server = r.connections.remove(&2).unwrap().transport;
             for _ in 0..50 {
                 p.pump();
@@ -2380,6 +2672,11 @@ mod tests {
                         && let quiche::h3::Event::Headers { list, .. } = event
                     {
                         assert_eq!(masque::response(&list, false), Ok(Response::Rejected(401)));
+                        p.server
+                            .expire_native(Instant::now() + Duration::from_secs(61));
+                        assert!(p.server.is_stopped());
+                        assert_eq!(p.server.cleanup_count(), 0);
+                        assert_eq!(r.budgets.sessions.used().count, 0);
                         return;
                     }
                 }
@@ -2412,6 +2709,7 @@ mod tests {
                     _permit: permit,
                     id: cid,
                     initial_cid: vec![],
+                    cursors: [FairCursor::default(); 6],
                 },
             );
             let now = Instant::now();
@@ -2451,6 +2749,8 @@ mod tests {
                 r.relay_input(id, Instant::now()).unwrap(),
                 "new native work must not wait for another edge"
             );
+            assert_eq!(r.sessions[&id].queue.used().count, 1);
+            r.schedule_datagrams(2, Instant::now()).unwrap();
             assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 1);
             assert_eq!(r.snapshot.counters.app_ingress_by_direction.to_client, 1);
             assert_eq!(
@@ -2863,3 +3163,10 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/lifecycle/sessions.rs"]
+mod session_tests;
+#[cfg(test)]
+#[path = "../tests/lifecycle/udp_reuse.rs"]
+mod udp_reuse_tests;

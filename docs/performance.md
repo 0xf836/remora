@@ -4,6 +4,111 @@ This report retains measured outcomes and limits. Raw manifests, samples, logs
 and historical comparisons remain in ignored local `benchmarks/results/`
 archives, not Git. See [artifact retention](validation/README.md).
 
+## Phase 4 independent review corrections — 2026-10-12
+
+The corrected executable SHA-256 is
+`9a7504b55ed9ab90425e0f152da3c9d59851fc19d6dbe610e1ef8fd967e39d53`.
+Local critical HTTP/3 stream STOP now fails its connection, and commitment/
+active-capacity checks each use a four-Session cursor instead of full native
+checks across all Sessions. A full quota making progress with candidates left
+requests continuation; waiting receipts/ordinary healthy capacity do not.
+ADR-0006/0008 clarify item quotas and remove the unsupported fixed native-call
+count. These are correctness/service-bound corrections, not an optimization claim.
+
+`phase4-review-qualified-candidate/comparison.json` passes 12/12 comparisons
+against `phase4-reference-native` and its unchanged frozen policy. The profile
+remains one stream, 128 bytes, 1000 pps, two-second warmup, three-second
+measurement and two paired repetitions. Every active direction delivers
+3000/3000 datagrams (1.024 Mbit/s), without measured loss/integrity/generator
+errors. The comparison runs serially before the separate process laboratories.
+
+| Corrected workload | Baseline p95 RTT, ms | Tunnel p95 RTT, ms |
+|---|---:|---:|
+| Forward | 0.817–0.818 | 0.673–0.721 |
+| Reverse | 0.694–0.750 | 0.705–0.841 |
+| Simultaneous | 0.660–0.761 | 0.472–0.661 |
+
+Simultaneous client/server process CPU is 0.153–0.221 / 0.160–0.234 cores;
+owner CPU is 0.150–0.217 / 0.156–0.231. Peak RSS is 8.13–8.25 / 8.11–8.20 MiB.
+These small samples meet the same development gate; they establish neither a
+significant speedup nor release capacity. The original duration/allocator
+results below retain their original executable hashes. New regression/process/
+independent-peer evidence and the retained incomplete baseline-tool attempt are
+described in [concurrency validation](validation/concurrency.md).
+
+## Phase 4 concurrency comparison before independent review corrections — 2026-10-12
+
+Before production Phase 4 edits, `phase4-reference-native` recorded the
+pre-change executable
+`767d143ca6e32f62f28da0bee3d6cc8446e8ace4033c6a915e699f945bd86a99`.
+The frozen policy binds reference manifest SHA-256
+`f8d4190dd4c412a8c977df51b6beab5a4967e247a73163afabcd743fb17be5e8`
+and summary SHA-256
+`d255e9fb3b365b79acbd1c72f9ff5d210e80c50812dc555fd0c2aa81c08410a2`.
+It copies the existing development policy without changing any numerical bound,
+including the previously authorized provisional 0.5-core process/owner ceiling.
+That CPU ceiling remains a development smoke gate, not calibrated regression
+tolerance or a relaxed release criterion.
+
+The final `phase4-candidate-complete` executable SHA-256 is
+`f0d22b9400ce1666cff4cac86f611cbe579c4df5dbada79710f70aff814f4e3a`.
+After production checks/builds it runs the same profile serially, before the
+duration qualification laboratories, without overlapping builds/tests.
+All 12 per-run comparisons pass. Each active direction delivers 3000/3000
+packets (1.024 Mbit/s), with zero measured loss, integrity or generator errors.
+The profile remains one session, 128 bytes, 1000 pps per active direction,
+two-second warmup, three-second measurement and two paired repetitions.
+
+| Final workload | Baseline p95 RTT, ms (range) | Tunnel p95 RTT, ms (range) |
+|---|---|---|
+| Forward | 0.707–0.750 | 0.722–0.829 |
+| Reverse | 0.801–0.875 | 0.575–0.777 |
+| Simultaneous | 0.762–0.763 | 0.519–0.783 |
+
+Simultaneous tunnel client/server process CPU is 0.190–0.281 / 0.203–0.281
+cores; owner CPU is 0.186–0.271 / 0.200–0.281. Peak RSS is 8.08–8.26 /
+8.16–8.16 MiB. These small samples establish a passing unchanged development
+gate, not a statistically significant speedup or sustainable rate.
+
+The [Phase 4 concurrency record](validation/concurrency.md) separately reports
+32-session isolation, low-rate probes during configured budget saturation and
+1000-cycle resource reclamation. Final 1800-second isolation has zero
+cross-delivery/integrity errors; all 31 continuous flows receive 1800/1800
+probes per direction while one association expires/recreates. Final 600-second
+overload meets the unchanged per-flow criterion: worst timely forward progress
+598/600 (99.6667%), with 600/600 reverse progress for every probe flow.
+The final churn run returns session/setup/relay
+gauges to zero in 0.4904 seconds; retained RSS growth is at most 0.1641 MiB
+against the warmed baseline, below the unchanged 10 MiB criterion. Visible slab,
+native/control descriptor capacities, diagnostic ceiling and kernel queue
+allocations are reported separately from RSS.
+
+Phase 4 resolves two correctness bottlenecks: the first-four body selection
+could starve a fifth pending stream, and unobserved completed STOP_SENDING
+streams exhausted native stream credit under churn. Bounded cyclic body/native
+service and closed-control reclamation address those failures. Per-session
+queues add bounded copies before the shared native queue; no unmeasured
+optimization claim follows. Intermediate binaries, the original failed churn
+and interrupted duration runs remain retained with their own manifests.
+
+The intermediate `phase4-candidate-ack` comparison fails in five tunnel runs
+(7/12 pass): ordinary writable-stream continuation kept the client owner near
+one full core, exceeding the existing 0.5-core development ceiling. Only
+observed STOP work and a finite closing-control cycle now request continuation;
+a normal-writability regression protects that correction. The final candidate
+passes the same reference/policy with no changed bound. Earlier completed
+isolation/overload/churn runs identify intermediate binaries; they are not
+final-revision qualification. FIN-before-ACK permit/metadata reclamation is
+separately regression-tested and its retained-memory effect is investigated
+in the concurrency report.
+The separate instrumented 600-second overload records final warmed allocator
+occupancy of 1698608–1761808 bytes, a constant 1994752-byte arena and zero
+mapped allocator bytes. The uninstrumented final server RSS stays within
+9.406–9.430 MiB from seconds 59–599. Probe overhead and allocator measurements
+are explicitly separated from the passing benchmark comparison.
+The full controlled-link capacity/resource matrix, diagnostics overhead,
+offloads and ARM64 qualification remain later work.
+
 ## Review correction comparison — 2026-10-11
 
 Before changing production code for the nine review findings, the

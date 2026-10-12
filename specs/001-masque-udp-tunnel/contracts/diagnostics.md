@@ -67,3 +67,20 @@ Optional qlog is disabled by default and follows the first E2E MVP and safe coun
 Qlog rate <=1000 permitted events/second/process and <=1 MiB/second; retained files <=16 MiB/connection, <=128 MiB/process-directory and max eight simultaneously traced connections, then tracing stops with a bounded event. Disk capacity and writer queues are independent, finite budgets. Never call quiche keylog APIs or forward SSLKEYLOGFILE. Arbitrary quiche `log` targets are not automatically forwarded at trace verbosity; audit and allowlist safe metadata formats at the pinned version.
 
 Tests must exercise event suppression plus short-lived terminal failures, cleanup before snapshot, old acknowledgement versus new summary, status reservation under event/qlog saturation, terminal ring overflow, failed/blocked writers, partial JSON-SEQ writes, malicious huge records, filtered H3 authorization values, payload sentinels, every log level, file caps, churn/cardinality bounds and diagnostic-overhead A/B runs. Verify SC-010 correlation with zero coverage loss separately from deliberate-overflow robustness. Raw upstream qlog must never touch the filesystem even temporarily. Source review: [tagged H3 qlog records](https://raw.githubusercontent.com/cloudflare/quiche/0.30.0/quiche/src/h3/mod.rs).
+
+### Phase 4 resource snapshot increment
+
+`resources` adds fixed numeric admission gauges and peaks (`connections`,
+`sessions`, `setup`, `relay_fds`, `fd_reservations`), application queue packets/
+bytes, retained application/ciphertext/scratch slab bytes, pool/queue descriptor
+capacity, native send/receive queued bytes and connection output/native descriptor
+capacity. Fields aggregate only bounded live state; no identity/source/target
+labels are added. `sessions` counts admission permits for pending, active and
+bounded closed-control cleanup; `sessions_active` retains its existing Active-only
+meaning. Closing cleanup has no relay/payload ownership and releases its permits
+on native collection or the connection's bounded terminal failure. Descriptor
+capacity includes the closing-ID ledger but does not account for every native transport
+or TLS/control allocation. Churn evidence reports process RSS, the existing
+2 MiB diagnostic retention ceiling, effective kernel buffer capacities and
+owned-socket kernel queue allocations separately. Full operational telemetry
+remains T064, rather than inferred from these scoped gauges.

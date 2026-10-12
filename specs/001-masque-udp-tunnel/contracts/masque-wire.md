@@ -8,6 +8,16 @@ Implement CONNECT-UDP [RFC 9298](https://www.rfc-editor.org/rfc/rfc9298.html), H
 
 TLS 1.3 and ALPN h3 are required. QUIC DATAGRAM and both peers' SETTINGS_H3_DATAGRAM=1 are required; server advertises SETTINGS_ENABLE_CONNECT_PROTOCOL=1. quiche transport enable_dgram and H3 server enable_extended_connect configure this profile; the stack derives its own H3 datagram setting. Disabled/missing capabilities fail setup distinctly, never fall back to reliable payloads. No 0-RTT application requests/data.
 
+Closing a local HTTP/3 control or opened QPACK stream, including peer
+STOP_SENDING, is a connection error H3_CLOSED_CRITICAL_STREAM (0x104),
+not a request Session cancellation or an HTTP refusal status. Cancel only
+the affected connection's associations, stop new enqueue and retain bounded
+connection-close generation. Optional unopened QPACK streams and completed
+GREASE streams are not critical-stream failures. Conformance tests must include
+a peer that continues QUIC after STOP without independently polling/closing H3.
+Sources: [RFC 9114 section 6.2.1](https://www.rfc-editor.org/rfc/rfc9114.html#section-6.2.1),
+[RFC 9204 section 4.2](https://www.rfc-editor.org/rfc/rfc9204.html#section-4.2).
+
 ## Request and acceptance
 
 Default configured URI template: `https://{proxy-authority}/.well-known/masque/udp/{target_host}/{target_port}/` (proxy authority is configuration, not a target substitution). Client may use an explicitly configured HTTPS URI template supporting target_host/target_port; validate RFC 9298 constraints: template level <=3, ASCII characters 0x21..0x7e, absolute nonempty scheme/authority/path with slash-prefixed path, variables confined to path/query, and no reserved (+), fragment (#), dot-label (.), slash-segment (/) or semicolon (;) expansion operators. Reject invalid templates at check-config before any request; server v1 supports its exact default path prefix and segment grammar. Variable values use percent encoding once; decode once, validate canonical host/decimal port and authorize. IPv6 host substitution is the literal address with colons percent encoded, without authority brackets; IPv6 proxy authority uses normal brackets. Reject query/fragment/unexpected extra path segments on the default route, userinfo, NUL/control bytes, ambiguous numeric addresses and double-decoding tricks.

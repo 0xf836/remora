@@ -187,9 +187,23 @@ pub async fn prepare<R: Resolver + ?Sized>(
     timeout: Duration,
 ) -> Result<(usize, ResolvedTarget), PolicyError> {
     let index = authenticate(identities, token)?;
+    let target =
+        prepare_authenticated(&identities[index], host, port, resolver, key, timeout).await?;
+    Ok((index, target))
+}
+/// Resolve only after the owner has authenticated this immutable configured
+/// identity and debited its pending-session quota. No token is retained in DNS work.
+pub async fn prepare_authenticated<R: Resolver + ?Sized>(
+    identity: &Identity,
+    host: &str,
+    port: u16,
+    resolver: &R,
+    key: SetupKey,
+    timeout: Duration,
+) -> Result<ResolvedTarget, PolicyError> {
     let host = canonical_host(host).map_err(|_| PolicyError::Denied)?;
     // Exact permission is checked before DNS, including hostname aliases.
-    if !identities[index]
+    if !identity
         .targets
         .iter()
         .any(|r| r.host == host && r.port == port)
@@ -203,8 +217,8 @@ pub async fn prepare<R: Resolver + ?Sized>(
             .await
             .map_err(|_| PolicyError::Timeout)??
     };
-    let address = authorize_answers(&identities[index], &host, port, &answers)?;
-    Ok((index, ResolvedTarget { address, key }))
+    let address = authorize_answers(identity, &host, port, &answers)?;
+    Ok(ResolvedTarget { address, key })
 }
 #[cfg(test)]
 mod worker_tests {

@@ -169,3 +169,34 @@ failing security/correctness test or change numeric release targets.
 Stop your manually started roles with SIGTERM/SIGINT. Delete only private
 fixtures/results that you created and no longer need. Runners clean only their
 own processes/directories and never modify operator networking.
+
+## Concurrent-session qualification (Phase 4)
+
+The unprivileged owned-loopback runner provisions fresh private fixtures itself;
+`--fixtures` is not needed for these scenarios. Build the production release
+first. Use fresh ignored output paths and preserve failures:
+
+```bash
+./scripts/validate/e2e.sh --scenario concurrency --suite isolation \
+  --output benchmarks/results/concurrency-isolation
+./scripts/validate/e2e.sh --scenario concurrency --suite overload \
+  --output benchmarks/results/concurrency-overload
+./scripts/validate/e2e.sh --scenario concurrency --suite churn \
+  --output benchmarks/results/concurrency-churn
+```
+
+Defaults are 1800 seconds of isolation, 600 seconds of saturation and 1000 churn
+cycles. `--seconds`/`--cycles` select shorter development coverage, never full
+qualification. Four client processes, two credentials, two destinations and
+32 source sockets exercise shared/distinct routing and independent reverse
+messages. Saturation adds a separate admitted load flow so opaque probes do not
+compete with excess traffic inside their own application association. It also
+attempts newest-request admission and malformed outer traffic. The path is
+responsive loopback with low wire load; no reference throughput claim follows.
+
+Test-only idle overrides are 2000 ms for flow expiry/recreation and 500 ms for
+churn. These intentionally deviate from RFC 9298's SHOULD solely to accelerate
+lifecycle tests. Production remains 120000 ms; shorter operator values require
+a deployment rationale and can cause repeated setup/source-port changes/first
+packet loss. See [concurrency evidence](../../docs/validation/concurrency.md)
+and [ADR-0008](../../docs/adr/0008-concurrent-admission-and-fair-service.md).
