@@ -8,6 +8,7 @@ p.add_argument("--fixtures")
 p.add_argument("--output")
 p.add_argument("--seconds", type=int)
 p.add_argument("--cycles", type=int, default=1000)
+p.add_argument("--peer-binary", type=Path)
 p.add_argument(
     "--suite", choices=["isolation", "overload", "churn"], default="isolation"
 )
@@ -17,6 +18,19 @@ p.add_argument(
     default="smoke",
 )
 a = p.parse_args()
+if a.scenario in ["recovery", "shutdown"]:
+    if not a.output:
+        p.error("recovery/shutdown requires a fresh --output directory")
+    command = [
+        str(ROOT / "scripts/validate/recovery.sh"),
+        "--scenario",
+        "all" if a.scenario == "recovery" else "shutdown",
+        "--output",
+        a.output,
+    ]
+    if a.peer_binary:
+        command += ["--peer-binary", str(a.peer_binary.resolve())]
+    raise SystemExit(subprocess.run(command, cwd=ROOT).returncode)
 if a.scenario == "concurrency":
     if not a.output:
         p.error("concurrency requires a fresh --output directory")
@@ -40,10 +54,6 @@ if not a.fixtures:
 f = Path(a.fixtures).resolve()
 client = tomllib.loads((f / "client.toml").read_text())["client"]
 server = tomllib.loads((f / "server.toml").read_text())["server"]
-if a.scenario == "recovery":
-    raise SystemExit(
-        "full concurrency/recovery qualification belongs to later phases; no pass recorded"
-    )
 if a.scenario == "security":
     subprocess.run(
         ["cargo", "test", "--locked", "--test", "e2e", "security"], cwd=ROOT, check=True

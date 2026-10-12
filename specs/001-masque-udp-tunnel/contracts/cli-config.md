@@ -105,7 +105,7 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | recovery.keepalive_interval_ms | 2000 | Active-flow otherwise-idle QUIC probe, normally paced |
 | recovery.peer_progress_timeout_ms | 10000 | Watchdog based on authenticated peer progress, separate from quiche idle rules |
 | recovery.setup_timeout_ms | 5000 | Bounded handshake and request setup |
-| recovery.retry_initial_ms / retry_max_ms | 100 / 2000 | 100 ms scheduling floor plus capped exponential jitter; <=10 attempts/s/process, one attempt in flight |
+| recovery.retry_initial_ms / retry_max_ms | 100 / 2000 | Validate 100 <= initial <= max <=2000; scheduling floor plus uniform capped exponential jitter, total delay <=max; <=10 attempts/s/process, one handshake in flight |
 | diagnostics.level | info | error/warn/info/debug/trace; same redaction at every level |
 | diagnostics.snapshot_interval_ms | 1000 | Minimum 1000; bounded stdout NDJSON snapshots |
 | diagnostics.qlog_directory | absent | Disabled by default; filtered data only, never raw H3 |
@@ -122,6 +122,6 @@ The 120000 ms session inactivity default follows [RFC 9298 §3.1](https://www.rf
 
 Replace credential/policy/trust files atomically with correct ownership/permissions, validate the candidate config, then stop old process and start replacement. No live reload promised. Removed identities/policies cannot create sessions in the new process; existing sessions end when the old process stops. Document old-process exit plus new readiness as revocation completion, and documented external UDP provenance limitations after tuple reuse/restart. No socket-quarantine duration is part of config schema_version=1. Rollback restores reviewed config and restarts; it may re-enable intentionally restored credentials, so operators must select the intended policy generation.
 
-A client permanent auth/policy/capability rejection leaves a fixed-size admission latch on the immutable listener mapping until controlled restart, even after the individual flow is reclaimed. New sender tuples and transient connection recovery cannot bypass it; accepted unrelated sessions continue. Server requests are rejected/closed under existing admission limits, not retained in an unlimited deny cache.
+A client permanent auth/policy/capability rejection leaves a fixed-size admission latch on the immutable listener mapping until controlled restart, even after the individual flow is reclaimed. Cancel every not-yet-accepted client Session, including queued Starting and AwaitingAcceptance, releasing its setup work and sender association. Neither queued CONNECT submission nor a delayed successful response can activate a Session after the latch. New sender tuples and transient connection recovery cannot bypass it; already accepted unrelated sessions continue. Server requests are rejected/closed under existing admission limits, not retained in an unlimited deny cache.
 
 No Remora command installs firewall rules, obtains certificates, edits WireGuard, sets routes, creates TUN, changes qdiscs/sysctls or manages deployment. The test harness may request namespace capabilities separately from the unprivileged runtime.

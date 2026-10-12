@@ -50,7 +50,6 @@ another process later occupies them. Certificates are short-lived test inputs.
 ./target/release/remora check-config --config /tmp/remora-validation/server.toml
 ./target/release/remora check-config --config /tmp/remora-validation/client.toml
 ./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario smoke
-./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario shutdown
 ./scripts/validate/e2e.sh --fixtures /tmp/remora-validation --scenario security
 ```
 
@@ -65,7 +64,6 @@ Generate IPv6 fixtures with the same commands and a different fresh path:
 
 ```bash
 ./scripts/validate/fixtures.sh --output /tmp/remora-validation-v6 --family ipv6
-./scripts/validate/e2e.sh --fixtures /tmp/remora-validation-v6 --scenario shutdown
 ```
 
 For an existing UDP application, configure the client mapping's local listener,
@@ -242,3 +240,49 @@ credentials/keys belong in Git. [Performance](../../docs/performance.md),
 [network characterization](../../docs/validation/network.md) and
 [Phase 5 validation](../../docs/validation/phase5.md) distinguish native checks,
 retrospective development acceptance and the unchanged full release criteria.
+
+## Phase 6 recovery and signal validation
+
+Build the locked production binary and pinned independent Go fixture first.
+Use fresh output directories; the runners provision their own private fixtures.
+Recovery requires Linux user/network namespaces, iproute2/netem and ethtool.
+It changes only its owned veth paths and removes its owned processes/namespaces.
+Shutdown uses ordinary loopback and includes the Go peer withholding acceptance.
+
+```bash
+./scripts/validate/e2e.sh --scenario recovery \
+  --peer-binary /tmp/remora-interop --output benchmarks/results/recovery-NEW
+./scripts/validate/e2e.sh --scenario shutdown \
+  --peer-binary /tmp/remora-interop --output benchmarks/results/shutdown-NEW
+```
+
+Recovery covers ten-second blackhole/restart, address replacement, thirty-second
+outage, revoked credential, denied target, changed certificate CA, missing peer
+capability and nine-second application idle. Timing starts at the actual fault
+and continuous restored availability; tagged data verifies no outage replay and
+the listener inode remains identical. Fatal initial permanent rejection exits 1;
+permanent rejection after an accepted Session retains the denied mapping until
+restart. SIGINT/SIGTERM are checked during Starting, Active, Recovering and held
+setup, with process/listener release within the shared five-second budget.
+See [recovery evidence](../../docs/validation/recovery.md) and
+[ADR-0010](../../docs/adr/0010-client-recovery-and-draining.md).
+
+For a future critical-path change, collect and freeze a fresh pre-change
+reference/policy before editing, then use the same retained traffic executable:
+
+```bash
+./scripts/validate/bench.sh --profile benchmarks/recovery-x86_64.toml \
+  --traffic-binary benchmarks/results/phase6-reference/reference-traffic \
+  --output benchmarks/results/recovery-candidate-NEW
+python3 scripts/validate/compare.py \
+  --reference benchmarks/results/phase6-prechange-valid \
+  --candidate benchmarks/results/recovery-candidate-NEW \
+  --policy benchmarks/results/phase6-reference/comparison-policy.json \
+  --output benchmarks/results/recovery-candidate-NEW/comparison.json
+```
+
+Those saved reference paths describe this increment's local artifacts and must
+exist before reuse. A new clone must create its own reference, not fabricate the
+missing files. This short low-rate loaded comparison measures enabled liveness
+checks; idle probe behavior has separate functional evidence. Neither result
+qualifies idle CPU cost, sustained capacity, final release resources or ARM64.

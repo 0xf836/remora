@@ -742,6 +742,7 @@ fn validate_budgets(doc: &Document, listeners: usize) -> Result<usize, ConfigErr
     }
     if doc.recovery.retry_initial_ms < 100
         || doc.recovery.retry_max_ms < doc.recovery.retry_initial_ms
+        || doc.recovery.retry_max_ms > 2000
         || doc.diagnostics.snapshot_interval_ms < 1000
     {
         return Err(range());

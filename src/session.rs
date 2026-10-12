@@ -31,7 +31,69 @@ pub enum State {
     Authorizing,
     AwaitingCommitment,
     Active,
+    Recovering,
     Closed,
+}
+
+/// Mapping-wide client state; Active means verified transport/settings, not
+/// destination responsiveness. Rejected never becomes retryable without restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientState {
+    Starting,
+    Handshaking,
+    Negotiating,
+    Active,
+    Recovering,
+    Rejected,
+    Stopping,
+    Stopped,
+}
+
+/// One pending deadline, not a timer/task per attempt. RNG is supplied separately
+/// so minimum-jitter and arbitrarily long outages have deterministic tests.
+pub struct RetrySchedule {
+    floor_ms: u64,
+    maximum_ms: u64,
+    attempt: u32,
+    next: Option<Instant>,
+}
+impl RetrySchedule {
+    /// Bounds come from validated RecoverySettings: 100 <= floor <= maximum
+    /// <= 2000 ms. The reactor is the only production caller.
+    pub fn new(floor_ms: u64, maximum_ms: u64) -> Self {
+        Self {
+            floor_ms,
+            maximum_ms,
+            attempt: 0,
+            next: None,
+        }
+    }
+    pub fn jitter_ceiling_ms(&self) -> u64 {
+        self.floor_ms
+            .saturating_mul(1u64 << self.attempt.min(31))
+            .min(self.maximum_ms.saturating_sub(self.floor_ms))
+    }
+    pub fn schedule(&mut self, now: Instant, jitter_ms: u64) {
+        let delay = self
+            .floor_ms
+            .saturating_add(jitter_ms.min(self.jitter_ceiling_ms()));
+        self.next = now.checked_add(std::time::Duration::from_millis(delay));
+        self.attempt = self.attempt.saturating_add(1);
+    }
+    pub fn deadline(&self) -> Option<Instant> {
+        self.next
+    }
+    pub fn due(&self, now: Instant) -> bool {
+        self.next.is_some_and(|at| at <= now)
+    }
+    pub fn started(&mut self) {
+        self.next = None;
+    }
+    pub fn reset(&mut self) {
+        self.next = None;
+        self.attempt = 0;
+    }
 }
 pub struct Session {
     pub generation: Generation,

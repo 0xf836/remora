@@ -244,6 +244,17 @@ pub struct Connection {
     critical_failed: bool,
     pmtu_drops: usize,
     lost_observed: usize,
+    ready: bool,
+    peer_progress: Instant,
+    next_probe: Instant,
+    keepalive_interval: Duration,
+    progress_timeout: Duration,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LivenessAction {
+    None,
+    Probe,
+    Expired,
 }
 impl Connection {
     pub fn new(
@@ -285,6 +296,11 @@ impl Connection {
             critical_failed: false,
             pmtu_drops: 0,
             lost_observed: 0,
+            ready: false,
+            peer_progress: now,
+            next_probe: now + Duration::from_millis(settings.recovery().keepalive_interval_ms),
+            keepalive_interval: Duration::from_millis(settings.recovery().keepalive_interval_ms),
+            progress_timeout: Duration::from_millis(settings.recovery().peer_progress_timeout_ms),
         }
     }
     /// All incoming native messages share a conservative oldest receive epoch.
@@ -298,7 +314,14 @@ impl Connection {
         if self.quic.dgram_recv_queue_len() == 0 {
             self.received_expiry = None;
         }
+        // Pinned quiche increments stats.recv only after decrypting, processing
+        // frames and accepting a fresh packet number. Duplicates/unauthenticated
+        // packets and local sends do not reset this application watchdog.
+        let received = self.quic.stats().recv;
         let result = self.quic.recv(bytes, info);
+        if self.quic.is_established() && self.quic.stats().recv > received {
+            self.peer_progress = self.peer_progress.max(now);
+        }
         if self.quic.dgram_recv_queue_len() > 0 {
             let expiry = now + self.application_residence;
             self.received_expiry = Some(self.received_expiry.map_or(expiry, |old| old.min(expiry)));
@@ -363,6 +386,7 @@ impl Connection {
         {
             return Err(TransportError::Capability);
         }
+        self.ready = true;
         Ok(true)
     }
     pub fn goaway(&mut self, id: u64) -> Result<(), TransportError> {
@@ -684,7 +708,33 @@ impl Connection {
         self.quic.dgram_purge_outgoing(|_| true);
         let _ = self.quic.close(true, 0x100, b"");
     }
+    pub fn service_liveness(
+        &mut self,
+        now: Instant,
+        active_flows: bool,
+    ) -> Result<LivenessAction, TransportError> {
+        if !active_flows || !self.ready || self.stopped || self.quic.is_closed() {
+            return Ok(LivenessAction::None);
+        }
+        if now >= self.peer_progress + self.progress_timeout {
+            return Ok(LivenessAction::Expired);
+        }
+        if now >= self.next_probe {
+            self.quic
+                .send_ack_eliciting()
+                .map_err(|e| TransportError::Native(native_error_code(e)))?;
+            self.next_probe = now + self.keepalive_interval;
+            return Ok(LivenessAction::Probe);
+        }
+        Ok(LivenessAction::None)
+    }
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
     pub fn deadline(&self, now: Instant) -> Option<Instant> {
+        self.deadline_for(now, false)
+    }
+    pub fn deadline_for(&self, now: Instant, active_flows: bool) -> Option<Instant> {
         [
             self.quic.timeout_instant(),
             self.native_expiry,
@@ -694,7 +744,9 @@ impl Connection {
             self.output.front().map(|p| p.at()).filter(|at| *at > now),
             self.started
                 .checked_add(self.setup_timeout)
-                .filter(|_| self.h3.is_none()),
+                .filter(|_| !self.ready),
+            (active_flows && self.ready).then_some(self.next_probe),
+            (active_flows && self.ready).then_some(self.peer_progress + self.progress_timeout),
         ]
         .into_iter()
         .flatten()
@@ -715,7 +767,7 @@ impl Connection {
         {
             return Err(TransportError::Expired);
         }
-        if self.h3.is_none() && now.duration_since(self.started) >= self.setup_timeout {
+        if !self.ready && now.duration_since(self.started) >= self.setup_timeout {
             return Err(TransportError::Expired);
         }
         let mut produced = 0;
@@ -727,6 +779,7 @@ impl Connection {
             let limit = slab.capacity().min(self.outer_max);
             match self.quic.send(&mut slab.bytes_mut()[..limit]) {
                 Ok((length, info)) => {
+                    self.next_probe = now + self.keepalive_interval;
                     let expiry = now
                         .checked_add(self.output_residence)
                         .ok_or(TransportError::Expired)?;

@@ -417,6 +417,8 @@ def main():
                                 address("client"),
                                 "--pps",
                                 str(profile["pps"] if direction != "reverse" else 0),
+                                "--reverse-pps",
+                                str(profile["pps"] if direction != "forward" else 0),
                                 *common,
                             ],
                             run / "generator",

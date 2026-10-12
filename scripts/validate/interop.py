@@ -319,9 +319,22 @@ def run_case(out, peer, family, direction, case):
                                 server_status.append(json.loads(line))
                             except ValueError:
                                 pass
-                    text = json.dumps(server_status)
-                    if case == "absent-settings" and '"capability"' not in text:
-                        raise AssertionError("missing peer-settings refusal")
+                    if case == "absent-settings":
+                        if not any(
+                            (
+                                r.get("failure") == "capability"
+                                and r.get("numeric_code") == 0
+                            )
+                            or any(
+                                f.get("class") == "capability" and f.get("code") == 0
+                                for f in r.get("failures", [])
+                            )
+                            for r in server_status
+                        ):
+                            raise AssertionError(
+                                "missing exact peer-settings capability/0 refusal"
+                            )
+                        observed_refusal = {"class": "capability", "numeric_code": 0}
                     if case == "early-datagram" and not any(
                         r.get("counters", {})
                         .get("local_drops", {})

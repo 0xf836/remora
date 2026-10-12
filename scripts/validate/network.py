@@ -348,6 +348,21 @@ def main():
     p.add_argument("--benchmark-profile", type=Path)
     p.add_argument("--development-smoke", action="store_true")
     p.add_argument("--smoke-selected", action="store_true")
+    p.add_argument(
+        "--recovery-scenario",
+        choices=[
+            "blackhole",
+            "restart",
+            "address-change",
+            "long-outage",
+            "revoked",
+            "policy",
+            "trust",
+            "capability",
+            "idle",
+        ],
+    )
+    p.add_argument("--peer-binary", type=Path)
     p.add_argument("--worker-host-net-fd", type=int, help=argparse.SUPPRESS)
     p.add_argument("--worker-host-user-fd", type=int, help=argparse.SUPPRESS)
     a = p.parse_args()
@@ -365,6 +380,10 @@ def main():
                 extra.append("--development-smoke")
             if a.smoke_selected:
                 extra.append("--smoke-selected")
+            if a.recovery_scenario:
+                extra += ["--recovery-scenario", a.recovery_scenario]
+            if a.peer_binary:
+                extra += ["--peer-binary", str(a.peer_binary.resolve())]
             result = subprocess.run(
                 [
                     "unshare",
@@ -415,7 +434,13 @@ def main():
                 },
             )
             print(f"Characterizing {scenario}", flush=True)
-            if a.benchmark_profile:
+            if a.recovery_scenario:
+                if a.scenario != "reference" or a.benchmark_profile:
+                    raise ValueError("recovery requires its isolated reference path")
+                from recovery import characterize
+
+                characterize(network, out, a.recovery_scenario, a.peer_binary)
+            elif a.benchmark_profile:
                 if a.scenario != "reference":
                     raise ValueError("reference path required")
                 from reference import execute

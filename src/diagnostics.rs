@@ -234,6 +234,7 @@ pub struct Resources {
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct Snapshot {
+    pub recovery: RecoverySnapshot,
     pub profile: ProfileCounters,
     pub resources: Resources,
     pub sessions_active: u64,
@@ -241,6 +242,16 @@ pub struct Snapshot {
     pub counters: Counters,
     pub offloads: OffloadState,
     pub socket_buffers: SocketBuffers,
+}
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct RecoverySnapshot {
+    pub counter_overflow: bool,
+    pub client_state: Option<crate::session::ClientState>,
+    pub connection_attempts: u64,
+    pub transitions: u64,
+    pub keepalive_probes: u64,
+    pub watchdog_timeouts: u64,
+    pub discarded_ciphertext: u64,
 }
 /// Controlled boundaries only, not all allocations/copies inside crypto/quiche.
 #[derive(Default, Clone, Copy, Serialize)]
@@ -997,7 +1008,8 @@ impl Diagnostics {
                 counters,
                 diagnostics_dropped: self.queue.dropped(),
                 status_write_failures: self.queue.shared.write_failures.load(Ordering::Relaxed),
-                counter_overflow: self.queue.shared.overflow.load(Ordering::Relaxed),
+                counter_overflow: self.queue.shared.overflow.load(Ordering::Relaxed)
+                    || counters.recovery.counter_overflow,
                 failures: &entries[begin..end],
                 chunk_index: index,
                 chunk_count: count,

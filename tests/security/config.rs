@@ -244,6 +244,8 @@ fn defaults_offloads_and_checked_numeric_fd_budgets() {
         "[transport]\npacing='off'",
         "[transport]\nouter_udp_max_bytes=1199",
         "[limits]\nmax_connections=0",
+        "[recovery]\nretry_initial_ms=99",
+        "[recovery]\nretry_max_ms=2001",
         "[limits]\nmax_sessions=16",
         "[limits]\nconnection_dgram_bytes=1024",
         "[limits]\nquiche_dgram_packets=9223372036854775807",

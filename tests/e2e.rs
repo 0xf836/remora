@@ -9,7 +9,11 @@ mod conformance;
 mod forwarding;
 #[path = "e2e/overload.rs"]
 mod overload;
+#[path = "e2e/recovery.rs"]
+mod recovery;
 #[path = "e2e/security.rs"]
 mod security;
+#[path = "e2e/shutdown.rs"]
+mod shutdown;
 #[path = "e2e/sizes.rs"]
 mod sizes;

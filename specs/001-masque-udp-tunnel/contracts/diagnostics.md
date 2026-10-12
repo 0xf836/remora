@@ -24,6 +24,21 @@ If the ring fills before completed output, evict the oldest pending entry with a
 
 ### Shutdown collection
 
+Phase 6 adds a fixed `recovery` snapshot object: nullable `client_state`
+(`starting`, `handshaking`, `negotiating`, `active`, `recovering`, `rejected`,
+`stopping`, `stopped`), `connection_attempts`, `transitions`, `keepalive_probes`,
+`watchdog_timeouts`, `discarded_ciphertext` and `counter_overflow`. Server state
+is null. These are bounded process counters, not per-attempt history or labels.
+Active means verified transport/settings; Session acceptance remains separate.
+Authenticated-peer watchdog expiry emits `peer_timeout/1`; native timeout uses
+its existing code. Local sends and invalid/duplicate receive input cannot
+renew authenticated progress. Recovery-counter overflow invalidates measurement
+through the top-level overflow flag.
+
+Graceful cleanup adds one terminal `stopped/0` status after sockets and Sessions
+are released, including shutdown before the first periodic snapshot. It shares
+the existing terminal ring, ACK rules and overall <=5-second stop budget.
+
 After packet work and session/socket cleanup end, drain pending terminal status
 within one shared one-second collection deadline, inside the overall shutdown
 budget. This shutdown-only operation may bypass the ordinary snapshot interval;

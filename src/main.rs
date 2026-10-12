@@ -53,8 +53,10 @@ fn main() -> ExitCode {
     };
     let result = runtime.block_on(remora::reactor::run(&settings));
     // libc DNS cannot be killed; its bounded worker keeps its permit. Limit
-    // shutdown waiting so cancellation never waits indefinitely for DNS.
-    runtime.shutdown_timeout(Duration::from_secs(1));
+    // The owner has already consumed the shared stop/status-flush budget.
+    // Do not add a second wait after it. Unkillable bounded DNS workers retain
+    // their permits until this executable exits; no reactor callbacks remain.
+    runtime.shutdown_timeout(Duration::ZERO);
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

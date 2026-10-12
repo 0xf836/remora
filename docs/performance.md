@@ -493,3 +493,100 @@ assessment using the existing ADR-0007/Phase-5 development policy passes 30/30
 at the already authorized 0.5-core ceilings with every non-CPU bound unchanged.
 It remains retrospective development acceptance, not SC/release qualification.
 Full native-duration/resource/churn/platform acceptance remains T077.
+
+## Phase 6 T063 prospective loaded-path comparison — 2026-10-12
+
+Recovery adds paced idle probes, authenticated-peer-progress checks, fresh
+client generations/sockets and GOAWAY draining placement. Before production
+edits, collected five paired repetitions in every direction with
+`benchmarks/recovery-x86_64.toml`: one Session, 128-byte payload, 1000pps,
+two-second warmup, three-second measurement, mmsg/32, CUBIC, offloads off.
+The initial reverse collection was invalid due to a missing reverse-rate
+argument in the runner's bounded collector; that failed series is retained.
+Corrected the runner and recollected all 30 valid pre-change rows before edits.
+
+Reference executable:
+`43f0f30b1ce3f467df4bda5da69c6ebd6ba44967ca13a635583b5a44425aaec7`.
+Pre-review recovery candidate:
+`fe36ae3958b53bbd875ad052fb15e7f9c59b35cecd0b20f6775257a6b12118ef`.
+Both series use the same retained traffic/baseline executable:
+`89ecbf2c4f626ab0bfe3b424dd1c5ce5e552858411833b0832dff851735bd0cb`.
+The candidate series ran after all builds/tests/native matrices finished.
+
+The unbound tracked template is `benchmarks/policies/phase6-x86_64.json`.
+It was frozen before production changes from reference extrema plus two
+observed five-repeat spreads or declared CPU/RTT/RSS/delivery floors; it
+compares every run without averaging failures. Template SHA-256:
+`31319e104214ba20f08f158797ab9050c1b24a3022f89c0c0ecb207bd6e74038`.
+The reference-bound local `phase6-reference/comparison-policy.json` SHA-256 is
+`d0a7e2cf634fd88175d6f8aac4de989f4e8110c4ec1bbddd485a705fa3c0f65d`.
+Reference manifest/summary hashes remain bound; no bound was adjusted after
+measurement. Unlike earlier increments, no separate development exception
+was needed for this comparison.
+
+**Result: 30/30 strict workload checks passed; overall PASS.** All candidate
+rows have valid clock/byte-integrity/delivery coverage, zero loss, corruption
+and measurement errors, and 1.024Mbit/s delivery per active direction. CPU,
+owner CPU, RSS, RTT and delivery/loss all satisfy their original workload
+bounds. Tunnel ranges below are five separate runs, not confidence intervals.
+CPU cells show process / owner cores.
+
+| Tunnel workload/role | Reference CPU ranges | Candidate CPU ranges | Candidate maximum RSS MiB | Candidate maximum RTT p95 ms |
+| --- | --- | --- | ---: | ---: |
+| forward client | 0.129–0.160 / 0.129–0.153 | 0.179–0.199 / 0.175–0.193 | 8.34 | 0.919 |
+| forward server | 0.092–0.112 / 0.092–0.109 | 0.127–0.141 / 0.120–0.138 | 8.27 | 0.919 |
+| reverse client | 0.088–0.129 / 0.085–0.122 | 0.117–0.141 / 0.117–0.135 | 8.35 | 1.089 |
+| reverse server | 0.126–0.183 / 0.122–0.176 | 0.182–0.210 / 0.172–0.203 | 8.28 | 1.089 |
+| simultaneous client | 0.156–0.234 / 0.153–0.228 | 0.223–0.313 / 0.220–0.310 | 8.25 | 0.874 |
+| simultaneous server | 0.166–0.234 / 0.156–0.234 | 0.213–0.317 / 0.210–0.310 | 8.30 | 0.874 |
+
+Artifacts: `benchmarks/results/phase6-prechange-valid/`,
+`phase6-reference/`, `phase6-candidate/` (including strict `comparison.json`).
+Invalid original collector data remains `phase6-prechange/`. Commands and
+functional recovery/shutdown evidence are in
+[the recovery report](validation/recovery.md) and
+[quickstart](../specs/001-masque-udp-tunnel/quickstart.md#phase-6-recovery-and-signal-validation).
+
+This is a short, low-rate loopback comparison with enabled liveness code under
+application load. It does not estimate actual idle PING CPU cost: the separate
+native idle scenario proves four real probes over nine seconds without
+replacement. Native recovery timing is separate again. No conclusion about
+sustained capacity, high-rate regression, WAN/VPS, SC-003/004/005/007, final
+release resource/duration acceptance or ARM64 follows; T076/T077 remain pending.
+
+## Phase 6 independent-review correction comparison — 2026-10-13
+
+The P1 fix cancels all not-yet-accepted client Sessions on permanent mapping
+rejection and guards queued CONNECT and delayed-success activation. Mapping
+refusal remains correlated before cleanup. The added owner regression checks
+401/403/501, accepted-flow delivery, pending cleanup and both independent guards.
+The complete correctness/native/interop/shutdown checks ran before measurement.
+Details are in [recovery.md](validation/recovery.md#independent-review-correction--2026-10-13).
+
+Corrected release SHA-256:
+`dee40610068f3f20ccdb8799230bfef8a74022d5c6e02fb5ab09e97f7ca49602`.
+The clean new candidate uses the identical pre-Phase-6 reference, retained
+traffic executable, profile and bound policy described above. No original
+policy/reference was modified or rebound; all previous results are retained
+with their own executable scope.
+
+**Corrected candidate: 30/30 strict checks passed; overall PASS.** All rows
+are valid low-rate measurements with zero loss/integrity/measurement errors;
+each active direction delivered 3000/3000 messages at 1.024Mbit/s. CPU, owner
+CPU, RSS, RTT and delivery/loss satisfy unchanged frozen workload bounds.
+Five-run tunnel ranges (process / owner cores) are:
+
+| Corrected tunnel workload/role | CPU ranges | Maximum RSS MiB | Maximum RTT p95 ms |
+| --- | --- | ---: | ---: |
+| forward client | 0.162–0.183 / 0.155–0.178 | 8.32 | 0.890 |
+| forward server | 0.114–0.130 / 0.107–0.125 | 8.32 | 0.890 |
+| reverse client | 0.092–0.122 / 0.088–0.119 | 8.35 | 0.887 |
+| reverse server | 0.139–0.180 / 0.133–0.176 | 8.27 | 0.887 |
+| simultaneous client | 0.210–0.278 / 0.210–0.271 | 8.33 | 0.878 |
+| simultaneous server | 0.217–0.275 / 0.210–0.271 | 8.29 | 0.878 |
+
+Artifacts: `benchmarks/results/phase6-review-fixes-candidate/` including
+`comparison.json`; source/reference/policy hashes are retained in the manifest.
+This is the same short loaded-path scope, with functional idle-probe timing
+separate. It does not extend the evidence to high-rate/idle CPU cost, WAN/VPS,
+ARM64 or final release duration/resource requirements.

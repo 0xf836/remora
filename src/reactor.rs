@@ -5,7 +5,10 @@ use crate::{
     diagnostics::{Diagnostics, Event, Failure, Role, Snapshot},
     masque::{self, CapsuleParser, Response, WireError},
     policy::{self, PolicyError, SetupKey, SystemResolver},
-    session::{FairCursor, MappingLatch, PollSocket, Session, State, round_robin},
+    session::{
+        ClientState, FairCursor, MappingLatch, PollSocket, RetrySchedule, Session, State,
+        round_robin,
+    },
     transport::{self, Connection, TrackedFactory, TransportError},
     udp::{MonotonicTimer, ReceiveFault, SendPacket, Udp},
 };
@@ -33,6 +36,7 @@ struct OwnedConnection {
     transport: Connection,
     socket: usize,
     _permit: crate::buffers::Reservation,
+    _socket_permit: Option<crate::buffers::Reservation>,
     id: crate::diagnostics::OpaqueId,
     initial_cid: Vec<u8>,
     cursors: [FairCursor; 7],
@@ -90,6 +94,10 @@ struct Runner<'a> {
     next_snapshot: Instant,
     stopping: bool,
     ever_active: bool,
+    primary: Option<u64>,
+    reconnect: RetrySchedule,
+    setup_retry: RetrySchedule,
+    stop_started: Option<Instant>,
     #[cfg(test)]
     outer_send_hook: Option<OuterSendHook>,
 }
@@ -158,21 +166,6 @@ impl<'a> Runner<'a> {
                 }
             }
             RoleConfig::Client(c) => {
-                let address = if c.server_address.is_ipv4() {
-                    "0.0.0.0:0"
-                } else {
-                    "[::]:0"
-                };
-                let mut socket = Udp::bind(
-                    address.parse().map_err(|_| RuntimeError::Bind)?,
-                    cfg.io(),
-                    false,
-                )
-                .map_err(|_| RuntimeError::Bind)?;
-                socket
-                    .connect(c.server_address)
-                    .map_err(|_| RuntimeError::Socket)?;
-                outer.push(PollSocket::register(socket).map_err(|_| RuntimeError::Socket)?);
                 listener = Some(
                     PollSocket::register(
                         Udp::bind(c.listen, cfg.io(), true).map_err(|_| RuntimeError::Bind)?,
@@ -223,6 +216,16 @@ impl<'a> Runner<'a> {
             next_snapshot: now + Duration::from_millis(cfg.diagnostics().snapshot_interval_ms),
             stopping: false,
             ever_active: false,
+            primary: None,
+            reconnect: RetrySchedule::new(
+                cfg.recovery().retry_initial_ms,
+                cfg.recovery().retry_max_ms,
+            ),
+            setup_retry: RetrySchedule::new(
+                cfg.recovery().retry_initial_ms,
+                cfg.recovery().retry_max_ms,
+            ),
+            stop_started: None,
             #[cfg(test)]
             outer_send_hook: None,
         };
@@ -258,36 +261,239 @@ impl<'a> Runner<'a> {
         resource(runner.sessions.try_reserve(cfg.limits().max_sessions))?;
         resource(runner.senders.try_reserve(cfg.limits().max_sessions))?;
         resource(runner.pending.try_reserve(cfg.limits().max_pending_setup))?;
-        if let RoleConfig::Client(c) = cfg.role() {
-            let cid = transport::random_cid().map_err(|_| RuntimeError::Resource)?;
-            let permit = resource(runner.budgets.connections.reserve(1, 0))?;
-            let generation = resource(runner.generations.next_generation())?;
-            let local = runner.outer[0].get_ref().0.borrow().local_addr();
-            let q = quiche::connect_with_buffer_factory::<TrackedFactory>(
-                Some(&c.server_name),
-                &quiche::ConnectionId::from_ref(&cid),
-                local,
-                c.server_address,
-                &mut runner.quic_config,
-            )
-            .map_err(|_| RuntimeError::Transport)?;
-            let id = runner
-                .diagnostics
-                .next_id()
-                .map_err(|_| RuntimeError::Diagnostics)?;
-            runner.connections.insert(
-                generation.0,
-                OwnedConnection {
-                    transport: Connection::new(q, generation, false, cfg, now),
-                    socket: 0,
-                    _permit: permit,
-                    id,
-                    initial_cid: cid.to_vec(),
-                    cursors: [FairCursor::default(); 7],
-                },
-            );
+        if !runner.server {
+            resource(runner.outer.try_reserve(cfg.limits().max_connections))?;
+            runner.client_state(ClientState::Starting, now)?;
+            if let Err(error) = runner.start_client_connection(now) {
+                runner.failure(Failure::Socket, 0, None, None);
+                if error == RuntimeError::Diagnostics {
+                    return Err(error);
+                }
+                runner.schedule_reconnect(now)?;
+            }
         }
         Ok(runner)
+    }
+    fn client_state(&mut self, state: ClientState, now: Instant) -> Result<(), RuntimeError> {
+        if self.snapshot.recovery.client_state == Some(state) {
+            return Ok(());
+        }
+        self.snapshot.recovery.client_state = Some(state);
+        self.snapshot.recovery.transitions = self
+            .snapshot
+            .recovery
+            .transitions
+            .checked_add(1)
+            .ok_or(RuntimeError::Diagnostics)?;
+        let name = match state {
+            ClientState::Active => crate::diagnostics::EventName::Active,
+            ClientState::Recovering => crate::diagnostics::EventName::Recovering,
+            ClientState::Rejected => crate::diagnostics::EventName::Rejected,
+            ClientState::Stopped => crate::diagnostics::EventName::Stopped,
+            _ => crate::diagnostics::EventName::Starting,
+        };
+        let mut event = Event::failure(crate::config::Level::Info, Failure::Transport, 0);
+        event.event = name;
+        event.failure = None;
+        event.numeric_code = None;
+        let _ = self.diagnostics.event(now, event);
+        Ok(())
+    }
+    fn jitter(limit: u64) -> Result<u64, RuntimeError> {
+        let span = limit.checked_add(1).ok_or(RuntimeError::Resource)?;
+        let zone = u64::MAX - u64::MAX % span;
+        // Unbiased bounded draw. There is no unbounded entropy retry on owner.
+        for _ in 0..4 {
+            let mut bytes = [0; 8];
+            getrandom::fill(&mut bytes).map_err(|_| RuntimeError::Resource)?;
+            let value = u64::from_ne_bytes(bytes);
+            if value < zone {
+                return Ok(value % span);
+            }
+        }
+        Err(RuntimeError::Resource)
+    }
+    fn schedule_reconnect(&mut self, now: Instant) -> Result<(), RuntimeError> {
+        if self.server || self.stopping || !self.latch.may_setup() {
+            return Ok(());
+        }
+        if self.reconnect.deadline().is_none() {
+            let jitter = Self::jitter(self.reconnect.jitter_ceiling_ms())?;
+            self.reconnect.schedule(now, jitter);
+        }
+        self.client_state(ClientState::Recovering, now)
+    }
+    fn start_client_connection(&mut self, now: Instant) -> Result<(), RuntimeError> {
+        if self.primary.is_some() || self.stopping || !self.latch.may_setup() {
+            return Ok(());
+        }
+        self.reconnect.started();
+        self.snapshot.recovery.connection_attempts = self
+            .snapshot
+            .recovery
+            .connection_attempts
+            .checked_add(1)
+            .ok_or(RuntimeError::Diagnostics)?;
+        let RoleConfig::Client(client) = self.cfg.role() else {
+            return Err(RuntimeError::Transport);
+        };
+        let permit = resource(self.budgets.connections.reserve(1, 0))?;
+        let socket_permit = resource(self.budgets.fds.reserve(1, 0))?;
+        let address = if client.server_address.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
+        let mut socket = Udp::bind(
+            address.parse().map_err(|_| RuntimeError::Bind)?,
+            self.cfg.io(),
+            false,
+        )
+        .map_err(|_| RuntimeError::Socket)?;
+        socket
+            .connect(client.server_address)
+            .map_err(|_| RuntimeError::Socket)?;
+        let local = socket.local_addr();
+        let cid = transport::random_cid().map_err(|_| RuntimeError::Resource)?;
+        let generation = resource(self.generations.next_generation())?;
+        let quic = quiche::connect_with_buffer_factory::<TrackedFactory>(
+            Some(&client.server_name),
+            &quiche::ConnectionId::from_ref(&cid),
+            local,
+            client.server_address,
+            &mut self.quic_config,
+        )
+        .map_err(|_| RuntimeError::Transport)?;
+        let id = self
+            .diagnostics
+            .next_id()
+            .map_err(|_| RuntimeError::Diagnostics)?;
+        let socket_index = self.outer.len();
+        let socket = PollSocket::register(socket).map_err(|_| RuntimeError::Socket)?;
+        self.snapshot.socket_buffers.outer_receive_max_per_socket = self
+            .snapshot
+            .socket_buffers
+            .outer_receive_max_per_socket
+            .max(socket.get_ref().0.borrow().receive_buffer);
+        self.snapshot.socket_buffers.outer_send_max_per_socket = self
+            .snapshot
+            .socket_buffers
+            .outer_send_max_per_socket
+            .max(socket.get_ref().0.borrow().send_buffer);
+        self.outer.push(socket);
+        self.connections.insert(
+            generation.0,
+            OwnedConnection {
+                transport: Connection::new(quic, generation, false, self.cfg, now),
+                socket: socket_index,
+                _permit: permit,
+                _socket_permit: Some(socket_permit),
+                id,
+                initial_cid: cid.to_vec(),
+                cursors: [FairCursor::default(); 7],
+            },
+        );
+        self.primary = Some(generation.0);
+        self.client_state(ClientState::Handshaking, now)
+    }
+    fn service_recovery(&mut self, now: Instant) -> Result<bool, RuntimeError> {
+        if !self.server
+            && !self.stopping
+            && self.latch.may_setup()
+            && self.primary.is_none()
+            && self.reconnect.due(now)
+        {
+            if let Err(error) = self.start_client_connection(now) {
+                if error == RuntimeError::Diagnostics {
+                    return Err(error);
+                }
+                self.failure(Failure::Socket, 0, None, None);
+                self.schedule_reconnect(now)?;
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+    fn permanent_client_failure(
+        &mut self,
+        now: Instant,
+        reason: Failure,
+        code: u64,
+    ) -> Result<(), RuntimeError> {
+        self.latch.reject();
+        self.reconnect.reset();
+        self.setup_retry.reset();
+        // Only already accepted flows survive terminal mapping rejection.
+        // Retire every pending generation before polling H3 again, cancelling
+        // its callbacks, sender association and setup permits together.
+        let pending: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(id, s)| (s.state != State::Active).then_some(*id))
+            .collect();
+        for id in pending {
+            self.request_failure(
+                reason,
+                code,
+                self.sessions.get(&id).map(|s| s.id),
+                self.sessions
+                    .get(&id)
+                    .and_then(|s| self.connections.get(&s.connection.0))
+                    .map(|c| c.id),
+            );
+            self.close_session(id, 0x10b);
+        }
+        self.client_state(ClientState::Rejected, now)
+    }
+    fn remove_connection(&mut self, id: u64, now: Instant) -> Result<(), RuntimeError> {
+        let affected: Vec<_> = self
+            .sessions
+            .iter()
+            .filter_map(|(sid, s)| (s.connection.0 == id).then_some(*sid))
+            .collect();
+        for sid in affected {
+            if let Some(s) = self.sessions.get_mut(&sid) {
+                s.state = State::Recovering;
+            }
+            self.close_session(sid, 0x100);
+        }
+        if let Some(mut c) = self.connections.remove(&id) {
+            self.snapshot.recovery.discarded_ciphertext = self
+                .snapshot
+                .recovery
+                .discarded_ciphertext
+                .checked_add(c.transport.output.len() as u64)
+                .ok_or(RuntimeError::Diagnostics)?;
+            c.transport.stop();
+            if !self.server {
+                self.retired_io = self
+                    .retired_io
+                    .merge(self.outer[c.socket].get_ref().0.borrow().stats());
+                self.outer.remove(c.socket);
+                for other in self.connections.values_mut() {
+                    if other.socket > c.socket {
+                        other.socket -= 1;
+                    }
+                }
+            }
+        }
+        if self.primary == Some(id) {
+            self.primary = None;
+            self.schedule_reconnect(now)?;
+        }
+        Ok(())
+    }
+    fn stop_connection(&mut self, id: u64) -> Result<(), RuntimeError> {
+        if let Some(c) = self.connections.get_mut(&id) {
+            self.snapshot.recovery.discarded_ciphertext = self
+                .snapshot
+                .recovery
+                .discarded_ciphertext
+                .checked_add(c.transport.output.len() as u64)
+                .ok_or(RuntimeError::Diagnostics)?;
+            c.transport.stop();
+        }
+        Ok(())
     }
     fn drop_packet(
         &mut self,
@@ -359,6 +565,22 @@ impl<'a> Runner<'a> {
     }
     fn retire_session(&mut self, generation: u64, code: u64, abort_write: bool) {
         if let Some(mut s) = self.sessions.remove(&generation) {
+            let recovering = s.state == State::Recovering;
+            if recovering {
+                for direction in [Direction::ToTarget, Direction::ToClient] {
+                    while s.queue.pop(direction).is_some() {
+                        if self
+                            .snapshot
+                            .counters
+                            .local_drops
+                            .add(crate::diagnostics::DropReason::Recovering, direction, 1)
+                            .is_err()
+                        {
+                            self.snapshot.recovery.counter_overflow = true;
+                        }
+                    }
+                }
+            }
             if let Some(relay) = &s.relay {
                 self.retired_io = self.retired_io.merge(relay.get_ref().0.borrow().stats());
             }
@@ -382,12 +604,33 @@ impl<'a> Runner<'a> {
             if let Some(c) = self.connections.get_mut(&s.connection.0)
                 && s.stream != u64::MAX
             {
+                let native = c.transport.quic.dgram_send_queue_len();
                 c.transport
                     .retain_cleanup(s.stream, Some(s._session), s._identity.take());
                 if abort_write {
                     c.transport.close_stream(s.stream, code);
                 } else {
                     c.transport.purge_stream_datagrams(s.stream);
+                }
+                if recovering {
+                    let purged = native.saturating_sub(c.transport.quic.dgram_send_queue_len());
+                    if self
+                        .snapshot
+                        .counters
+                        .local_drops
+                        .add(
+                            crate::diagnostics::DropReason::Recovering,
+                            if self.server {
+                                Direction::ToClient
+                            } else {
+                                Direction::ToTarget
+                            },
+                            purged as u64,
+                        )
+                        .is_err()
+                    {
+                        self.snapshot.recovery.counter_overflow = true;
+                    }
                 }
             }
             self.pending.retain(|p| p.session != generation);
@@ -559,6 +802,13 @@ impl<'a> Runner<'a> {
             .then_some(*id)
         });
         let connection = if let Some(id) = known {
+            if !self.server && self.connections[&id].socket != index {
+                self.drop_packet(
+                    crate::diagnostics::DropReason::StaleGeneration,
+                    Direction::ToClient,
+                )?;
+                return Ok(());
+            }
             id
         } else {
             if !self.server
@@ -647,6 +897,7 @@ impl<'a> Runner<'a> {
                     transport: Connection::new(q, generation, true, self.cfg, now),
                     socket: index,
                     _permit: permit,
+                    _socket_permit: None,
                     id,
                     initial_cid: header.dcid.as_ref().to_vec(),
                     cursors: [FairCursor::default(); 7],
@@ -680,7 +931,11 @@ impl<'a> Runner<'a> {
                         self.connections.get(&connection).map(|c| c.id),
                     );
                     if !self.server && matches!(error, quiche::Error::TlsFail) {
-                        return Err(RuntimeError::Transport);
+                        self.permanent_client_failure(now, Failure::Trust, 0)?;
+                        self.stop_connection(connection)?;
+                        if !self.ever_active {
+                            return Err(RuntimeError::Trust);
+                        }
                     }
                 }
             }
@@ -876,7 +1131,15 @@ impl<'a> Runner<'a> {
                             )?;
                             continue;
                         }
-                        let Some(connection) = self.connections.keys().next().copied() else {
+                        if self.setup_retry.deadline().is_some() && !self.setup_retry.due(now) {
+                            self.drop_packet(
+                                crate::diagnostics::DropReason::Recovering,
+                                Direction::ToTarget,
+                            )?;
+                            continue;
+                        }
+                        self.setup_retry.started();
+                        let Some(connection) = self.primary else {
                             self.drop_packet(
                                 crate::diagnostics::DropReason::Recovering,
                                 Direction::ToTarget,
@@ -904,7 +1167,11 @@ impl<'a> Runner<'a> {
                     };
                     if s.state != State::Active {
                         self.drop_packet(
-                            crate::diagnostics::DropReason::NotActive,
+                            if self.snapshot.recovery.connection_attempts > 1 {
+                                crate::diagnostics::DropReason::Recovering
+                            } else {
+                                crate::diagnostics::DropReason::NotActive
+                            },
                             Direction::ToTarget,
                         )?;
                         continue;
@@ -1021,10 +1288,18 @@ impl<'a> Runner<'a> {
             let result = masque::response(&list, !more);
             match result {
                 Ok(Response::Informational) => {}
+                Ok(Response::Accepted)
+                    if !self.latch.may_setup() && self.sessions[&id].state != State::Active =>
+                {
+                    // A valid but delayed success after mapping cancellation
+                    // is discarded, not reported as a malformed peer response.
+                    self.close_session(id, 0x10b);
+                }
                 Ok(Response::Accepted) => {
                     if let Some(s) = self.sessions.get_mut(&id) {
                         if s.state == State::AwaitingAcceptance {
                             self.ever_active = true;
+                            self.setup_retry.reset();
                             s.state = State::Active;
                             s.udp_activity(now);
                             s._setup = None;
@@ -1034,21 +1309,31 @@ impl<'a> Runner<'a> {
                     }
                 }
                 Ok(Response::Rejected(code)) => {
-                    if [400, 401, 403, 404, 405].contains(&code) {
-                        self.latch.reject();
+                    let permanent = [400, 401, 403, 404, 405, 501].contains(&code);
+                    let reason = if code == 401 {
+                        Failure::Authentication
+                    } else if code == 501 {
+                        Failure::Capability
+                    } else {
+                        Failure::Authorization
+                    };
+                    if !permanent && self.setup_retry.deadline().is_none() {
+                        let jitter = Self::jitter(self.setup_retry.jitter_ceiling_ms())?;
+                        self.setup_retry.schedule(now, jitter);
                     }
                     self.failure(
-                        if code == 401 {
-                            Failure::Authentication
-                        } else {
-                            Failure::Authorization
-                        },
+                        reason,
                         u64::from(code),
                         self.sessions.get(&id).map(|s| s.id),
                         self.connections.get(&connection).map(|c| c.id),
                     );
+                    // Correlate the refusing Session before mapping-wide
+                    // cancellation removes its opaque id and pending status.
+                    if permanent {
+                        self.permanent_client_failure(now, reason, u64::from(code))?;
+                    }
                     self.close_session(id, 0x10b);
-                    if !self.ever_active {
+                    if permanent && !self.ever_active {
                         return Err(RuntimeError::Transport);
                     }
                 }
@@ -1245,6 +1530,16 @@ impl<'a> Runner<'a> {
         Ok(())
     }
     fn negotiate_transport(&mut self, connection: u64) -> Result<bool, RuntimeError> {
+        if !self.server
+            && self.primary == Some(connection)
+            && self
+                .connections
+                .get(&connection)
+                .is_some_and(|c| c.transport.quic.is_established())
+            && self.snapshot.recovery.client_state == Some(ClientState::Handshaking)
+        {
+            self.client_state(ClientState::Negotiating, Instant::now())?;
+        }
         let result = self
             .connections
             .get_mut(&connection)
@@ -1252,10 +1547,20 @@ impl<'a> Runner<'a> {
             .transport
             .negotiate();
         match result {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                if value
+                    && !self.server
+                    && self.primary == Some(connection)
+                    && self.latch.may_setup()
+                {
+                    self.reconnect.reset();
+                    self.client_state(ClientState::Active, Instant::now())?;
+                }
+                Ok(value)
+            }
             Err(TransportError::Capability) => {
                 if !self.server {
-                    self.latch.reject();
+                    self.permanent_client_failure(Instant::now(), Failure::Capability, 0)?;
                 }
                 Err(RuntimeError::Capability)
             }
@@ -1486,7 +1791,7 @@ impl<'a> Runner<'a> {
         } else {
             0
         };
-        if ready && !self.server {
+        if ready && !self.server && self.latch.may_setup() {
             let ids: Vec<_> = self
                 .sessions
                 .iter()
@@ -1646,6 +1951,10 @@ impl<'a> Runner<'a> {
                             .collect();
                         for id in ids {
                             self.close_session(id, 0x10b);
+                        }
+                        if self.primary == Some(connection) {
+                            self.primary = None;
+                            self.schedule_reconnect(now)?;
                         }
                     }
                 }
@@ -2030,6 +2339,11 @@ impl<'a> Runner<'a> {
         Ok(())
     }
     fn relay_input(&mut self, id: u64, now: Instant) -> Result<bool, RuntimeError> {
+        // The visit list may predate a FIN/RESET/GOAWAY cancellation in the
+        // same bounded turn. A stale visit cannot resurrect or fail a new flow.
+        if !self.sessions.contains_key(&id) {
+            return Ok(false);
+        }
         let error_info = self.sessions.get(&id).and_then(|s| {
             s.relay.as_ref().map(|relay| {
                 (
@@ -2329,6 +2643,57 @@ impl<'a> Runner<'a> {
             }
             more |= c.transport.drain_path_events();
         }
+        let connections: Vec<_> = self.connections.keys().copied().collect();
+        for id in connections {
+            let active = self
+                .sessions
+                .values()
+                .any(|s| s.connection.0 == id && s.state == State::Active);
+            let action = self
+                .connections
+                .get_mut(&id)
+                .unwrap()
+                .transport
+                .service_liveness(now, active);
+            match action {
+                Ok(transport::LivenessAction::None) => {}
+                Ok(transport::LivenessAction::Probe) => {
+                    self.snapshot.recovery.keepalive_probes = self
+                        .snapshot
+                        .recovery
+                        .keepalive_probes
+                        .checked_add(1)
+                        .ok_or(RuntimeError::Diagnostics)?;
+                    more = true;
+                }
+                Ok(transport::LivenessAction::Expired) => {
+                    self.snapshot.recovery.watchdog_timeouts = self
+                        .snapshot
+                        .recovery
+                        .watchdog_timeouts
+                        .checked_add(1)
+                        .ok_or(RuntimeError::Diagnostics)?;
+                    self.failure(
+                        Failure::PeerTimeout,
+                        1,
+                        None,
+                        self.connections.get(&id).map(|c| c.id),
+                    );
+                    self.stop_connection(id)?;
+                    more = true;
+                }
+                Err(_) => {
+                    self.failure(
+                        Failure::Transport,
+                        0,
+                        None,
+                        self.connections.get(&id).map(|c| c.id),
+                    );
+                    self.stop_connection(id)?;
+                    more = true;
+                }
+            }
+        }
         Ok(more)
     }
     /// Each class selects at most four sessions, including under source churn.
@@ -2505,13 +2870,42 @@ impl<'a> Runner<'a> {
             self.close_session(id, 0x100);
         }
     }
-    async fn run(&mut self) -> Result<(), RuntimeError> {
-        let mut term = signal(SignalKind::terminate()).map_err(|_| RuntimeError::Signal)?;
-        let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| RuntimeError::Signal)?;
+    fn stop_owned(&mut self, now: Instant) -> Result<(), RuntimeError> {
+        self.stopping = true;
+        self.stop_started.get_or_insert(now);
+        self.reconnect.reset();
+        self.setup_retry.reset();
+        if !self.server {
+            self.client_state(ClientState::Stopping, now)?;
+        }
+        self.pending.clear();
+        let ids: Vec<_> = self.sessions.keys().copied().collect();
+        for id in ids {
+            self.close_session(id, 0x100);
+        }
+        for c in self.connections.values_mut() {
+            c.transport.stop();
+        }
+        Ok(())
+    }
+    async fn run(
+        &mut self,
+        mut term: tokio::signal::unix::Signal,
+        mut interrupt: tokio::signal::unix::Signal,
+    ) -> Result<(), RuntimeError> {
         loop {
             let now = Instant::now();
+            let stop = std::future::poll_fn(|cx| {
+                Poll::Ready(term.poll_recv(cx).is_ready() || interrupt.poll_recv(cx).is_ready())
+            })
+            .await;
+            if stop {
+                self.stop_owned(now)?;
+                return Ok(());
+            }
             // Timers/cancellation are checked between bounded owner turns.
-            let mut more = self.service_transport_timers(now)?;
+            let mut more = self.service_recovery(now)?;
+            more |= self.service_transport_timers(now)?;
             // At most eight owner visits before timers/cancellation. Connection
             // work has per-class item quotas; metadata enumeration and internal
             // quiche work are not a fixed number of API calls/instructions.
@@ -2556,10 +2950,27 @@ impl<'a> Runner<'a> {
                                     None,
                                     self.connections.get(&id).map(|c| c.id),
                                 );
-                                if let Some(c) = self.connections.get_mut(&id) {
-                                    c.transport.stop();
+                                self.stop_connection(id)?;
+                                if !self.server
+                                    && matches!(
+                                        error,
+                                        RuntimeError::Capability | RuntimeError::Trust
+                                    )
+                                {
+                                    self.permanent_client_failure(
+                                        Instant::now(),
+                                        if error == RuntimeError::Trust {
+                                            Failure::Trust
+                                        } else {
+                                            Failure::Capability
+                                        },
+                                        0,
+                                    )?;
                                 }
-                                if !self.server {
+                                // HTTP refusal already latched the immutable mapping in
+                                // client_headers. Preserve fatal initial rejection even
+                                // when its propagated error is the generic Transport variant.
+                                if !self.server && !self.ever_active && !self.latch.may_setup() {
                                     return Err(error);
                                 }
                             }
@@ -2583,9 +2994,7 @@ impl<'a> Runner<'a> {
                                     None,
                                     self.connections.get(&id).map(|c| c.id),
                                 );
-                                if let Some(c) = self.connections.get_mut(&id) {
-                                    c.transport.stop();
-                                }
+                                self.stop_connection(id)?;
                             }
                             None => {}
                         }
@@ -2599,9 +3008,7 @@ impl<'a> Runner<'a> {
                                 None,
                                 self.connections.get(&id).map(|c| c.id),
                             );
-                            if let Some(c) = self.connections.get_mut(&id) {
-                                c.transport.stop();
-                            }
+                            self.stop_connection(id)?;
                         }
                     }
                     _ => {
@@ -2646,17 +3053,21 @@ impl<'a> Runner<'a> {
                         Some(c.id),
                     );
                 }
-                let sessions: Vec<_> = self
-                    .sessions
+                self.remove_connection(id, Instant::now())?;
+            }
+            if !self.server {
+                let retired: Vec<_> = self
+                    .connections
                     .iter()
-                    .filter_map(|(sid, s)| (s.connection.0 == id).then_some(*sid))
+                    .filter_map(|(id, c)| {
+                        (c.transport.draining.is_some()
+                            && c.transport.cleanup_count() == 0
+                            && !self.sessions.values().any(|s| s.connection.0 == *id))
+                        .then_some(*id)
+                    })
                     .collect();
-                for sid in sessions {
-                    self.close_session(sid, 0x100);
-                }
-                self.connections.remove(&id);
-                if !self.server && !self.ever_active {
-                    return Err(RuntimeError::Transport);
+                for id in retired {
+                    self.remove_connection(id, Instant::now())?;
                 }
             }
             if now >= self.next_snapshot {
@@ -2677,8 +3088,15 @@ impl<'a> Runner<'a> {
             }
             let deadline = self
                 .connections
-                .values()
-                .filter_map(|c| c.transport.deadline(now))
+                .iter()
+                .filter_map(|(id, c)| {
+                    c.transport.deadline_for(
+                        now,
+                        self.sessions
+                            .values()
+                            .any(|s| s.connection.0 == *id && s.state == State::Active),
+                    )
+                })
                 .chain(self.sessions.values().map(|s| {
                     s.deadline(
                         Duration::from_millis(self.cfg.limits().idle_session_ms),
@@ -2692,6 +3110,8 @@ impl<'a> Runner<'a> {
                         .min()
                 }))
                 .chain(std::iter::once(self.next_snapshot))
+                .chain(self.reconnect.deadline())
+                .chain(self.setup_retry.deadline())
                 .filter(|at| *at > now)
                 .min();
             self.timer
@@ -2774,15 +3194,7 @@ impl<'a> Runner<'a> {
             })
             .await;
             if stop {
-                self.stopping = true;
-                self.pending.clear();
-                let ids: Vec<_> = self.sessions.keys().copied().collect();
-                for id in ids {
-                    self.close_session(id, 0x100);
-                }
-                for c in self.connections.values_mut() {
-                    c.transport.stop();
-                }
+                self.stop_owned(Instant::now())?;
                 return Ok(());
             }
             for (id, key, result) in completions {
@@ -2811,6 +3223,10 @@ async fn drain_terminal_status(
     }
 }
 pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
+    // Register before socket/TLS initialization so a stop during Starting is
+    // observed before the first owner generation/send or recovery attempt.
+    let term = signal(SignalKind::terminate()).map_err(|_| RuntimeError::Signal)?;
+    let interrupt = signal(SignalKind::interrupt()).map_err(|_| RuntimeError::Signal)?;
     let role = if matches!(settings.role(), RoleConfig::Server(_)) {
         Role::Server
     } else {
@@ -2829,7 +3245,7 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
         .spawn(io::stdout(), io::stderr())
         .map_err(|_| RuntimeError::Diagnostics)?;
     let mut runner = Runner::new(settings, &resolver, diagnostics)?;
-    let result = runner.run().await;
+    let result = runner.run(term, interrupt).await;
     runner.pending.clear();
     let ids: Vec<_> = runner.sessions.keys().copied().collect();
     for id in ids {
@@ -2840,7 +3256,24 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
     runner.listener = None;
     // One shared final-collection deadline, independent of periodic cadence.
     // This bounded wait occurs only after sessions/sockets and packet work end.
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let now = Instant::now();
+    if !runner.server {
+        runner.client_state(ClientState::Stopped, now)?;
+    }
+    runner.record_resources();
+    runner.snapshot.sessions_active = 0;
+    runner.snapshot.connections_active = 0;
+    if runner.stop_started.is_some() {
+        // A routine stop is a fixed terminal status, independent of ordinary
+        // event suppression/cadence. Publish released-resource state even when
+        // stopped before the first periodic snapshot.
+        runner
+            .diagnostics
+            .failure(now, None, None, Failure::Stopped, 0, true)
+            .map_err(|_| RuntimeError::Diagnostics)?;
+    }
+    let shared_deadline = runner.stop_started.unwrap_or(now) + Duration::from_secs(5);
+    let deadline = (now + Duration::from_secs(1)).min(shared_deadline);
     let collection =
         drain_terminal_status(&mut runner.diagnostics, runner.snapshot, deadline).await;
     drop(runner);
@@ -2969,6 +3402,7 @@ mod tests {
                     transport: p.server,
                     socket: 0,
                     _permit: permit,
+                    _socket_permit: None,
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
@@ -3052,6 +3486,7 @@ mod tests {
                     transport: p.server,
                     socket: 0,
                     _permit: permit,
+                    _socket_permit: None,
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
@@ -3165,6 +3600,7 @@ mod tests {
                     transport: p.server,
                     socket: 0,
                     _permit: permit,
+                    _socket_permit: None,
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
@@ -3260,6 +3696,7 @@ mod tests {
                     transport: p.server,
                     socket: 0,
                     _permit: permit,
+                    _socket_permit: None,
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
@@ -3523,6 +3960,7 @@ mod tests {
                         transport: p.server,
                         socket: 0,
                         _permit: r.budgets.connections.reserve(1, 0).unwrap(),
+                        _socket_permit: None,
                         id: r.diagnostics.next_id().unwrap(),
                         initial_cid: vec![],
                         cursors: [FairCursor::default(); 7],
@@ -3883,6 +4321,7 @@ mod tests {
                         transport: p.server,
                         socket: 0,
                         _permit: r.budgets.connections.reserve(1, 0).unwrap(),
+                        _socket_permit: None,
                         id: r.diagnostics.next_id().unwrap(),
                         initial_cid: vec![],
                         cursors: [FairCursor::default(); 7],
@@ -4055,6 +4494,9 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "../tests/lifecycle/recovery.rs"]
+mod recovery_tests;
 #[cfg(test)]
 #[path = "../tests/lifecycle/sessions.rs"]
 mod session_tests;

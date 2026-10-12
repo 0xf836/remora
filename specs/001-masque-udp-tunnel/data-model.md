@@ -48,6 +48,27 @@ No forward eligibility before Active on the corresponding accepted request. Clos
 
 ## Persistent state and updates
 
+Phase 6 makes the client primary connection generation explicit. Each client
+connection reserves its own connected outer socket/FD; old GOAWAY draining
+connections retain accepted lower-ID Sessions and count against the same
+global connection/FD budgets. Socket retirement compacts indices and folds IO
+counters once. New/excluded requests use a fresh verified primary. No queued
+payload or generated ciphertext crosses that generation boundary. The local
+application listener remains owned throughout recovery. Validated NAT rebinding
+retains the original generation; replacement after path failure obtains a fresh
+socket and repeats configured trust/authentication/authorization.
+
+The mapping holds one finite reconnect schedule, one transient setup cooldown
+and its existing permanent rejection latch. At most one handshake is in flight;
+the capped jitter exponent saturates and every delay includes a >=100ms floor.
+Success resets the respective retry schedule. Stop cancels both schedules and
+all late setup callbacks before releasing sockets. These are owner-local fields,
+with no additional tasks, shared quiche locks or unbounded attempt history.
+Permanent rejection also cancels all not-yet-accepted client generations before
+another H3 turn, removing sender associations and setup permits while retaining
+accepted Active flows. Record their mapping refusal before retirement; late
+200 responses and queued request submission cannot bypass terminal admission.
+
 Only configuration, trust material, client secret files, server credential digests and optional bounded diagnostics persist; no persistent port-reservation store is mandated. Config/credential/policy updates require a controlled process restart; the revocation completion point is old-process exit plus new-process readiness. No migration/database schema is needed. Config schema_version=1 rejects unknown fields; future incompatible schemas require explicit migration guidance.
 
 ## Phase 5 request ordering and numeric observations

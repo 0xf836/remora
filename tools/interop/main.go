@@ -293,6 +293,14 @@ func server(ctx context.Context, c config) error {
 			w.WriteHeader(403)
 			return
 		}
+		if c.Case == "hold-response" {
+			emit("request_pending", map[string]any{"ok": true})
+			select {
+			case <-r.Context().Done():
+			case <-ctx.Done():
+			}
+			return
+		}
 		addr, err := net.ResolveUDPAddr("udp", c.Target)
 		if err != nil {
 			w.WriteHeader(502)
@@ -331,15 +339,18 @@ func server(ctx context.Context, c config) error {
 func inject(ctx context.Context, q *quic.Conn, c config, tpl *uritemplate.Template, token []byte) error {
 	tr := &http3.Transport{EnableDatagrams: c.Case != "absent-settings"}
 	h3 := tr.NewClientConn(q)
+	if c.Case == "absent-settings" {
+		// Our SETTINGS disable DATAGRAM. A proxy can refuse that capability
+		// before its own SETTINGS reaches us. The runner separately requires
+		// exact capability/0 and zero actual target traffic.
+		time.Sleep(200 * time.Millisecond)
+		emit("drop_injection", map[string]any{"ok": true, "case": c.Case})
+		return nil
+	}
 	select {
 	case <-h3.ReceivedSettings():
 	case <-ctx.Done():
 		return ctx.Err()
-	}
-	if c.Case == "absent-settings" {
-		time.Sleep(200 * time.Millisecond)
-		emit("drop_injection", map[string]any{"ok": true, "case": c.Case})
-		return nil
 	}
 	stream, err := h3.OpenRequestStream(ctx)
 	if err != nil {
