@@ -25,6 +25,11 @@ pub struct IoStats {
     pub sent_datagrams: u64,
     pub send_enobufs: u64,
     pub send_emsgsize: u64,
+    pub receive_eagain: u64,
+    pub send_eagain: u64,
+    pub receive_eintr: u64,
+    pub send_eintr: u64,
+    pub partial_send_batches: u64,
     pub overflowed: bool,
 }
 impl IoStats {
@@ -46,6 +51,11 @@ impl IoStats {
         add!(sent_datagrams);
         add!(send_enobufs);
         add!(send_emsgsize);
+        add!(receive_eagain);
+        add!(send_eagain);
+        add!(receive_eintr);
+        add!(send_eintr);
+        add!(partial_send_batches);
         self.overflowed |= other.overflowed;
         self
     }
@@ -447,8 +457,12 @@ impl Udp {
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    self.count(|s| &mut s.receive_eagain, 1);
+                }
                 return Err(error);
             }
+            self.count(|s| &mut s.receive_eintr, 1);
         };
         self.count(|s| &mut s.received_datagrams, n);
         for i in 0..n {
@@ -560,10 +574,16 @@ impl Udp {
             };
             if result >= 0 {
                 self.count(|s| &mut s.sent_datagrams, result as usize);
+                if result as usize != count {
+                    self.count(|s| &mut s.partial_send_batches, 1);
+                }
                 return Ok(result as usize);
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    self.count(|s| &mut s.send_eagain, 1);
+                }
                 if error.raw_os_error() == Some(libc::ENOBUFS) {
                     self.count(|s| &mut s.send_enobufs, 1);
                 }
@@ -572,6 +592,7 @@ impl Udp {
                 }
                 return Err(error);
             }
+            self.count(|s| &mut s.send_eintr, 1);
         }
     }
 }

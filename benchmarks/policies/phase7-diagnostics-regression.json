@@ -1,0 +1,1615 @@
+{
+  "affinity": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "baseline_input": {
+    "archive_sha256": "0fda147f663ae913d15eb5fcc7684598049e68c85b7745ac3e488041aa9dce87",
+    "binary_sha256": "78e7351678f7d402b5782b30acc93f2a0d4eb771f1692ede51e75e0a19879244",
+    "built_utc_seconds": 1791842766.5977314,
+    "compiler": "rustc 1.99.0 (b940084d7 2026-09-28) (Arch Linux rust 1:1.99.0-1)",
+    "features": [
+      "qlog"
+    ],
+    "revision": "34d4a8fa13aa67436e057773d1a3199b69aba233",
+    "source_root": "/tmp/remora-t071-phase6",
+    "sources": {
+      "Cargo.lock": "73f95573f9fa739062f98e414be62f3e1cf06b80dec65d44b80cef587e251cc7",
+      "Cargo.toml": "c6e47986cbe66983170d5be43f6fe67f68fa946ee2bf880fc444e9d69abfd5f6",
+      "build.rs": "d1ade70447708df4b5e4a52ef44b48be28f92a65703fdc99cf519e5540c2367b",
+      "rust-toolchain.toml": "864c9f021bb8f62abbb50cda5565d1ee7f1e3fc62a2e8b943b9adf74cbd90172",
+      "src/buffers.rs": "87ec40d38e1dac9b208b968addad07afa5093a3a7ef966dc1fac564bdea7e7ee",
+      "src/config.rs": "27e866c2190617f1a784a0777064fd88f1f939d76e535cf8808274a77da02acc",
+      "src/config/properties.rs": "2b6ea70eec2c26de25a94794a9dde40508ca0ded899446112a09934fb26e8f1b",
+      "src/diagnostics.rs": "8e639dcb71458a0cc3b18d3233eecc132fbe18f4e83d4ec0f51e9eaa5aabbf5f",
+      "src/lib.rs": "5857734d6d36b9943bddb2803a04f0ac0c0ed414bf4b6f43004dd3dccf871121",
+      "src/main.rs": "eef5b0f1db57f66d01dd0c38a2a543d9b565f6037d457df72bab8e8aed2b9c41",
+      "src/masque.rs": "cf8eab107a56ca262c6de3b497f505a8e10859e7b4ab30f83a5466f92bd019cf",
+      "src/policy.rs": "db41d02a8c8aca6fd8b487ce7821a570c5e26bb6c7eacfe6425800d39520ea40",
+      "src/reactor.rs": "d8150b031881c8c7e95efa135dba75680e45cfad8c6caa6b32bb72e40e83f2ce",
+      "src/session.rs": "dec6fdfe68fe031d30426ae0a339a5651bee78611282f00fa2807c3047a7306c",
+      "src/transport.rs": "e8e1dad1463cab9eeedd47dbb9d511092189873c2cc0ba031906985edb322198",
+      "src/udp.rs": "e37e7ed7db7e260d4ddaec9d6d5010c74d6d8104e778933a3e594da4a24ab5b9"
+    },
+    "version_output": "remora 0.1.0 commit=source-archive Rust=rustc 1.99.0 (b940084d7 2026-09-28) (Arch Linux rust 1:1.99.0-1) quiche=0.30.0 Linux x86_64/aarch64 portable-udp"
+  },
+  "bounds": {
+    "default/forward/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.024159326432309478,
+        "candidate_limit": 0.04415932643230948,
+        "increment": 0.02,
+        "noise": 0.008027041697483906,
+        "reference_max": 0.016132284734825572,
+        "reference_min": 0.012118763886083619,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.0181973817960336,
+        "candidate_limit": 0.0381973817960336,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.014115749142972376,
+        "reference_min": 0.012099213551119177,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9322496,
+        "candidate_limit": 11419648,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9060352,
+        "reference_min": 8970240,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.813,
+        "candidate_limit": 1.313,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.563,
+        "reference_min": 0.451,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.0161808462041804,
+        "candidate_limit": 0.0361808462041804,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.012099213551119177,
+        "reference_min": 0.010098969905069683,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.014164310612327206,
+        "candidate_limit": 0.034164310612327206,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.010082677959265983,
+        "reference_min": 0.008066142367412786,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9281536,
+        "candidate_limit": 11378688,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9019392,
+        "reference_min": 8953856,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "default/reverse/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.02244522936226438,
+        "candidate_limit": 0.04244522936226438,
+        "increment": 0.02,
+        "noise": 0.008234916735386587,
+        "reference_max": 0.014210312626877792,
+        "reference_min": 0.010092854259184499,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.014321637656673603,
+        "candidate_limit": 0.034321637656673606,
+        "increment": 0.02,
+        "noise": 0.0041714143517608965,
+        "reference_max": 0.010150223304912706,
+        "reference_min": 0.008064516129032258,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9416704,
+        "candidate_limit": 11513856,
+        "increment": 2097152,
+        "noise": 352256,
+        "reference_max": 9064448,
+        "reference_min": 8888320,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 1.041,
+        "candidate_limit": 1.541,
+        "increment": 0.5,
+        "noise": 0.46199999999999997,
+        "reference_max": 0.579,
+        "reference_min": 0.348,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.032664147413179356,
+        "candidate_limit": 0.05266414741317936,
+        "increment": 0.02,
+        "noise": 0.012363700803353937,
+        "reference_max": 0.020300446609825416,
+        "reference_min": 0.014118596208148447,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.03462549732815963,
+        "candidate_limit": 0.05462549732815963,
+        "increment": 0.02,
+        "noise": 0.01635509537931675,
+        "reference_max": 0.018270401948842874,
+        "reference_min": 0.010092854259184499,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9363456,
+        "candidate_limit": 11460608,
+        "increment": 2097152,
+        "noise": 344064,
+        "reference_max": 9019392,
+        "reference_min": 8847360,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "default/simultaneous/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.038643513098637325,
+        "candidate_limit": 0.05864351309863733,
+        "increment": 0.02,
+        "noise": 0.008211376762666547,
+        "reference_max": 0.03043213633597078,
+        "reference_min": 0.026326447954637507,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.04039278335129867,
+        "candidate_limit": 0.060392783351298676,
+        "increment": 0.02,
+        "noise": 0.012035481346032315,
+        "reference_max": 0.028357302005266358,
+        "reference_min": 0.0223395613322502,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9318400,
+        "candidate_limit": 11415552,
+        "increment": 2097152,
+        "noise": 286720,
+        "reference_max": 9031680,
+        "reference_min": 8888320,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.836,
+        "candidate_limit": 1.3359999999999999,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.586,
+        "reference_min": 0.528,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.03248495989996729,
+        "candidate_limit": 0.05248495989996729,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.028403327246906068,
+        "reference_min": 0.026363820726019064,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.03437964468712182,
+        "candidate_limit": 0.05437964468712182,
+        "increment": 0.02,
+        "noise": 0.008047864253660206,
+        "reference_max": 0.026331780433461616,
+        "reference_min": 0.022307848306631513,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9277440,
+        "candidate_limit": 11374592,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9015296,
+        "reference_min": 8953856,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "default/simultaneous/True": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.03456136975160924,
+        "candidate_limit": 0.054561369751609246,
+        "increment": 0.02,
+        "noise": 0.00809018262067867,
+        "reference_max": 0.02647118713093057,
+        "reference_min": 0.022426095820591234,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.03109465662129986,
+        "candidate_limit": 0.05109465662129986,
+        "increment": 0.02,
+        "noise": 0.004623469490369292,
+        "reference_max": 0.02647118713093057,
+        "reference_min": 0.024159452385745923,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9261056,
+        "candidate_limit": 11358208,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 8998912,
+        "reference_min": 8871936,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.843,
+        "candidate_limit": 1.343,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.593,
+        "reference_min": 0.554,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.040722380485956895,
+        "candidate_limit": 0.06072238048595689,
+        "increment": 0.02,
+        "noise": 0.012197523110243774,
+        "reference_max": 0.02852485737571312,
+        "reference_min": 0.022426095820591234,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.040409684120084284,
+        "candidate_limit": 0.06040968412008428,
+        "increment": 0.02,
+        "noise": 0.0119890588663287,
+        "reference_max": 0.028420625253755584,
+        "reference_min": 0.022426095820591234,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9281536,
+        "candidate_limit": 11378688,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9019392,
+        "reference_min": 8892416,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "filtered-qlog/forward/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.024159326432309478,
+        "candidate_limit": 0.07415932643230948,
+        "increment": 0.05,
+        "noise": 0.008027041697483906,
+        "reference_max": 0.016132284734825572,
+        "reference_min": 0.012118763886083619,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.0181973817960336,
+        "candidate_limit": 0.0681973817960336,
+        "increment": 0.05,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.014115749142972376,
+        "reference_min": 0.012099213551119177,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9322496,
+        "candidate_limit": 12468224,
+        "increment": 3145728,
+        "noise": 262144,
+        "reference_max": 9060352,
+        "reference_min": 8970240,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.813,
+        "candidate_limit": 1.313,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.563,
+        "reference_min": 0.451,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.0161808462041804,
+        "candidate_limit": 0.06618084620418041,
+        "increment": 0.05,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.012099213551119177,
+        "reference_min": 0.010098969905069683,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.014164310612327206,
+        "candidate_limit": 0.0641643106123272,
+        "increment": 0.05,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.010082677959265983,
+        "reference_min": 0.008066142367412786,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9281536,
+        "candidate_limit": 12427264,
+        "increment": 3145728,
+        "noise": 262144,
+        "reference_max": 9019392,
+        "reference_min": 8953856,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "filtered-qlog/reverse/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.02244522936226438,
+        "candidate_limit": 0.07244522936226439,
+        "increment": 0.05,
+        "noise": 0.008234916735386587,
+        "reference_max": 0.014210312626877792,
+        "reference_min": 0.010092854259184499,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.014321637656673603,
+        "candidate_limit": 0.0643216376566736,
+        "increment": 0.05,
+        "noise": 0.0041714143517608965,
+        "reference_max": 0.010150223304912706,
+        "reference_min": 0.008064516129032258,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9416704,
+        "candidate_limit": 12562432,
+        "increment": 3145728,
+        "noise": 352256,
+        "reference_max": 9064448,
+        "reference_min": 8888320,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 1.041,
+        "candidate_limit": 1.541,
+        "increment": 0.5,
+        "noise": 0.46199999999999997,
+        "reference_max": 0.579,
+        "reference_min": 0.348,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.032664147413179356,
+        "candidate_limit": 0.08266414741317936,
+        "increment": 0.05,
+        "noise": 0.012363700803353937,
+        "reference_max": 0.020300446609825416,
+        "reference_min": 0.014118596208148447,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.03462549732815963,
+        "candidate_limit": 0.08462549732815963,
+        "increment": 0.05,
+        "noise": 0.01635509537931675,
+        "reference_max": 0.018270401948842874,
+        "reference_min": 0.010092854259184499,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9363456,
+        "candidate_limit": 12509184,
+        "increment": 3145728,
+        "noise": 344064,
+        "reference_max": 9019392,
+        "reference_min": 8847360,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "filtered-qlog/simultaneous/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.038643513098637325,
+        "candidate_limit": 0.08864351309863733,
+        "increment": 0.05,
+        "noise": 0.008211376762666547,
+        "reference_max": 0.03043213633597078,
+        "reference_min": 0.026326447954637507,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.04039278335129867,
+        "candidate_limit": 0.09039278335129868,
+        "increment": 0.05,
+        "noise": 0.012035481346032315,
+        "reference_max": 0.028357302005266358,
+        "reference_min": 0.0223395613322502,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9318400,
+        "candidate_limit": 12464128,
+        "increment": 3145728,
+        "noise": 286720,
+        "reference_max": 9031680,
+        "reference_min": 8888320,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.836,
+        "candidate_limit": 1.3359999999999999,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.586,
+        "reference_min": 0.528,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.03248495989996729,
+        "candidate_limit": 0.08248495989996729,
+        "increment": 0.05,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.028403327246906068,
+        "reference_min": 0.026363820726019064,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.03437964468712182,
+        "candidate_limit": 0.08437964468712182,
+        "increment": 0.05,
+        "noise": 0.008047864253660206,
+        "reference_max": 0.026331780433461616,
+        "reference_min": 0.022307848306631513,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9277440,
+        "candidate_limit": 12423168,
+        "increment": 3145728,
+        "noise": 262144,
+        "reference_max": 9015296,
+        "reference_min": 8953856,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "filtered-qlog/simultaneous/True": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.03456136975160924,
+        "candidate_limit": 0.08456136975160924,
+        "increment": 0.05,
+        "noise": 0.00809018262067867,
+        "reference_max": 0.02647118713093057,
+        "reference_min": 0.022426095820591234,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.03109465662129986,
+        "candidate_limit": 0.08109465662129986,
+        "increment": 0.05,
+        "noise": 0.004623469490369292,
+        "reference_max": 0.02647118713093057,
+        "reference_min": 0.024159452385745923,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9261056,
+        "candidate_limit": 12406784,
+        "increment": 3145728,
+        "noise": 262144,
+        "reference_max": 8998912,
+        "reference_min": 8871936,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.843,
+        "candidate_limit": 1.343,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.593,
+        "reference_min": 0.554,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.040722380485956895,
+        "candidate_limit": 0.0907223804859569,
+        "increment": 0.05,
+        "noise": 0.012197523110243774,
+        "reference_max": 0.02852485737571312,
+        "reference_min": 0.022426095820591234,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.040409684120084284,
+        "candidate_limit": 0.0904096841200843,
+        "increment": 0.05,
+        "noise": 0.0119890588663287,
+        "reference_max": 0.028420625253755584,
+        "reference_min": 0.022426095820591234,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9281536,
+        "candidate_limit": 12427264,
+        "increment": 3145728,
+        "noise": 262144,
+        "reference_max": 9019392,
+        "reference_min": 8892416,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "off/forward/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.012294996850099342,
+        "candidate_limit": 0.032294996850099345,
+        "increment": 0.02,
+        "noise": 0.004181406586407659,
+        "reference_max": 0.008113590263691683,
+        "reference_min": 0.006022886970487854,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.010104519623549078,
+        "candidate_limit": 0.030104519623549077,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.006022886970487854,
+        "reference_min": 0.004014452027298274,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9416704,
+        "candidate_limit": 11513856,
+        "increment": 2097152,
+        "noise": 360448,
+        "reference_max": 9056256,
+        "reference_min": 8876032,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.5549999999999999,
+        "candidate_limit": 1.055,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.305,
+        "reference_min": 0.197,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.010225062132655815,
+        "candidate_limit": 0.030225062132655814,
+        "increment": 0.02,
+        "noise": 0.004139869434887053,
+        "reference_max": 0.006085192697768763,
+        "reference_min": 0.004015257980325236,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.008137605072448772,
+        "candidate_limit": 0.028137605072448772,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.004055972419387548,
+        "reference_min": 0.002028397565922921,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9273344,
+        "candidate_limit": 11370496,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9011200,
+        "reference_min": 8953856,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "off/reverse/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.03660759110096014,
+        "candidate_limit": 0.05660759110096014,
+        "increment": 0.02,
+        "noise": 0.02035073273883862,
+        "reference_max": 0.01625685836212152,
+        "reference_min": 0.00608149199270221,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.03447905441329964,
+        "candidate_limit": 0.054479054413299643,
+        "increment": 0.02,
+        "noise": 0.020283150945443224,
+        "reference_max": 0.01419590346785642,
+        "reference_min": 0.004054327995134807,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9383936,
+        "candidate_limit": 11481088,
+        "increment": 2097152,
+        "noise": 327680,
+        "reference_max": 9056256,
+        "reference_min": 8892416,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 1.0589999999999997,
+        "candidate_limit": 1.5589999999999997,
+        "increment": 0.5,
+        "noise": 0.4879999999999999,
+        "reference_max": 0.571,
+        "reference_min": 0.327,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.05084222876321204,
+        "candidate_limit": 0.07084222876321204,
+        "increment": 0.02,
+        "noise": 0.028489048515294952,
+        "reference_max": 0.02235318024791709,
+        "reference_min": 0.008108655990269614,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.04259264367632748,
+        "candidate_limit": 0.06259264367632748,
+        "increment": 0.02,
+        "noise": 0.024340767789083513,
+        "reference_max": 0.018251875887243967,
+        "reference_min": 0.00608149199270221,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9220096,
+        "candidate_limit": 11317248,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 8957952,
+        "reference_min": 8851456,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "off/simultaneous/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.032281603412978865,
+        "candidate_limit": 0.05228160341297887,
+        "increment": 0.02,
+        "noise": 0.012087742346743001,
+        "reference_max": 0.020193861066235864,
+        "reference_min": 0.014149989892864364,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.024208141028341457,
+        "candidate_limit": 0.04420814102834146,
+        "increment": 0.02,
+        "noise": 0.008053052175352765,
+        "reference_max": 0.01615508885298869,
+        "reference_min": 0.012128562765312309,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9252864,
+        "candidate_limit": 11350016,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 8990720,
+        "reference_min": 8876032,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 1.0589999999999997,
+        "candidate_limit": 1.5589999999999997,
+        "increment": 0.5,
+        "noise": 0.47999999999999987,
+        "reference_max": 0.579,
+        "reference_min": 0.339,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.026212436931412394,
+        "candidate_limit": 0.046212436931412394,
+        "increment": 0.02,
+        "noise": 0.00804163135903202,
+        "reference_max": 0.018170805572380374,
+        "reference_min": 0.014149989892864364,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.030178358340343117,
+        "candidate_limit": 0.05017835834034312,
+        "increment": 0.02,
+        "noise": 0.012033197050020539,
+        "reference_max": 0.01814516129032258,
+        "reference_min": 0.012128562765312309,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9261056,
+        "candidate_limit": 11358208,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 8998912,
+        "reference_min": 8892416,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "verbose/forward/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.03640004179483626,
+        "candidate_limit": 0.056400041794836264,
+        "increment": 0.02,
+        "noise": 0.012079004097227827,
+        "reference_max": 0.02432103769760843,
+        "reference_min": 0.018281535648994516,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.02236316830205574,
+        "candidate_limit": 0.04236316830205574,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.018281535648994516,
+        "reference_min": 0.018233387358184763,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9396224,
+        "candidate_limit": 11493376,
+        "increment": 2097152,
+        "noise": 344064,
+        "reference_max": 9052160,
+        "reference_min": 8880128,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.89,
+        "candidate_limit": 1.3900000000000001,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.64,
+        "reference_min": 0.565,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.026284390476738605,
+        "candidate_limit": 0.0462843904767386,
+        "increment": 0.02,
+        "noise": 0.008043612203532283,
+        "reference_max": 0.01824077827320632,
+        "reference_min": 0.01421897217144018,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.022300818975864684,
+        "candidate_limit": 0.042300818975864685,
+        "increment": 0.02,
+        "noise": 0.008096273521319228,
+        "reference_max": 0.014204545454545456,
+        "reference_min": 0.010156408693885842,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9285632,
+        "candidate_limit": 11382784,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9023488,
+        "reference_min": 8912896,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "verbose/reverse/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.020312105365578977,
+        "candidate_limit": 0.04031210536557898,
+        "increment": 0.02,
+        "noise": 0.004081632653061224,
+        "reference_max": 0.016230472712517752,
+        "reference_min": 0.014221861032100774,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.022251977348670324,
+        "candidate_limit": 0.042251977348670325,
+        "increment": 0.02,
+        "noise": 0.008073326346037146,
+        "reference_max": 0.014178651002633179,
+        "reference_min": 0.010141987829614606,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9330688,
+        "candidate_limit": 11427840,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9068544,
+        "reference_min": 8998912,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.91,
+        "candidate_limit": 1.4100000000000001,
+        "increment": 0.5,
+        "noise": 0.25,
+        "reference_max": 0.66,
+        "reference_min": 0.581,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.030380200142305153,
+        "candidate_limit": 0.050380200142305154,
+        "increment": 0.02,
+        "noise": 0.008063300162593247,
+        "reference_max": 0.022316899979711907,
+        "reference_min": 0.018285249898415283,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.028317867799041805,
+        "candidate_limit": 0.048317867799041805,
+        "increment": 0.02,
+        "noise": 0.008062652080994409,
+        "reference_max": 0.020255215718047396,
+        "reference_min": 0.01622388967755019,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9289728,
+        "candidate_limit": 11386880,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9027584,
+        "reference_min": 8941568,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    },
+    "verbose/simultaneous/False": {
+      "client.average_cpu_cores": {
+        "baseline_limit": 0.042512473228478356,
+        "candidate_limit": 0.06251247322847836,
+        "increment": 0.02,
+        "noise": 0.012111176106467822,
+        "reference_max": 0.030401297122010538,
+        "reference_min": 0.024345709068776627,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.owner_average_cpu_cores": {
+        "baseline_limit": 0.03843516343750627,
+        "candidate_limit": 0.058435163437506266,
+        "increment": 0.02,
+        "noise": 0.01209804836457272,
+        "reference_max": 0.02633711507293355,
+        "reference_min": 0.02028809089064719,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "client.peak_rss_bytes": {
+        "baseline_limit": 9408512,
+        "candidate_limit": 11505664,
+        "increment": 2097152,
+        "noise": 352256,
+        "reference_max": 9056256,
+        "reference_min": 8880128,
+        "side": "maximum",
+        "unit": "bytes"
+      },
+      "forward.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "forward.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "reverse.delivered_mbit_s": {
+        "baseline_limit": 0.1024,
+        "candidate_limit": 0.1024,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.1024,
+        "reference_min": 0.1024,
+        "side": "minimum",
+        "unit": "Mbit/s"
+      },
+      "reverse.loss_percent": {
+        "baseline_limit": 0,
+        "candidate_limit": 0,
+        "increment": 0,
+        "noise": 0,
+        "reference_max": 0.0,
+        "reference_min": 0.0,
+        "side": "maximum",
+        "unit": "percentage points"
+      },
+      "rtt_p95_ms": {
+        "baseline_limit": 0.896,
+        "candidate_limit": 1.396,
+        "increment": 0.5,
+        "noise": 0.276,
+        "reference_max": 0.62,
+        "reference_min": 0.482,
+        "side": "maximum",
+        "unit": "ms"
+      },
+      "server.average_cpu_cores": {
+        "baseline_limit": 0.0465700914066078,
+        "candidate_limit": 0.0665700914066078,
+        "increment": 0.02,
+        "noise": 0.016168794284597263,
+        "reference_max": 0.030401297122010538,
+        "reference_min": 0.022316899979711907,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.owner_average_cpu_cores": {
+        "baseline_limit": 0.03846719073593302,
+        "candidate_limit": 0.058467190735933025,
+        "increment": 0.02,
+        "noise": 0.012119399896857223,
+        "reference_max": 0.0263477908390758,
+        "reference_min": 0.02028809089064719,
+        "side": "maximum",
+        "unit": "cores"
+      },
+      "server.peak_rss_bytes": {
+        "baseline_limit": 9265152,
+        "candidate_limit": 11362304,
+        "increment": 2097152,
+        "noise": 262144,
+        "reference_max": 9003008,
+        "reference_min": 8912896,
+        "side": "maximum",
+        "unit": "bytes"
+      }
+    }
+  },
+  "created_utc_seconds": 1791845969.9683082,
+  "environment": {
+    "clock": "common wall-time start mapped once onto per-process monotonic clocks; RTT uses same sender clock",
+    "kernel_socket_buffers_requested": {
+      "outer": 262144,
+      "relay": 65536
+    },
+    "locks": {
+      "Cargo.lock": "73f95573f9fa739062f98e414be62f3e1cf06b80dec65d44b80cef587e251cc7",
+      "tools/traffic/Cargo.lock": "0106ac15245719ae0f3990bfcef4b9980b9369b22bb92fca608cc34984023e11"
+    },
+    "offloads": {
+      "gro": {
+        "effective": "off",
+        "reason": "configured_off",
+        "requested": "off"
+      },
+      "gso": {
+        "effective": "off",
+        "reason": "configured_off",
+        "requested": "off"
+      }
+    },
+    "platform": {
+      "affinity": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "arch": "x86_64",
+      "cpu_count": 24,
+      "cpu_model": "13th Gen Intel(R) Core(TM) i7-13700K",
+      "kernel": "7.2.9-arch1-1"
+    },
+    "role_locations": {
+      "client": "same-host client role",
+      "generator": "loopback client endpoint",
+      "receiver": "loopback target endpoint",
+      "server": "same-host server role"
+    }
+  },
+  "frozen": true,
+  "harness_sources": {
+    "scripts/validate/benchmark.py": "670fda27e46cf5f595080381763f703d6d239cd624ced43f1983a4c88c95be61",
+    "scripts/validate/diagnostic_benchmark.py": "8c0d9d8a1cfbd86c9e269199e202a355707218b2af00a69beaf4a38a30b44e3f",
+    "scripts/validate/diagnostic_regression.py": "9ff9cbef03c68e02d7c9c456742e2b7cec1ca5a0dbd5d3386c80cb7d5a06d2c1"
+  },
+  "plan": {
+    "baseline_revision": "34d4a8fa13aa67436e057773d1a3199b69aba233",
+    "blocked_collection": "Exact DiagnosticCollectionIncomplete failure, writer pipe_write observed per role, stop within 5 s, full delivery; never SC-010 success.",
+    "candidate_modes": [
+      "off",
+      "default",
+      "verbose",
+      "filtered-qlog"
+    ],
+    "delivery": "Every active flow must deliver exactly the declared offered messages with zero loss/corruption/generator errors. No delivery noise allowance.",
+    "floors": {
+      "cpu_ticks": 2,
+      "rss_bytes": 262144,
+      "rtt_ms": 0.25
+    },
+    "increments": {
+      "default": {
+        "owner_cpu_cores": 0.02,
+        "process_cpu_cores": 0.02,
+        "rss_bytes": 2097152,
+        "rtt_ms": 0.5
+      },
+      "filtered-qlog": {
+        "owner_cpu_cores": 0.05,
+        "process_cpu_cores": 0.05,
+        "rss_bytes": 3145728,
+        "rtt_ms": 0.5
+      },
+      "off": {
+        "owner_cpu_cores": 0.02,
+        "process_cpu_cores": 0.02,
+        "rss_bytes": 2097152,
+        "rtt_ms": 0.5
+      },
+      "verbose": {
+        "owner_cpu_cores": 0.02,
+        "process_cpu_cores": 0.02,
+        "rss_bytes": 2097152,
+        "rtt_ms": 0.5
+      }
+    },
+    "noise_method": "twice pre-change reference repeat spread or declared resolution floor; fixed before candidate construction and measurements",
+    "normal_collection": "No event/status/coverage loss or numeric overflow; qlog must remain active within published caps.",
+    "pair_order": "Adjacent baseline/candidate, alternating first role by pair index; every run and paired delta must pass. Re-measured baseline must remain within frozen reference variability.",
+    "qlog_reference_mode": "default",
+    "rationale": "The mandatory telemetry allowance is an absolute 0.02 of one CPU core per role at 100 pps, retaining 0.98 core of the single reactor for other work; optional filtered tracing is explicitly allowed 0.05 core. These are workload-specific cost budgets, not universal percentages. RSS budgets cover the bounded 2 MiB diagnostic storage and, for active qlog, an additional 1 MiB allocator/native tracing margin. Added p95 RTT is limited to 0.5 ms, one tenth of the separate release added-RTT ceiling. Clock-tick, 256 KiB RSS and 0.25 ms timing floors account for measurement granularity. No release criterion is waived.",
+    "reference_modes": [
+      "off",
+      "default",
+      "verbose"
+    ],
+    "schema_version": 1,
+    "scope": "New Phase 7 acceptance cycle against exact Phase 6; prior missed freeze remains historical. One-session low-rate native loopback only."
+  },
+  "plan_sha256": "94ac04afdfdc8bed16cdfce16245c5177fd792536052840599e716e5193ede26",
+  "profile": {
+    "architecture": "x86_64",
+    "batch_max": 32,
+    "blocked_sink_modes": [
+      "default",
+      "filtered-qlog"
+    ],
+    "cc": "cubic",
+    "coverage": "diagnostics-operator-overhead",
+    "directions": [
+      "forward",
+      "reverse",
+      "simultaneous"
+    ],
+    "drain_ms": 200,
+    "gro_requested": "off",
+    "gso_requested": "off",
+    "io": "mmsg",
+    "measurement_seconds": 5,
+    "modes": [
+      "off",
+      "default",
+      "verbose",
+      "filtered-qlog"
+    ],
+    "paired_repetitions": 5,
+    "payload_bytes": 128,
+    "pps": 100,
+    "schema_version": 1,
+    "sessions": 1,
+    "topology": "two-leg",
+    "warmup_seconds": 2
+  },
+  "proposal": {
+    "base_revision": "34d4a8fa13aa67436e057773d1a3199b69aba233",
+    "phase6_archive_sha256": "0fda147f663ae913d15eb5fcc7684598049e68c85b7745ac3e488041aa9dce87",
+    "phase7_archive_sha256": "a7743ae678726c3bb9f67252e8802870a789e1c928e59f5847d2092860ca3a92",
+    "proposed_sources": {
+      "Cargo.lock": "73f95573f9fa739062f98e414be62f3e1cf06b80dec65d44b80cef587e251cc7",
+      "Cargo.toml": "beb092e4a3042e8906d5427d0b40687e283447cb8af3066e6d6469871f7bfd75",
+      "build.rs": "d1ade70447708df4b5e4a52ef44b48be28f92a65703fdc99cf519e5540c2367b",
+      "rust-toolchain.toml": "864c9f021bb8f62abbb50cda5565d1ee7f1e3fc62a2e8b943b9adf74cbd90172",
+      "src/buffers.rs": "0835524289dd544330fe2ee600f94ab2a1c28c619f5d6b34c6c34e893a0c316f",
+      "src/config.rs": "333fbb2991e27ecd84608b7cc79911334ea83a3222588778facf16d1b3a28f92",
+      "src/config/properties.rs": "2b6ea70eec2c26de25a94794a9dde40508ca0ded899446112a09934fb26e8f1b",
+      "src/diagnostics.rs": "784031c6fc78a65d9e444307c49faa9d5e1d737c76680ebbc94b4343bbe6253b",
+      "src/diagnostics/qlog.rs": "3134bf905b3a28ea8faa497bcbfe3d864ee69d3a0d556039df7db5e4ef6d32f7",
+      "src/lib.rs": "5857734d6d36b9943bddb2803a04f0ac0c0ed414bf4b6f43004dd3dccf871121",
+      "src/main.rs": "eef5b0f1db57f66d01dd0c38a2a543d9b565f6037d457df72bab8e8aed2b9c41",
+      "src/masque.rs": "cf8eab107a56ca262c6de3b497f505a8e10859e7b4ab30f83a5466f92bd019cf",
+      "src/policy.rs": "db41d02a8c8aca6fd8b487ce7821a570c5e26bb6c7eacfe6425800d39520ea40",
+      "src/reactor.rs": "43ce60659cc3f5bfc53be0e5f7b6cc515d42a0f09f3c73ac2b387a013a2c29d9",
+      "src/session.rs": "dec6fdfe68fe031d30426ae0a339a5651bee78611282f00fa2807c3047a7306c",
+      "src/transport.rs": "ad65f421a2de8f8a26057587f976ebf7d2c88db7fe25cf63f261bd3966a73e88",
+      "src/udp.rs": "57e039ff069a57a7b37bc845aba0335fe29482c1c3b5cbb5a3c0a4dec3c4f3b6"
+    },
+    "recorded_utc_seconds": 1791842309.2024739
+  },
+  "proposal_sha256": "09839c99f980e6ad2cc9905a1dad2e81380429da65cb5e1221cd65e3c2d7ab1a",
+  "reference_manifest_sha256": "26065013c6b053e3ca11484cf82c2231c747bd97e0ee652b4ad53478098f3639",
+  "reference_summary_sha256": "f62d2e615acfd3516d299820d52d1ce43f27171983e50425638f683cd0616640",
+  "schema_version": 1,
+  "scope": "new prospective reconstruction cycle; original missed freeze not rewritten; no release qualification",
+  "traffic_sha256": "e973d280db788bd948670d6e9d83e2db28e1f495f19cd87029bdaf99b621adad"
+}

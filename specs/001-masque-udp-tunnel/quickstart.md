@@ -109,8 +109,8 @@ a destination error solely from UDP silence. Terminal failures survive ordinary
 log suppression until writer acknowledgement; explicit coverage-loss counters
 invalidate complete-correlation claims after deliberate overflow/broken sinks.
 GSO/GRO off/auto are accepted: off reports configured_off, deferred auto reports
-effective off/not_implemented without a probe. No raw upstream/qlog/keylog output
-is enabled. SIGTERM/SIGINT release listeners and terminate owned packet work.
+effective off/not_implemented without a probe. Optional qlog now persists only reconstructed transport metadata; raw upstream
+and keylog output are never enabled. SIGTERM/SIGINT release listeners and terminate owned packet work.
 
 ## Independent peer and performance reproduction
 
@@ -286,3 +286,74 @@ exist before reuse. A new clone must create its own reference, not fabricate the
 missing files. This short low-rate loaded comparison measures enabled liveness
 checks; idle probe behavior has separate functional evidence. Neither result
 qualifies idle CPU cost, sustained capacity, final release resources or ARM64.
+
+## Phase 7 operator walkthrough (T064–T070)
+
+See [operations](../../docs/operations.md) for secure provisioning, candidate
+validation, controlled update/revocation and deliberate rollback. See
+[troubleshooting](../../docs/troubleshooting.md) for status boundaries, fixed
+classes and collection gaps. The examples contain no secret material.
+
+```bash
+cargo build --locked --release --features qlog
+./scripts/validate/operations.sh --binary target/release/remora \
+  --output /tmp/remora-phase7-operations-new
+```
+
+Run as an ordinary user with a fresh output path. The walkthrough installs the
+exact executable into its own user directory, establishes byte-identical UDP
+request/reply traffic and collects auth/policy/trust/resource/size/socket/connection
+faults with zero status coverage loss. It also runs deterministic DNS/setup
+completion, controlled policy-generation/rollback and status/qlog pressure tests.
+Private certificates/tokens and child cleanup remain runner-owned; retained
+records contain only sanitized evidence. The manifest distinguishes the copied
+release executable from the compiler-reported all-feature debug process-test
+binary and hashes the exact source/locks. [Recorded evidence](../../docs/validation/operations.md)
+identifies actual commands/results and limitations.
+
+Optional runtime tracing requires `--features qlog` and an empty mode-0700
+role-owned directory. It uses a typed JSON-SEQ filter before any persistence,
+shares the ordinary output budget and cannot consume reserved status capacity.
+It is disabled by default. No raw H3/header/frame/payload/keylog data is written.
+Native ARM64, final-revision release/performance qualification and T071
+**diagnostic-mode overhead measurements** remain outstanding. T071 was explicitly
+excluded from this implementation invocation.
+
+
+## T071 diagnostics-mode measurements
+
+The original measurement-only invocation kept production Rust unchanged. The
+[performance record](../../docs/performance.md#phase-7-t071-diagnostics-measurement-method--2026-10-13)
+contains immutable inputs, frozen policy and exact reproduction commands through
+`bench.sh --profile benchmarks/diagnostics.toml --diagnostics-stage
+reference|freeze|candidate`. Pass explicit preserved Remora/traffic binaries;
+use fresh output directories. Reference must precede policy freeze, which must
+precede candidate collection. Do not mutate reference/bounds after measuring.
+
+Four modes compare ordinary detail off (mandatory status remains), default,
+verbose and active filtered-qlog, at 100pps per active direction, one Session,
+128-byte payloads and five five-second runs in each direction. Separate unread
+stdout cases validate actual writer blocking and continued traffic with explicit
+incomplete collection. Normal mode gaps or stopped qlog invalidate coverage;
+blocked collection is never SC-010 success. 70/70 same-binary repeatability checks pass;
+T071 was pending at this same-binary checkpoint; the later cross-revision cycle below supplies scoped acceptance. These preserved
+results do not qualify the executable after subsequent review corrections;
+high-rate capacity/trace overhead, ARM64 and final release remain separate.
+
+
+## T071 cross-revision acceptance cycle
+
+Use the [cross-revision reproduction procedure](../../docs/performance.md#reproduce-the-cross-revision-cycle).
+`diagnostic_inputs.py --prepare-baseline` snapshots a precise pre-Phase-7 revision
+and the proposed sources into fresh local artifacts. Collect the baseline with
+`bench.sh --diagnostics-kind regression --diagnostics-stage reference`, then
+freeze the pinned plan before candidate reconstruction/build. Use fresh paths
+and explicit build-input manifests for both executables. Each role requires one
+of four distinct physical cores and `taskset` (util-linux); live worker masks are
+checked. CPU power settings are recorded without changing the host.
+
+Reference repeats interleave modes/directions over five rounds. Candidate pairs
+alternate baseline/candidate order. A baseline outside its frozen variability
+range invalidates acceptance; retain its failure and limits. The original
+same-binary results and first baseline-drift failure remain historical evidence.
+The corrected final cycle passes all 70 paired checks; see the [final report](../../docs/performance.md#final-t071-cross-revision-results).

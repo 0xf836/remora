@@ -155,6 +155,9 @@ impl BufferPool {
             state: self.state.clone(),
         })
     }
+    pub fn retained_peak(&self) -> Usage {
+        self.budget.peak()
+    }
     pub fn retained(&self) -> Usage {
         self.budget.used()
     }
@@ -376,6 +379,7 @@ pub struct SessionQueue {
     packets: usize,
     byte_limit: usize,
     bytes: usize,
+    peak: Usage,
 }
 impl SessionQueue {
     pub fn new(packets: usize, byte_limit: usize) -> Self {
@@ -384,6 +388,7 @@ impl SessionQueue {
             packets,
             byte_limit,
             bytes: 0,
+            peak: Usage::default(),
         }
     }
     pub fn push(&mut self, packet: Datagram) -> Result<(), BudgetError> {
@@ -400,7 +405,12 @@ impl SessionQueue {
             .map_err(|_| BudgetError::Allocation)?;
         self.queues[index].push_back(packet);
         self.bytes = bytes;
+        self.peak.count = self.peak.count.max(self.used().count);
+        self.peak.bytes = self.peak.bytes.max(bytes);
         Ok(())
+    }
+    pub fn peak(&self) -> Usage {
+        self.peak
     }
     pub fn front(&self, direction: Direction) -> Option<&Datagram> {
         self.queues[direction_index(direction)].front()

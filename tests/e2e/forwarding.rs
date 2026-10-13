@@ -44,6 +44,8 @@ impl Tunnel {
             .unwrap();
         let server = ChildGuard::spawn_logged(
             Command::new(env!("CARGO_BIN_EXE_remora"))
+                .env("SSLKEYLOGFILE", f.file("forbidden.keylog"))
+                .env("RUST_LOG", "quiche=trace,quiche::h3=trace,remora=trace")
                 .arg("server")
                 .arg("--config")
                 .arg(f.file("server.toml")),
@@ -64,6 +66,8 @@ impl Tunnel {
         }
         let client = ChildGuard::spawn_logged(
             Command::new(env!("CARGO_BIN_EXE_remora"))
+                .env("SSLKEYLOGFILE", f.file("forbidden.keylog"))
+                .env("RUST_LOG", "quiche=trace,quiche::h3=trace,remora=trace")
                 .arg("client")
                 .arg("--config")
                 .arg(f.file("client.toml")),

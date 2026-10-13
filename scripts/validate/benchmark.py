@@ -10,17 +10,36 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class Owned:
-    def __init__(self, cmd, path):
+    def __init__(self, cmd, path, blocked_stdout=False, cpu=None):
         self.out = open(path.with_suffix(".stdout.ndjson"), "wb")
         self.err = open(path.with_suffix(".stderr.ndjson"), "wb")
+        self.blocked_stdout = blocked_stdout
+        self.stop_seconds = None
         self.p = subprocess.Popen(
-            cmd,
+            ["taskset", "-c", str(cpu), *cmd] if cpu is not None else cmd,
             stdin=subprocess.DEVNULL,
-            stdout=self.out,
+            stdout=subprocess.PIPE if blocked_stdout else self.out,
             stderr=self.err,
             start_new_session=True,
         )
+        if blocked_stdout:
+            import fcntl
+            fcntl.fcntl(self.p.stdout.fileno(), fcntl.F_SETPIPE_SZ, 4096)
         self.reaped = False
+        self._wait_for_cpu(cpu)
+
+    def _wait_for_cpu(self, cpu):
+        if cpu is None:
+            return
+        deadline = time.monotonic() + 3
+        # Popen can return while taskset still has the inherited parent mask.
+        # Sampling starts only after the assigned mask is installed; all later
+        # Rust/traffic worker threads inherit that mask across exec/spawn.
+        while os.sched_getaffinity(self.p.pid) != {cpu}:
+            if self.exited() or time.monotonic() >= deadline:
+                self.stop()
+                raise RuntimeError("role CPU assignment readiness failed")
+            time.sleep(0.001)
 
     def exited(self):
         # Never reap while the group identity is still needed for cleanup.
@@ -32,6 +51,7 @@ class Owned:
     def stop(self):
         if self.reaped:
             return
+        stopping = time.monotonic()
         try:
             os.killpg(self.p.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -45,6 +65,10 @@ class Owned:
             pass
         self.p.wait(timeout=2)
         self.reaped = True
+        self.stop_seconds = time.monotonic() - stopping
+        if self.blocked_stdout:
+            self.out.write(self.p.stdout.read())
+            self.p.stdout.close()
         self.out.close()
         self.err.close()
 
@@ -131,12 +155,28 @@ def main():
     )
     a.add_argument("--output", required=True)
     a.add_argument("--traffic-binary", type=Path)
+    a.add_argument("--remora-binary", type=Path)
+    a.add_argument("--remora-input-manifest", type=Path)
+    a.add_argument("--diagnostics-kind", choices=["repeatability", "regression"], default="repeatability")
+    a.add_argument("--baseline-binary", type=Path)
+    a.add_argument("--baseline-input-manifest", type=Path)
+    a.add_argument("--regression-plan", type=Path)
+    a.add_argument("--proposal", type=Path)
+    a.add_argument("--diagnostics-stage", choices=["reference", "freeze", "candidate"])
+    a.add_argument("--reference", type=Path)
+    a.add_argument("--policy", type=Path)
     a.add_argument("--cpu-profile", action="store_true")
     a.add_argument("--plan-only", action="store_true")
     a.add_argument("--development-smoke", action="store_true")
     a.add_argument("--smoke-selected", action="store_true")
     args = a.parse_args()
     profile = tomllib.loads(Path(args.profile).read_text())
+    if profile.get("coverage") == "diagnostics-operator-overhead":
+        if args.diagnostics_kind == "regression":
+            from diagnostic_regression import dispatch
+        else:
+            from diagnostic_benchmark import dispatch
+        return dispatch(args, profile)
     if profile.get("coverage") == "full-reference-methodology":
         from reference import plan
 
@@ -169,7 +209,7 @@ def main():
         or profile["architecture"] != platform.machine()
         or profile["io"] not in ["single", "mmsg"]
         or profile["cc"] not in ["cubic", "bbr2_gcongestion", "reno"]
-        or profile["diagnostics"] != "info"
+        or profile["diagnostics"] not in ["info", "error", "trace", "filtered-qlog"]
         or profile["gso_requested"] != "off"
         or profile["gro_requested"] != "off"
     ):
@@ -179,6 +219,10 @@ def main():
     ).resolve()
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=False)
+    allowed = sorted(os.sched_getaffinity(0))
+    if profile.get("role_cpu_pinning") and len(allowed) != 4:
+        raise ValueError("pinned diagnostics require four declared role CPUs")
+    role_cpus = dict(zip(["client", "server", "generator", "receiver"], allowed)) if profile.get("role_cpu_pinning") else {}
     manifest = {
         "schema_version": 1,
         "profile": profile,
@@ -203,6 +247,12 @@ def main():
                 "unreported",
             ),
             "affinity": sorted(os.sched_getaffinity(0)),
+            "cpu_frequency_policy": {
+                str(cpu): {name: (Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq") / name).read_text().strip()
+                    if (Path(f"/sys/devices/system/cpu/cpu{cpu}/cpufreq") / name).exists() else None
+                    for name in ["scaling_governor", "scaling_driver", "scaling_min_freq", "scaling_max_freq"]}
+                for cpu in sorted(os.sched_getaffinity(0))
+            },
         },
         "offloads": {
             "gso": {
@@ -224,12 +274,13 @@ def main():
         },
         "locks": {p: sha(ROOT / p) for p in ["Cargo.lock", "tools/traffic/Cargo.lock"]},
         "binaries": {
-            p: sha(tool_path if p.startswith("tools/") else ROOT / p)
+            p: sha(tool_path if p.startswith("tools/") else (args.remora_binary or ROOT / p))
             for p in [
                 "target/release/remora",
                 "tools/traffic/target/release/remora-traffic",
             ]
         },
+        "role_cpu_affinity": role_cpus,
         "role_locations": {
             "generator": "loopback client endpoint",
             "client": "same-host client role",
@@ -248,15 +299,20 @@ def main():
             "not release qualification",
         ],
     }
+    if args.remora_input_manifest:
+        from diagnostic_regression import checked_input
+        identity = checked_input(args.remora_input_manifest, args.remora_binary)
+        manifest["remora_input"] = identity
+        manifest["source_sha256"] = {**{k: v for k, v in manifest["source_sha256"].items() if not k.startswith("src/")}, **identity["sources"]}
+        manifest["locks"]["Cargo.lock"] = identity["sources"]["Cargo.lock"]
     write(out / "manifest.json", manifest)
     all_summaries = []
     tool = str(tool_path)
-    binary = str(ROOT / "target/release/remora")
+    binary = str(args.remora_binary or ROOT / "target/release/remora")
     for pair in range(profile["paired_repetitions"]):
-        for direction in ["forward", "reverse", "simultaneous"]:
-            for mode in (
-                ["baseline", "tunnel"] if pair % 2 == 0 else ["tunnel", "baseline"]
-            ):
+        for direction in profile.get("directions", ["forward", "reverse", "simultaneous"]):
+            for mode in (["tunnel"] if profile.get("tunnel_only") else
+                (["baseline", "tunnel"] if pair % 2 == 0 else ["tunnel", "baseline"])):
                 run = out / f"{pair}-{direction}-{mode}"
                 run.mkdir()
                 owned = []
@@ -289,6 +345,16 @@ def main():
                                         else ""
                                     )
                                 )
+                        if profile.get("tunnel_only"):
+                            for role in ["client", "server"]:
+                                qlog = run / f"{role}-qlog"
+                                extra = ""
+                                if profile["diagnostics"] == "filtered-qlog":
+                                    qlog.mkdir(mode=0o700)
+                                    extra = f'qlog_directory = "{qlog.resolve()}"\n'
+                                level = "info" if profile["diagnostics"] == "filtered-qlog" else profile["diagnostics"]
+                                with (f / f"{role}.toml").open("a") as config:
+                                    config.write(f'\n[diagnostics]\nlevel = "{level}"\nsnapshot_interval_ms = 1000\n' + extra)
                         ports = json.loads((f / "ports.json").read_text())
                         address = lambda key: f"127.0.0.1:{ports[key]}"
                         if mode == "tunnel":
@@ -304,6 +370,8 @@ def main():
                                             str(f / f"{role}.toml"),
                                         ],
                                         run / role,
+                                        blocked_stdout=profile.get("blocked_sink", False),
+                                        cpu=role_cpus.get(role),
                                     )
                                 )
                         else:
@@ -406,6 +474,7 @@ def main():
                                 *common,
                             ],
                             run / "receiver",
+                            cpu=role_cpus.get("receiver"),
                         )
                         owned.append(target)
                         wait_udp_bound(target, address("target"))
@@ -422,10 +491,13 @@ def main():
                                 *common,
                             ],
                             run / "generator",
+                            cpu=role_cpus.get("generator"),
                         )
                         owned.append(sender)
                         initial = None
                         final = None
+                        blocked_observed = {role: False for role in ["client", "server"]}
+                        affinity_ok = True
                         wall0 = time.time()
                         mono0 = time.monotonic()
                         deadline = (
@@ -448,6 +520,20 @@ def main():
                                     )
                                 },
                             }
+                            if profile.get("blocked_sink"):
+                                for role, proc in zip(["server", "client"], owned):
+                                    for task in Path(f"/proc/{proc.p.pid}/task").glob("*/wchan"):
+                                        try:
+                                            blocked_observed[role] |= "pipe_write" in task.read_text()
+                                        except FileNotFoundError:
+                                            pass
+                            if role_cpus:
+                                for role, proc in zip(["server", "client", "receiver", "generator"], owned):
+                                    for task in Path(f"/proc/{proc.p.pid}/task").iterdir():
+                                        try:
+                                            affinity_ok &= os.sched_getaffinity(int(task.name)) == {role_cpus[role]}
+                                        except ProcessLookupError:
+                                            pass
                             samples.append(current)
                             if current["time_ms"] >= start and initial is None:
                                 initial = current
@@ -533,15 +619,20 @@ def main():
                             abs((time.time() - wall0) - (time.monotonic() - mono0))
                             * 1000
                         )
-                        diagnostic_last = {
-                            role: json.loads(
-                                (run / f"{role}.stdout.ndjson")
-                                .read_text()
-                                .strip()
-                                .splitlines()[-1]
-                            )
-                            for role in ["server", "client"]
-                        }
+                        diagnostic_last = {}
+                        for role, proc in zip(["server", "client"], owned):
+                            lines = (run / f"{role}.stdout.ndjson").read_text().splitlines()
+                            records = []
+                            for line in lines:
+                                try: records.append(json.loads(line))
+                                except json.JSONDecodeError:
+                                    if not profile.get("blocked_sink"): raise
+                            diagnostic_last[role] = records[-1] if records else {}
+                            if profile.get("blocked_sink"):
+                                diagnostic_last[role]["collection_incomplete"] = True
+                        qlog_files = {role: [p.stat().st_size for p in (run / f"{role}-qlog").glob("*.ndjson")] for role in ["client", "server"]}
+                        exits = {role: proc.p.returncode for role, proc in zip(["server", "client"], owned)}
+                        stops = {role: proc.stop_seconds for role, proc in zip(["server", "client"], owned)}
                         summary = {
                             "mode": mode,
                             "direction": direction,
@@ -582,6 +673,17 @@ def main():
                             "release_acceptance_claim": False,
                             "regression_claim": False,
                             "diagnostic_last": diagnostic_last,
+                            "role_exit_codes": exits,
+                            "role_runtime_failures": {
+                                role: [line.removeprefix("runtime failed: ") for line in
+                                    (run / f"{role}.stderr.ndjson").read_text().splitlines()
+                                    if line.startswith("runtime failed: ")]
+                                for role in ["client", "server"]
+                            },
+                            "stop_seconds": stops,
+                            "writer_blocked_observed": blocked_observed,
+                            "role_cpu_affinity_ok": affinity_ok if role_cpus else None,
+                            "qlog_file_bytes": qlog_files,
                         }
                         write(run / "summary.json", summary)
                         write(run / "samples.json", samples)
@@ -594,6 +696,8 @@ def main():
                             },
                         )
                         all_summaries.append(summary)
+                        if profile.get("tunnel_only"):
+                            print(json.dumps({"diagnostics": profile["diagnostics"], "pair": pair, "direction": direction, "blocked": profile.get("blocked_sink", False), "status": summary["status"]}), flush=True)
                 except Exception as e:
                     write(
                         run / "failure.json",

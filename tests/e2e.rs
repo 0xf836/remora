@@ -5,8 +5,12 @@ mod common;
 mod concurrency;
 #[path = "e2e/conformance.rs"]
 mod conformance;
+#[path = "e2e/diagnostics.rs"]
+mod diagnostics;
 #[path = "e2e/forwarding.rs"]
 mod forwarding;
+#[path = "e2e/operations.rs"]
+mod operations;
 #[path = "e2e/overload.rs"]
 mod overload;
 #[path = "e2e/recovery.rs"]

@@ -42,8 +42,9 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 ```
 
-Default builds omit qlog; `--all-features` validates compilation of optional
-qlog support. No runtime qlog writer is implemented or activated by this flag.
+Default builds omit qlog. `--all-features` validates its optional build path;
+activation additionally requires a fresh private `diagnostics.qlog_directory`.
+Only reconstructed metadata is persisted. See [operations](operations.md#optional-filtered-qlog).
 Commit lockfile changes deliberately; ordinary builds must not regenerate it.
 
 ## Pinned container checks

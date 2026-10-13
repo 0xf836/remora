@@ -108,7 +108,7 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | recovery.retry_initial_ms / retry_max_ms | 100 / 2000 | Validate 100 <= initial <= max <=2000; scheduling floor plus uniform capped exponential jitter, total delay <=max; <=10 attempts/s/process, one handshake in flight |
 | diagnostics.level | info | error/warn/info/debug/trace; same redaction at every level |
 | diagnostics.snapshot_interval_ms | 1000 | Minimum 1000; bounded stdout NDJSON snapshots |
-| diagnostics.qlog_directory | absent | Disabled by default; filtered data only, never raw H3 |
+| diagnostics.qlog_directory | absent | Disabled by default; qlog build feature plus fresh empty owner-0700 directory; filtered NDJSON only, never raw H3 |
 
 For each offload, accept `off` and `auto` even when its implementation is deferred. `off` uses ordinary selected single/mmsg I/O without an offload probe. Deferred `auto` also uses ordinary I/O, reports effective `off` with `not_implemented`, and must not claim a failed kernel/NIC probe. Once implemented, `auto` probes each applicable outer socket/path and permits effective `on` only when capability and eligibility checks pass; otherwise use the same baseline I/O. Export requested `off|auto`, effective `off|on` and a fixed reason `configured_off|not_implemented|capability_unavailable|path_ineligible|enabled`. Effective `on` describes offload availability on that socket/path; each individual packet/group still must satisfy metadata, segment-size and pacing constraints, with incompatible packets sent by baseline I/O. Bound and aggregate transitions; no per-packet event stream. An unsupported implementation/capability never silently alters payloads or pacing, and baseline fallback never resubmits an already accepted logical packet. Version/help and operator documentation distinguish implemented/qualified offloads from accepted settings with deferred implementation; no new mode or build framework is required.
 
@@ -125,3 +125,14 @@ Replace credential/policy/trust files atomically with correct ownership/permissi
 A client permanent auth/policy/capability rejection leaves a fixed-size admission latch on the immutable listener mapping until controlled restart, even after the individual flow is reclaimed. Cancel every not-yet-accepted client Session, including queued Starting and AwaitingAcceptance, releasing its setup work and sender association. Neither queued CONNECT submission nor a delayed successful response can activate a Session after the latch. New sender tuples and transient connection recovery cannot bypass it; already accepted unrelated sessions continue. Server requests are rejected/closed under existing admission limits, not retained in an unlimited deny cache.
 
 No Remora command installs firewall rules, obtains certificates, edits WireGuard, sets routes, creates TUN, changes qdiscs/sysctls or manages deployment. The test harness may request namespace capabilities separately from the unprivileged runtime.
+
+### Phase 7 qlog activation
+
+A configured qlog directory now requires the optional `qlog` build feature.
+Startup/check-config refuse a missing, nonempty, symlinked, public or foreign-owned
+directory. Validation performs no file creation/bind/peer traffic. The operator
+creates a fresh empty mode-0700 directory per role/start and owns parent paths.
+The writer uses its held directory FD and mode-0600 create-new files; no existing
+output is deleted/overwritten. Sanitized schema-1 Remora NDJSON is not an upstream
+qlog replay file. This activates the previously deferred option without changing
+wire/config schema version; see [operations](../../../docs/operations.md#optional-filtered-qlog).

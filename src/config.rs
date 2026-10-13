@@ -224,6 +224,11 @@ impl ValidatedConfig {
         let parent = path.parent().unwrap_or(Path::new("."));
         if let Some(ref mut qlog) = doc.diagnostics.qlog_directory {
             *qlog = parent.join(&*qlog);
+            if !cfg!(feature = "qlog") {
+                return Err(error("qlog_directory", ConfigReason::Range));
+            }
+            crate::diagnostics::qlog::open_directory(qlog)
+                .map_err(|_| error("qlog_directory", ConfigReason::Permissions))?;
         }
         let role = match (doc.client.take(), doc.server.take()) {
             (Some(c), None) => RoleConfig::Client(load_client(c, parent)?),

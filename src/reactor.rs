@@ -92,6 +92,9 @@ struct Runner<'a> {
     turn: usize,
     setup_cursor: usize,
     next_snapshot: Instant,
+    next_quic_sample: Instant,
+    recovery_started: Option<Instant>,
+    qlog: Option<crate::diagnostics::qlog::Pool>,
     stopping: bool,
     ever_active: bool,
     primary: Option<u64>,
@@ -152,6 +155,15 @@ impl<'a> Runner<'a> {
     ) -> Result<Self, RuntimeError> {
         let now = Instant::now();
         let server = matches!(cfg.role(), RoleConfig::Server(_));
+        let qlog = cfg
+            .diagnostics()
+            .qlog_directory
+            .as_ref()
+            .map(|p| {
+                crate::diagnostics::qlog::Pool::new(p, diagnostics.queue().clone(), now)
+                    .map_err(|_| RuntimeError::Diagnostics)
+            })
+            .transpose()?;
         let mut outer = Vec::new();
         let mut listener = None;
         match cfg.role() {
@@ -214,6 +226,9 @@ impl<'a> Runner<'a> {
             turn: 0,
             setup_cursor: 0,
             next_snapshot: now + Duration::from_millis(cfg.diagnostics().snapshot_interval_ms),
+            next_quic_sample: now,
+            recovery_started: None,
+            qlog,
             stopping: false,
             ever_active: false,
             primary: None,
@@ -229,6 +244,7 @@ impl<'a> Runner<'a> {
             #[cfg(test)]
             outer_send_hook: None,
         };
+        runner.snapshot.io_batch_size = cfg.io().batch_max;
         runner.snapshot.offloads = crate::diagnostics::OffloadState {
             gso: crate::diagnostics::OffloadReport::new(cfg.io().gso),
             gro: crate::diagnostics::OffloadReport::new(cfg.io().gro),
@@ -277,6 +293,17 @@ impl<'a> Runner<'a> {
     fn client_state(&mut self, state: ClientState, now: Instant) -> Result<(), RuntimeError> {
         if self.snapshot.recovery.client_state == Some(state) {
             return Ok(());
+        }
+        if state == ClientState::Recovering {
+            self.recovery_started.get_or_insert(now);
+        }
+        if state == ClientState::Active
+            && let Some(started) = self.recovery_started.take()
+        {
+            self.snapshot
+                .histograms
+                .recovery_duration_us
+                .observe(now.saturating_duration_since(started).as_micros() as u64);
         }
         self.snapshot.recovery.client_state = Some(state);
         self.snapshot.recovery.transitions = self
@@ -356,7 +383,7 @@ impl<'a> Runner<'a> {
         let local = socket.local_addr();
         let cid = transport::random_cid().map_err(|_| RuntimeError::Resource)?;
         let generation = resource(self.generations.next_generation())?;
-        let quic = quiche::connect_with_buffer_factory::<TrackedFactory>(
+        let mut quic = quiche::connect_with_buffer_factory::<TrackedFactory>(
             Some(&client.server_name),
             &quiche::ConnectionId::from_ref(&cid),
             local,
@@ -368,6 +395,7 @@ impl<'a> Runner<'a> {
             .diagnostics
             .next_id()
             .map_err(|_| RuntimeError::Diagnostics)?;
+        Connection::attach_qlog(&mut quic, self.qlog.as_ref());
         let socket_index = self.outer.len();
         let socket = PollSocket::register(socket).map_err(|_| RuntimeError::Socket)?;
         self.snapshot.socket_buffers.outer_receive_max_per_socket = self
@@ -565,6 +593,16 @@ impl<'a> Runner<'a> {
     }
     fn retire_session(&mut self, generation: u64, code: u64, abort_write: bool) {
         if let Some(mut s) = self.sessions.remove(&generation) {
+            self.snapshot.resources.session_queue_packets_peak = self
+                .snapshot
+                .resources
+                .session_queue_packets_peak
+                .max(s.queue.peak().count);
+            self.snapshot.resources.session_queue_bytes_peak = self
+                .snapshot
+                .resources
+                .session_queue_bytes_peak
+                .max(s.queue.peak().bytes);
             let recovering = s.state == State::Recovering;
             if recovering {
                 for direction in [Direction::ToTarget, Direction::ToClient] {
@@ -655,6 +693,10 @@ impl<'a> Runner<'a> {
                 .quic
                 .stream_shutdown(stream, quiche::Shutdown::Read, 0x10b);
         }
+        let existing = self
+            .lookup(connection, stream)
+            .and_then(|id| self.sessions.get(&id).map(|s| s.id));
+        let correlation = existing.or_else(|| self.diagnostics.next_id().ok());
         self.request_failure(
             match status {
                 401 => Failure::Authentication,
@@ -666,10 +708,14 @@ impl<'a> Runner<'a> {
                 _ => Failure::Malformed,
             },
             u64::from(status),
-            self.lookup(connection, stream)
-                .and_then(|id| self.sessions.get(&id).map(|s| s.id)),
+            correlation,
             self.connections.get(&connection).map(|c| c.id),
         );
+        if existing.is_none()
+            && let Some(id) = correlation
+        {
+            let _ = self.diagnostics.finish_session(id);
+        }
         if sent && let Some(id) = self.lookup(connection, stream) {
             // Queued final rejection headers/FIN must survive local flow cleanup.
             // Read side is shut down, all cancellable app data and permits retire;
@@ -876,7 +922,7 @@ impl<'a> Runner<'a> {
             let cid = transport::random_cid().map_err(|_| RuntimeError::Resource)?;
             let original = quiche::ConnectionId::from_ref(&original);
             let retry = quiche::ConnectionId::from_ref(header.dcid.as_ref());
-            let q = quiche::accept_with_retry::<TrackedFactory>(
+            let mut q = quiche::accept_with_retry::<TrackedFactory>(
                 &quiche::ConnectionId::from_ref(&cid),
                 quiche::RetryConnectionIds {
                     original_destination_cid: &original,
@@ -891,6 +937,7 @@ impl<'a> Runner<'a> {
                 .diagnostics
                 .next_id()
                 .map_err(|_| RuntimeError::Diagnostics)?;
+            Connection::attach_qlog(&mut q, self.qlog.as_ref());
             self.connections.insert(
                 generation.0,
                 OwnedConnection {
@@ -1109,9 +1156,31 @@ impl<'a> Runner<'a> {
         match result {
             Ok(n) => {
                 for p in packets {
-                    if p.fault.is_some() {
+                    if let Some(fault) = p.fault {
+                        if let Some(s) = self
+                            .senders
+                            .get(&(p.peer, p.local))
+                            .and_then(|id| self.sessions.get(id))
+                        {
+                            let session = s.id;
+                            let connection = self.connections.get(&s.connection.0).map(|c| c.id);
+                            self.failure(
+                                if fault == ReceiveFault::Truncated {
+                                    Failure::Size
+                                } else {
+                                    Failure::Malformed
+                                },
+                                3,
+                                Some(session),
+                                connection,
+                            );
+                        }
                         self.drop_packet(
-                            crate::diagnostics::DropReason::SocketTruncated,
+                            if fault == ReceiveFault::Truncated {
+                                crate::diagnostics::DropReason::SocketTruncated
+                            } else {
+                                crate::diagnostics::DropReason::AncillaryInvalid
+                            },
                             Direction::ToTarget,
                         )?;
                         continue;
@@ -1301,6 +1370,12 @@ impl<'a> Runner<'a> {
                             self.ever_active = true;
                             self.setup_retry.reset();
                             s.state = State::Active;
+                            self.snapshot.lifecycle.accepted_total = self
+                                .snapshot
+                                .lifecycle
+                                .accepted_total
+                                .checked_add(1)
+                                .ok_or(RuntimeError::Diagnostics)?;
                             s.udp_activity(now);
                             s._setup = None;
                         } else {
@@ -1586,6 +1661,18 @@ impl<'a> Runner<'a> {
             .get(&s.connection.0)
             .map_or(0, |c| c.transport.payload_ceiling(s.stream));
         if bytes.len() > ceiling {
+            let session_id = s.id;
+            let connection_id = self.connections.get(&s.connection.0).map(|c| c.id);
+            self.failure(
+                Failure::Size,
+                if bytes.len() > self.cfg.transport().application_max_bytes {
+                    1
+                } else {
+                    2
+                },
+                Some(session_id),
+                connection_id,
+            );
             self.drop_packet(
                 if bytes.len() > self.cfg.transport().application_max_bytes {
                     crate::diagnostics::DropReason::Oversized
@@ -1597,9 +1684,12 @@ impl<'a> Runner<'a> {
             return Ok(());
         }
         s.udp_activity(now);
+        let session_id = s.id;
+        let connection_id = self.connections.get(&s.connection.0).map(|c| c.id);
         let mut slab = match self.pools.application.acquire() {
             Ok(slab) => slab,
             Err(_) => {
+                self.failure(Failure::Resource, 1, Some(session_id), connection_id);
                 self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
                 return Ok(());
             }
@@ -1622,6 +1712,7 @@ impl<'a> Runner<'a> {
             now + Duration::from_millis(self.cfg.limits().application_residence_ms),
         ))?;
         if s.queue.push(packet).is_err() {
+            self.failure(Failure::Resource, 2, Some(session_id), connection_id);
             self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
         }
         Ok(())
@@ -1666,6 +1757,10 @@ impl<'a> Runner<'a> {
                     now.saturating_duration_since(packet.received_at())
                         .as_micros() as u64,
                 );
+            self.snapshot.histograms.application_queue_age_us.observe(
+                now.saturating_duration_since(packet.received_at())
+                    .as_micros() as u64,
+            );
             if packet.session() != s.generation || packet.connection() != s.connection {
                 s.queue.pop(direction);
                 self.drop_packet(crate::diagnostics::DropReason::StaleGeneration, direction)?;
@@ -2107,6 +2202,13 @@ impl<'a> Runner<'a> {
             && bytes.len() - width - context > 65527
         {
             if let Some(id) = self.lookup(connection, stream) {
+                let session_id = self.sessions.get(&id).map(|s| s.id);
+                self.failure(
+                    Failure::Size,
+                    1,
+                    session_id,
+                    self.connections.get(&connection).map(|c| c.id),
+                );
                 self.close_session(id, masque::H3_MESSAGE_ERROR);
             }
             return Ok(());
@@ -2144,6 +2246,13 @@ impl<'a> Runner<'a> {
             return Ok(());
         }
         if decoded.payload.len() > self.cfg.transport().application_max_bytes {
+            let session_id = s.id;
+            self.failure(
+                Failure::Size,
+                1,
+                Some(session_id),
+                self.connections.get(&connection).map(|c| c.id),
+            );
             self.drop_packet(crate::diagnostics::DropReason::Oversized, direction)?;
             return Ok(());
         }
@@ -2167,12 +2276,31 @@ impl<'a> Runner<'a> {
                 to: s.sender.ok_or(RuntimeError::Socket)?,
             }])
         };
+        self.complete_datagram_send(id, decoded.payload, expiry, now, result)
+    }
+    // A single outcome path keeps real UDP submissions and deterministic failure
+    // tests on the same bounded queue/correlation logic; it never resubmits data.
+    fn complete_datagram_send(
+        &mut self,
+        id: u64,
+        payload: &[u8],
+        expiry: Instant,
+        now: Instant,
+        result: io::Result<usize>,
+    ) -> Result<(), RuntimeError> {
+        let direction = if self.server {
+            Direction::ToTarget
+        } else {
+            Direction::ToClient
+        };
+        let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
+        let connection = s.connection.0;
         match result {
             Ok(1) => {
                 s.udp_activity(now);
                 self.snapshot
                     .counters
-                    .egress(direction, decoded.payload.len())
+                    .egress(direction, payload.len())
                     .map_err(|_| RuntimeError::Diagnostics)?;
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -2181,21 +2309,28 @@ impl<'a> Runner<'a> {
                 let mut slab = match self.pools.application.acquire() {
                     Ok(s) => s,
                     Err(_) => {
+                        let session_id = s.id;
+                        self.failure(
+                            Failure::Resource,
+                            1,
+                            Some(session_id),
+                            self.connections.get(&connection).map(|c| c.id),
+                        );
                         self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
                         return Ok(());
                     }
                 };
-                slab.bytes_mut()[..decoded.payload.len()].copy_from_slice(decoded.payload);
+                slab.bytes_mut()[..payload.len()].copy_from_slice(payload);
                 self.snapshot.profile.queue_copy_bytes = self
                     .snapshot
                     .profile
                     .queue_copy_bytes
-                    .checked_add(decoded.payload.len() as u64)
+                    .checked_add(payload.len() as u64)
                     .ok_or(RuntimeError::Diagnostics)?;
                 let packet = resource(crate::buffers::Datagram::new(
                     slab,
                     0,
-                    decoded.payload.len(),
+                    payload.len(),
                     direction,
                     session,
                     conn,
@@ -2210,6 +2345,13 @@ impl<'a> Runner<'a> {
                     .push(packet)
                     .is_err()
                 {
+                    let session_id = self.sessions.get(&id).map(|s| s.id);
+                    self.failure(
+                        Failure::Resource,
+                        2,
+                        session_id,
+                        self.connections.get(&connection).map(|c| c.id),
+                    );
                     self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
                 }
             }
@@ -2421,9 +2563,24 @@ impl<'a> Runner<'a> {
         match result {
             Ok(n) => {
                 for p in packets {
-                    if p.fault.is_some() {
+                    if let Some(fault) = p.fault {
+                        let session_id = self.sessions.get(&id).map(|s| s.id);
+                        self.failure(
+                            if fault == ReceiveFault::Truncated {
+                                Failure::Size
+                            } else {
+                                Failure::Malformed
+                            },
+                            3,
+                            session_id,
+                            self.connections.get(&connection).map(|c| c.id),
+                        );
                         self.drop_packet(
-                            crate::diagnostics::DropReason::SocketTruncated,
+                            if fault == ReceiveFault::Truncated {
+                                crate::diagnostics::DropReason::SocketTruncated
+                            } else {
+                                crate::diagnostics::DropReason::AncillaryInvalid
+                            },
                             Direction::ToClient,
                         )?;
                         continue;
@@ -2508,7 +2665,21 @@ impl<'a> Runner<'a> {
                     .ok_or(RuntimeError::Diagnostics)?;
                 self.snapshot.profile.send_burst_datagrams_max =
                     self.snapshot.profile.send_burst_datagrams_max.max(n);
+                if n != 0 {
+                    self.snapshot
+                        .histograms
+                        .emitted_burst_datagrams
+                        .observe(n as u64);
+                }
                 for packet in c.transport.output.iter().take(n) {
+                    self.snapshot.histograms.ciphertext_age_us.observe(
+                        now.saturating_duration_since(packet.generated_at())
+                            .as_micros() as u64,
+                    );
+                    self.snapshot
+                        .histograms
+                        .pacing_lateness_us
+                        .observe(now.saturating_duration_since(packet.at()).as_micros() as u64);
                     self.snapshot.profile.ciphertext_age_max_us =
                         self.snapshot.profile.ciphertext_age_max_us.max(
                             now.saturating_duration_since(packet.generated_at())
@@ -2720,6 +2891,12 @@ impl<'a> Runner<'a> {
                 {
                     s.receipt = None;
                     s.state = State::Active;
+                    self.snapshot.lifecycle.accepted_total = self
+                        .snapshot
+                        .lifecycle
+                        .accepted_total
+                        .checked_add(1)
+                        .ok_or(RuntimeError::Diagnostics)?;
                     s._setup = None;
                     activated += 1;
                 }
@@ -2774,6 +2951,35 @@ impl<'a> Runner<'a> {
             }
         }
         pending
+    }
+    fn sample_quic(&mut self) {
+        let mut total = crate::diagnostics::QuicSummary::default();
+        for c in self.connections.values() {
+            let v = c.transport.operational_stats();
+            total.sampled_connections += v.sampled_connections;
+            total.rtt_max_us = total.rtt_max_us.max(v.rtt_max_us);
+            total.rttvar_max_us = total.rttvar_max_us.max(v.rttvar_max_us);
+            if v.path_payload_limit_min != 0 {
+                total.path_payload_limit_min = if total.path_payload_limit_min == 0 {
+                    v.path_payload_limit_min
+                } else {
+                    total.path_payload_limit_min.min(v.path_payload_limit_min)
+                };
+            }
+            for (slot, n) in [
+                (&mut total.cwnd_total_bytes, v.cwnd_total_bytes),
+                (&mut total.retransmitted_packets, v.retransmitted_packets),
+                (&mut total.pto_count, v.pto_count),
+            ] {
+                if let Some(next) = slot.checked_add(n) {
+                    *slot = next;
+                } else {
+                    total.overflow = true;
+                }
+            }
+            total.overflow |= v.overflow;
+        }
+        self.snapshot.quic = total;
     }
     fn record_resources(&mut self) {
         let mut io = self.retired_io;
@@ -2837,7 +3043,56 @@ impl<'a> Runner<'a> {
             r.native_receive_bytes += receive;
             r.control_output_capacity_bytes += metadata;
         }
+        let old = self.snapshot.resources;
+        r.fd_reservations_peak = self.budgets.fds.peak().count;
+        r.queued_packets_observed_peak = old.queued_packets_observed_peak.max(r.queued_packets);
+        r.queued_bytes_observed_peak = old.queued_bytes_observed_peak.max(r.queued_bytes);
+        r.session_queue_packets_peak = old.session_queue_packets_peak.max(
+            self.sessions
+                .values()
+                .map(|s| s.queue.peak().count)
+                .max()
+                .unwrap_or(0),
+        );
+        r.session_queue_bytes_peak = old.session_queue_bytes_peak.max(
+            self.sessions
+                .values()
+                .map(|s| s.queue.peak().bytes)
+                .max()
+                .unwrap_or(0),
+        );
+        r.application_retained_peak = old
+            .application_retained_peak
+            .max(self.pools.application.retained_peak().bytes);
+        r.ciphertext_retained_peak = old
+            .ciphertext_retained_peak
+            .max(self.pools.ciphertext.retained_peak().bytes);
+        r.scratch_retained_peak = old
+            .scratch_retained_peak
+            .max(self.pools.scratch.retained_peak().bytes);
         self.snapshot.resources = r;
+        let mut lifecycle = crate::diagnostics::Lifecycle {
+            accepted_total: self.snapshot.lifecycle.accepted_total,
+            destination_response_datagrams: if self.server {
+                self.snapshot.counters.app_ingress_by_direction.to_client
+            } else {
+                0
+            },
+            ..Default::default()
+        };
+        for s in self.sessions.values() {
+            match s.state {
+                State::Starting => lifecycle.starting += 1,
+                State::Authorizing => lifecycle.authorizing += 1,
+                State::AwaitingAcceptance => lifecycle.awaiting_acceptance += 1,
+                State::AwaitingCommitment => lifecycle.awaiting_commitment += 1,
+                State::Active => lifecycle.active += 1,
+                State::Recovering => lifecycle.recovering += 1,
+                State::Closed => {}
+            }
+        }
+        self.snapshot.lifecycle = lifecycle;
+        self.snapshot.qlog = self.qlog.as_ref().map_or_default(|p| p.report());
     }
     fn expire_sessions(&mut self, now: Instant) {
         let expired: Vec<_> = self
@@ -3070,6 +3325,10 @@ impl<'a> Runner<'a> {
                     self.remove_connection(id, Instant::now())?;
                 }
             }
+            if now >= self.next_quic_sample {
+                self.sample_quic();
+                self.next_quic_sample = now + Duration::from_secs(5);
+            }
             if now >= self.next_snapshot {
                 self.record_resources();
                 self.snapshot.sessions_active = self
@@ -3109,7 +3368,7 @@ impl<'a> Runner<'a> {
                         .filter_map(|d| s.queue.front(d).map(|p| p.expires_at()))
                         .min()
                 }))
-                .chain(std::iter::once(self.next_snapshot))
+                .chain([self.next_snapshot, self.next_quic_sample])
                 .chain(self.reconnect.deadline())
                 .chain(self.setup_retry.deadline())
                 .filter(|at| *at > now)
@@ -3251,7 +3510,12 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
     for id in ids {
         runner.close_session(id, 0x100);
     }
+    runner.sample_quic();
+    for socket in runner.outer.iter().chain(runner.listener.iter()) {
+        runner.retired_io = runner.retired_io.merge(socket.get_ref().0.borrow().stats());
+    }
     runner.connections.clear();
+    runner.sample_quic();
     runner.outer.clear();
     runner.listener = None;
     // One shared final-collection deadline, independent of periodic cadence.
@@ -3325,6 +3589,202 @@ mod tests {
     use super::*;
     use crate::common::{Fixtures, quic::Pair};
     use std::{cell::Cell, rc::Rc};
+    #[test]
+    fn incoming_datagram_size_and_egress_pressure_keep_correlation() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let p = Pair::new(true);
+            let connection_id = r.diagnostics.next_id().unwrap();
+            r.connections.insert(
+                2,
+                OwnedConnection {
+                    transport: p.server,
+                    socket: 0,
+                    _permit: r.budgets.connections.reserve(1, 0).unwrap(),
+                    _socket_permit: None,
+                    id: connection_id,
+                    initial_cid: vec![],
+                    cursors: [FairCursor::default(); 7],
+                },
+            );
+            let id = r.create_session(2, 0, None, now).unwrap();
+            r.sessions.get_mut(&id).unwrap().state = State::Active;
+            let sid = r.sessions[&id].id;
+            let expiry = now + Duration::from_millis(cfg.limits().application_residence_ms);
+            let payload = vec![0; cfg.transport().application_max_bytes + 1];
+            let mut bytes = vec![0; payload.len() + 16];
+            let n = masque::encode_datagram(0, &payload, &mut bytes).unwrap();
+            r.datagram(2, &bytes[..n], expiry, now).unwrap();
+            // Exercise the real post-syscall path without relying on nondeterministic
+            // loopback EAGAIN. Resource exhaustion must not submit or replay data.
+            let mut held = Vec::new();
+            while let Ok(slab) = r.pools.application.acquire() {
+                held.push(slab);
+            }
+            r.complete_datagram_send(
+                id,
+                b"held",
+                expiry,
+                now,
+                Err(io::ErrorKind::WouldBlock.into()),
+            )
+            .unwrap();
+            assert_eq!(r.sessions[&id].queue.used().count, 0);
+            r.diagnostics.snapshot(now, r.snapshot).unwrap();
+            let mut first = Vec::new();
+            receiver.write_one(&mut first, &mut io::sink()).unwrap();
+            let first: serde_json::Value = serde_json::from_slice(&first).unwrap();
+            assert!(
+                first["failures"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f["class"] == "resource"
+                        && f["code"] == 1
+                        && f["session"] == serde_json::to_value(sid).unwrap()
+                        && f["connection"] == serde_json::to_value(connection_id).unwrap()),
+                "{first}"
+            );
+            assert!(
+                first["failures"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f["class"] == "size"
+                        && f["code"] == 1
+                        && f["session"] == serde_json::to_value(sid).unwrap()
+                        && f["connection"] == serde_json::to_value(connection_id).unwrap()),
+                "{first}"
+            );
+            drop(held);
+            loop {
+                let before = r.sessions[&id].queue.used().count;
+                r.complete_datagram_send(
+                    id,
+                    b"queued",
+                    expiry,
+                    now,
+                    Err(io::ErrorKind::WouldBlock.into()),
+                )
+                .unwrap();
+                if r.sessions[&id].queue.used().count == before {
+                    break;
+                }
+            }
+            let queued = r.sessions[&id].queue.used().count;
+            assert!(queued > 0);
+            r.close_session(id, 0x100);
+            r.diagnostics
+                .snapshot(now + Duration::from_secs(1), r.snapshot)
+                .unwrap();
+            let record = receiver.try_next().unwrap().unwrap();
+            let v: serde_json::Value = serde_json::from_slice(record.bytes()).unwrap();
+            assert_eq!(v["coverage_lost"], 0);
+            {
+                let (class, code) = ("resource", 2);
+                assert!(
+                    v["failures"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|f| f["class"] == class
+                            && f["code"] == code
+                            && f["session"] == serde_json::to_value(sid).unwrap()
+                            && f["connection"] == serde_json::to_value(connection_id).unwrap()
+                            && f["terminal"] == true),
+                    "{v}"
+                );
+            }
+            // Both resource faults count even though the live summary coalesces them.
+            assert!(v["failure_totals"]["resource"].as_u64().unwrap() >= 2);
+        });
+    }
+    #[test]
+    fn diagnostic_setup_fault_matrix_preserves_classes_after_cleanup() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (mut diag, receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            for _ in 0..80 {
+                let _ = diag.event(
+                    now,
+                    Event::failure(crate::config::Level::Warn, Failure::Transport, 0),
+                );
+            }
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let p = Pair::new(true);
+            let connection_id = r.diagnostics.next_id().unwrap();
+            r.connections.insert(
+                2,
+                OwnedConnection {
+                    transport: p.server,
+                    socket: 0,
+                    _permit: r.budgets.connections.reserve(1, 0).unwrap(),
+                    _socket_permit: None,
+                    id: connection_id,
+                    initial_cid: vec![],
+                    cursors: [FairCursor::default(); 7],
+                },
+            );
+            let cases = [
+                (PolicyError::Resolution, "resolution", 502),
+                (PolicyError::Timeout, "setup_timeout", 504),
+                (PolicyError::Capacity, "resource", 503),
+                (PolicyError::Authentication, "authentication", 401),
+                (PolicyError::Denied, "authorization", 403),
+            ];
+            let mut expected = Vec::new();
+            for (index, (fault, class, code)) in cases.into_iter().enumerate() {
+                let id = r.create_session(2, (index * 4) as u64, None, now).unwrap();
+                let opaque = serde_json::to_value(r.sessions[&id].id).unwrap();
+                let key = SetupKey {
+                    connection: crate::buffers::Generation(2),
+                    session: crate::buffers::Generation(id),
+                };
+                r.setup_done(id, key, Err(fault), now).unwrap();
+                assert!(!r.sessions.contains_key(&id));
+                expected.push((opaque, class, code));
+            }
+            r.record_resources();
+            r.diagnostics.snapshot(now, r.snapshot).unwrap();
+            let mut out = Vec::new();
+            receiver.write_one(&mut out, &mut std::io::sink()).unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            for (session, class, code) in expected {
+                assert!(
+                    v["failures"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|f| f["session"] == session
+                            && f["class"] == class
+                            && f["code"] == code
+                            && f["terminal"] == true)
+                );
+            }
+            assert_eq!(v["coverage_lost"], 0);
+            assert_eq!(v["status_write_failures"], 0);
+            assert_eq!(v["resources"]["setup"], 0);
+            assert!(v["diagnostics_dropped"].as_u64().unwrap() > 0);
+        });
+    }
     #[test]
     fn intact_outer_above_configured_cap_and_truncation_have_role_specific_drop_counters() {
         let rt = tokio::runtime::Builder::new_current_thread()

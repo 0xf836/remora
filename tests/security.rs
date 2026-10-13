@@ -11,3 +11,7 @@ mod policy;
 
 #[path = "security/diagnostics.rs"]
 mod diagnostics;
+#[path = "security/qlog.rs"]
+mod qlog;
+#[path = "security/status_writer.rs"]
+mod status_writer;

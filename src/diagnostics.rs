@@ -1,6 +1,7 @@
 //! Privacy-safe records and finite nonblocking handoff. There is deliberately
 //! no global tracing subscriber or arbitrary-string logging API. Terminal
-//! summaries use acknowledged batches; optional qlog filtering is later work.
+//! summaries use acknowledged batches; qlog persists only reconstructed metadata.
+pub mod qlog;
 use crate::{buffers::Direction, config::Level};
 use serde::Serialize;
 use std::{
@@ -45,6 +46,7 @@ pub enum Role {
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[repr(usize)]
 pub enum Failure {
     InvalidConfiguration,
     Trust,
@@ -56,10 +58,43 @@ pub enum Failure {
     PeerTimeout,
     Transport,
     Socket,
+    Size,
     Resource,
     Malformed,
     Internal,
     Stopped,
+}
+/// Fixed classes only: no caller-controlled labels and no per-session history.
+#[derive(Default, Clone, Copy)]
+pub struct FailureTotals {
+    counts: [u64; 15],
+}
+impl Serialize for FailureTotals {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let names = [
+            "invalid_configuration",
+            "trust",
+            "authentication",
+            "authorization",
+            "capability",
+            "resolution",
+            "setup_timeout",
+            "peer_timeout",
+            "transport",
+            "socket",
+            "size",
+            "resource",
+            "malformed",
+            "internal",
+            "stopped",
+        ];
+        let mut map = serializer.serialize_map(Some(names.len()))?;
+        for (name, count) in names.iter().zip(self.counts) {
+            map.serialize_entry(name, &count)?;
+        }
+        map.end()
+    }
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -231,9 +266,22 @@ pub struct Resources {
     pub native_send_bytes: usize,
     pub native_receive_bytes: usize,
     pub control_output_capacity_bytes: usize,
+    pub fd_reservations_peak: usize,
+    pub queued_packets_observed_peak: usize,
+    pub queued_bytes_observed_peak: usize,
+    pub session_queue_packets_peak: usize,
+    pub session_queue_bytes_peak: usize,
+    pub application_retained_peak: usize,
+    pub ciphertext_retained_peak: usize,
+    pub scratch_retained_peak: usize,
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct Snapshot {
+    pub lifecycle: Lifecycle,
+    pub histograms: Histograms,
+    pub quic: QuicSummary,
+    pub qlog: qlog::Report,
+    pub io_batch_size: usize,
     pub recovery: RecoverySnapshot,
     pub profile: ProfileCounters,
     pub resources: Resources,
@@ -242,6 +290,59 @@ pub struct Snapshot {
     pub counters: Counters,
     pub offloads: OffloadState,
     pub socket_buffers: SocketBuffers,
+}
+/// Fixed buckets: <=0,10,100,1000,10000,100000,1000000,>1000000.
+/// Times are microseconds; burst samples use logical UDP messages.
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct Histogram {
+    pub buckets: [u64; 8],
+    pub overflow: bool,
+}
+impl Histogram {
+    pub fn observe(&mut self, value: u64) {
+        let index = [0, 10, 100, 1000, 10000, 100000, 1000000]
+            .iter()
+            .position(|bound| value <= *bound)
+            .unwrap_or(7);
+        if let Some(next) = self.buckets[index].checked_add(1) {
+            self.buckets[index] = next;
+        } else {
+            self.overflow = true;
+        }
+    }
+}
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct Histograms {
+    pub application_queue_age_us: Histogram,
+    pub ciphertext_age_us: Histogram,
+    pub pacing_lateness_us: Histogram,
+    pub emitted_burst_datagrams: Histogram,
+    pub recovery_duration_us: Histogram,
+}
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct Lifecycle {
+    pub starting: usize,
+    pub authenticating: usize,
+    pub authorizing: usize,
+    pub awaiting_acceptance: usize,
+    pub awaiting_commitment: usize,
+    pub active: usize,
+    pub recovering: usize,
+    pub accepted_total: u64,
+    // An observed response is a message from the pinned destination, not a
+    // reachability promise. Zero can be a silent UDP service.
+    pub destination_response_datagrams: u64,
+}
+#[derive(Default, Clone, Copy, Serialize)]
+pub struct QuicSummary {
+    pub sampled_connections: usize,
+    pub rtt_max_us: u64,
+    pub rttvar_max_us: u64,
+    pub cwnd_total_bytes: usize,
+    pub path_payload_limit_min: usize,
+    pub retransmitted_packets: usize,
+    pub pto_count: usize,
+    pub overflow: bool,
 }
 #[derive(Default, Clone, Copy, Serialize)]
 pub struct RecoverySnapshot {
@@ -426,6 +527,7 @@ struct Status<'a> {
     status_write_failures: u64,
     counter_overflow: bool,
     failures: &'a [FailureSummary],
+    failure_totals: FailureTotals,
     chunk_index: usize,
     chunk_count: usize,
     coverage_lost: u64,
@@ -490,6 +592,7 @@ pub struct OutputRecord {
     shared: Arc<Shared>,
     status: bool,
     acknowledgement: u64,
+    qlog: Option<Arc<qlog::Destination>>,
 }
 impl OutputRecord {
     pub fn bytes(&self) -> &[u8] {
@@ -517,6 +620,7 @@ impl Drop for OutputRecord {
 }
 /// The reactor never waits for a writer. Channel counts include reserved status
 /// capacity; bytes include the record being written. Failed enqueue is counted.
+#[derive(Clone)]
 pub struct OutputQueue {
     event: SyncSender<OutputRecord>,
     status: SyncSender<OutputRecord>,
@@ -639,8 +743,26 @@ impl OutputQueue {
             shared: self.shared.clone(),
             status,
             acknowledgement,
+            qlog: None,
         };
         Ok(record)
+    }
+    fn filtered_qlog<T: Serialize>(
+        &self,
+        value: &T,
+        target: Arc<qlog::Destination>,
+    ) -> Result<usize, DiagnosticError> {
+        let result = (|| {
+            let mut record = self.prepare(false, value, 0)?;
+            let length = record.data.len();
+            record.qlog = Some(target);
+            self.publish(record)?;
+            Ok(length)
+        })();
+        if result.is_err() {
+            increment(&self.shared.dropped, &self.shared);
+        }
+        result
     }
     fn publish(&self, record: OutputRecord) -> Result<(), DiagnosticError> {
         let sender = if record.status {
@@ -679,6 +801,13 @@ impl OutputReceiver {
         let Some(record) = self.try_next()? else {
             return Ok(false);
         };
+        if let Some(target) = &record.qlog {
+            // Optional disk failure disables that trace, never the status writer.
+            if target.persist(record.bytes()).is_err() {
+                target.fail();
+            }
+            return Ok(true);
+        }
         let sink: &mut dyn Write = if record.status { stdout } else { stderr };
         if sink
             .write_all(record.bytes())
@@ -775,6 +904,7 @@ pub struct Diagnostics {
     snapshot_interval: Duration,
     failures: VecDeque<FailureSummary>,
     failure_sequence: u64,
+    failure_totals: FailureTotals,
     coverage_lost: u64,
     lost_first: Option<u64>,
     lost_last: Option<u64>,
@@ -803,6 +933,7 @@ impl Diagnostics {
                 snapshot_interval,
                 failures: VecDeque::with_capacity(256),
                 failure_sequence: 0,
+                failure_totals: FailureTotals::default(),
                 coverage_lost: 0,
                 lost_first: None,
                 lost_last: None,
@@ -873,6 +1004,8 @@ impl Diagnostics {
         code: u64,
         terminal: bool,
     ) -> Result<(), DiagnosticError> {
+        let counter = &mut self.failure_totals.counts[class as usize];
+        *counter = counter.checked_add(1).ok_or(DiagnosticError::Arithmetic)?;
         self.failure_sequence = self
             .failure_sequence
             .checked_add(1)
@@ -904,7 +1037,10 @@ impl Diagnostics {
                 self.lost_first
                     .map_or(lost.sequence, |old| old.min(lost.sequence)),
             );
-            self.lost_last = Some(lost.sequence);
+            self.lost_last = Some(
+                self.lost_last
+                    .map_or(lost.sequence, |old| old.max(lost.sequence)),
+            );
         }
         self.failures.push_back(FailureSummary {
             sequence,
@@ -939,10 +1075,11 @@ impl Diagnostics {
     }
     fn acknowledge(&mut self) {
         if let Some((batch, covered, failures)) = self.in_flight {
-            if self.queue.shared.status_ack.load(Ordering::Acquire) >= batch {
-                self.failures.retain(|e| e.sequence > covered);
+            // A later chunk's ACK does not prove an earlier chunk succeeded.
+            if self.queue.shared.write_failures.load(Ordering::Acquire) > failures {
                 self.in_flight = None;
-            } else if self.queue.shared.write_failures.load(Ordering::Acquire) > failures {
+            } else if self.queue.shared.status_ack.load(Ordering::Acquire) >= batch {
+                self.failures.retain(|e| e.sequence > covered);
                 self.in_flight = None;
             }
         }
@@ -1009,8 +1146,18 @@ impl Diagnostics {
                 diagnostics_dropped: self.queue.dropped(),
                 status_write_failures: self.queue.shared.write_failures.load(Ordering::Relaxed),
                 counter_overflow: self.queue.shared.overflow.load(Ordering::Relaxed)
-                    || counters.recovery.counter_overflow,
+                    || counters.recovery.counter_overflow
+                    || counters.quic.overflow
+                    || counters.qlog.overflow
+                    || counters.profile.factory.overflowed
+                    || counters.profile.io.overflowed
+                    || counters.histograms.application_queue_age_us.overflow
+                    || counters.histograms.ciphertext_age_us.overflow
+                    || counters.histograms.pacing_lateness_us.overflow
+                    || counters.histograms.emitted_burst_datagrams.overflow
+                    || counters.histograms.recovery_duration_us.overflow,
                 failures: &entries[begin..end],
+                failure_totals: self.failure_totals,
                 chunk_index: index,
                 chunk_count: count,
                 coverage_lost: self.coverage_lost,

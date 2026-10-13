@@ -285,3 +285,37 @@ proptest::proptest! {
         drop(reservations); proptest::prop_assert_eq!(budget.used(), Usage::default());
     }
 }
+
+#[test]
+fn pressure_peaks_survive_dequeue_reclamation_and_zero_length_packets() {
+    let pool = BufferPool::new(128, 256).unwrap();
+    let mut queue = SessionQueue::new(4, 256);
+    queue.push(packet(&pool, 0, Direction::ToTarget)).unwrap();
+    queue.push(packet(&pool, 100, Direction::ToClient)).unwrap();
+    assert_eq!(
+        queue.peak(),
+        Usage {
+            count: 2,
+            bytes: 100
+        }
+    );
+    drop(queue.pop(Direction::ToTarget));
+    drop(queue.pop(Direction::ToClient));
+    assert_eq!(queue.used(), Usage::default());
+    assert_eq!(
+        queue.peak(),
+        Usage {
+            count: 2,
+            bytes: 100
+        }
+    );
+    pool.trim_idle();
+    assert_eq!(pool.retained(), Usage::default());
+    assert_eq!(
+        pool.retained_peak(),
+        Usage {
+            count: 2,
+            bytes: 256
+        }
+    );
+}

@@ -101,7 +101,7 @@ pub fn config(settings: &ValidatedConfig) -> Result<quiche::Config, TransportErr
         CongestionControl::Bbr2Gcongestion => quiche::CongestionControlAlgorithm::Bbr2Gcongestion,
     });
     q.enable_pacing(true);
-    // Deliberately never enable early data, session resumption, qlog or keylog.
+    // Deliberately never enable early data, session resumption or keylog.
     Ok(q)
 }
 pub fn h3_config(server: bool) -> Result<quiche::h3::Config, TransportError> {
@@ -257,6 +257,49 @@ pub enum LivenessAction {
     Expired,
 }
 impl Connection {
+    pub fn attach_qlog(
+        quic: &mut quiche::Connection<TrackedFactory>,
+        pool: Option<&crate::diagnostics::qlog::Pool>,
+    ) {
+        #[cfg(feature = "qlog")]
+        if let Some(filter) = pool.and_then(crate::diagnostics::qlog::Pool::activate) {
+            quic.set_qlog(
+                Box::new(filter),
+                "Remora".into(),
+                "Filtered transport metadata".into(),
+            );
+        }
+        #[cfg(not(feature = "qlog"))]
+        let _ = (quic, pool);
+    }
+    /// Aggregate active-path numeric data without serializing addresses/CIDs.
+    pub fn operational_stats(&self) -> crate::diagnostics::QuicSummary {
+        let mut result = crate::diagnostics::QuicSummary {
+            sampled_connections: 1,
+            ..Default::default()
+        };
+        for p in self.quic.path_stats().filter(|p| p.active) {
+            result.rtt_max_us = result.rtt_max_us.max(p.rtt.as_micros() as u64);
+            result.rttvar_max_us = result.rttvar_max_us.max(p.rttvar.as_micros() as u64);
+            result.path_payload_limit_min = if result.path_payload_limit_min == 0 {
+                p.pmtu
+            } else {
+                result.path_payload_limit_min.min(p.pmtu)
+            };
+            for (slot, n) in [
+                (&mut result.cwnd_total_bytes, p.cwnd),
+                (&mut result.pto_count, p.total_pto_count),
+                (&mut result.retransmitted_packets, p.retrans),
+            ] {
+                if let Some(next) = slot.checked_add(n) {
+                    *slot = next;
+                } else {
+                    result.overflow = true;
+                }
+            }
+        }
+        result
+    }
     pub fn new(
         quic: quiche::Connection<TrackedFactory>,
         generation: Generation,

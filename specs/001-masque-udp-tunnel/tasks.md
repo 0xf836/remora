@@ -277,14 +277,94 @@ ARM64 qualification remains pending.
 
 ### Implementation and required verification
 
-- [ ] T064 [US5] Complete operational counters, bounded histograms/live summaries, <=5-second QUIC stat sampling and fixed schema in `src/diagnostics.rs` with hooks in `src/reactor.rs`/`src/transport.rs` after T047/T063: all contract signals/drop enums, setup/Active/recovery/rejection/stop, queue/pool/FD high-water marks, batch/offload/pacing metadata including requested off/auto, effective off/on and configured_off/not_implemented/capability_unavailable/path_ineligible/enabled reasons, separate kernel overflow and outer loss estimates, session acceptance distinct from destination responsiveness, no arbitrary reason labels or indefinite session history.
-- [ ] T065 [US5] Extend the entire failure-class/status-writer matrix in `tests/e2e/diagnostics.rs` and `tests/security/status_writer.rs` after T064: auth/policy/DNS/socket/connection/size/resource faults, suppressed events plus cleanup before collection, old ACK/new class, event/qlog reservation saturation, one status batch, repeat coalescing and ring/lost-sequence/output-failure counters; enforce SC-010's functioning collector/in-capacity zero-loss correlation separately from intentional blocked-sink/overflow robustness.
-- [ ] T066 [US5] Implement optional fail-closed qlog filtering in `src/diagnostics/qlog.rs`, integrated through `src/diagnostics.rs`/`src/transport.rs`, after T064 and the MVP checkpoint: bounded incremental JSON-SEQ allowlist reconstructs only permitted transport/recovery fields before any persistence, drops every H3/header/raw-frame/payload/custom/unknown/reason-text field, disables on invalid/oversize/schema failure, forbids keylog/SSLKEYLOGFILE; enforce <=64 KiB scratch/connection, <=8 traced connections/512 KiB filter pool within total 2 MiB diagnostics, <=1000 events/s and <=1 MiB/s, <=16 MiB retained files per connection and <=128 MiB/process directory.
-- [ ] T067 [P] [US5] Add qlog/privacy/pressure regressions in `tests/security/qlog.rs` after T066 for partial JSON-SEQ writes, huge/malformed/new-schema records, H3 Authorization and payload sentinels, all log levels/upstream trace targets, fail-closed output, scratch/queue/file/rate caps and churn/cardinality; prove raw upstream records never touch disk, even temporarily, and saturating qlog cannot consume reserved status capacity or block packet work.
-- [ ] T068 [P] [US5] Complete Linux operator documentation and non-secret examples in `docs/operations.md`, `docs/troubleshooting.md`, `examples/client.toml` and `examples/server.toml` after T064: install/build/trust/token provisioning, target rules, check-config/exit codes, safe exposure, limits/PMTU/MTU, measured status meanings, controlled restart/revocation completion at old exit plus new readiness, deliberate rollback policy restoration, external UDP/committed-output limitations and independently managed WireGuard; preserve FR-029 scope and no secrets in argv/URLs/logs.
-- [ ] T069 [P] [US5] Add config/update/provisioning walkthrough scenarios in `tests/e2e/operations.rs` after T064, using the existing fixture generator: candidate check-config performs no bind/peer traffic; unsafe permissions/occupied port fail clearly; atomically replace private files, stop old/start validated new, deny removed credentials/permissions after completion, attribute prior in-flight traffic and restore only the explicitly selected rollback policy; cleanup touches only runner-owned paths.
-- [ ] T070 [US5] Run the clean-install and collected failure walkthrough through `scripts/validate/operations.sh` after T065/T067/T068/T069, updating `specs/001-masque-udp-tunnel/quickstart.md` and `docs/validation/operations.md` with actual commands/revisions and SC-010 evidence; require no elevated Remora runtime privileges, record prerequisites/unavailable observations and distinguish silent UDP nonresponse from an observed socket error.
-- [ ] T071 [US5] Measure diagnostics off/default/verbose/filtered-qlog overhead and blocked-sink responsiveness using `scripts/validate/bench.sh` and `benchmarks/diagnostics.toml` after T070; enforce the prospective diagnostic-mode trade-off/metric bounds recorded before its critical-path changes and candidate measurements, using a matching pre-change reference; preserve results in `docs/performance.md`, including owner CPU, RSS, delivery/latency, queue/event/status loss and tracing caps, without accepting missing failure correlation as SC-010 success or delaying the already-completed MVP.
+- [X] T064 [US5] Complete operational counters, bounded histograms/live summaries, <=5-second QUIC stat sampling and fixed schema in `src/diagnostics.rs` with hooks in `src/reactor.rs`/`src/transport.rs` after T047/T063: all contract signals/drop enums, setup/Active/recovery/rejection/stop, queue/pool/FD high-water marks, batch/offload/pacing metadata including requested off/auto, effective off/on and configured_off/not_implemented/capability_unavailable/path_ineligible/enabled reasons, separate kernel overflow and outer loss estimates, session acceptance distinct from destination responsiveness, no arbitrary reason labels or indefinite session history.
+- [X] T065 [US5] Extend the entire failure-class/status-writer matrix in `tests/e2e/diagnostics.rs` and `tests/security/status_writer.rs` after T064: auth/policy/DNS/socket/connection/size/resource faults, suppressed events plus cleanup before collection, old ACK/new class, event/qlog reservation saturation, one status batch, repeat coalescing and ring/lost-sequence/output-failure counters; enforce SC-010's functioning collector/in-capacity zero-loss correlation separately from intentional blocked-sink/overflow robustness.
+- [X] T066 [US5] Implement optional fail-closed qlog filtering in `src/diagnostics/qlog.rs`, integrated through `src/diagnostics.rs`/`src/transport.rs`, after T064 and the MVP checkpoint: bounded incremental JSON-SEQ allowlist reconstructs only permitted transport/recovery fields before any persistence, drops every H3/header/raw-frame/payload/custom/unknown/reason-text field, disables on invalid/oversize/schema failure, forbids keylog/SSLKEYLOGFILE; enforce <=64 KiB scratch/connection, <=8 traced connections/512 KiB filter pool within total 2 MiB diagnostics, <=1000 events/s and <=1 MiB/s, <=16 MiB retained files per connection and <=128 MiB/process directory.
+- [X] T067 [P] [US5] Add qlog/privacy/pressure regressions in `tests/security/qlog.rs` after T066 for partial JSON-SEQ writes, huge/malformed/new-schema records, H3 Authorization and payload sentinels, all log levels/upstream trace targets, fail-closed output, scratch/queue/file/rate caps and churn/cardinality; prove raw upstream records never touch disk, even temporarily, and saturating qlog cannot consume reserved status capacity or block packet work.
+- [X] T068 [P] [US5] Complete Linux operator documentation and non-secret examples in `docs/operations.md`, `docs/troubleshooting.md`, `examples/client.toml` and `examples/server.toml` after T064: install/build/trust/token provisioning, target rules, check-config/exit codes, safe exposure, limits/PMTU/MTU, measured status meanings, controlled restart/revocation completion at old exit plus new readiness, deliberate rollback policy restoration, external UDP/committed-output limitations and independently managed WireGuard; preserve FR-029 scope and no secrets in argv/URLs/logs.
+- [X] T069 [P] [US5] Add config/update/provisioning walkthrough scenarios in `tests/e2e/operations.rs` after T064, using the existing fixture generator: candidate check-config performs no bind/peer traffic; unsafe permissions/occupied port fail clearly; atomically replace private files, stop old/start validated new, deny removed credentials/permissions after completion, attribute prior in-flight traffic and restore only the explicitly selected rollback policy; cleanup touches only runner-owned paths.
+- [X] T070 [US5] Run the clean-install and collected failure walkthrough through `scripts/validate/operations.sh` after T065/T067/T068/T069, updating `specs/001-masque-udp-tunnel/quickstart.md` and `docs/validation/operations.md` with actual commands/revisions and SC-010 evidence; require no elevated Remora runtime privileges, record prerequisites/unavailable observations and distinguish silent UDP nonresponse from an observed socket error.
+- [X] T071 [US5] Measure diagnostics off/default/verbose/filtered-qlog overhead and blocked-sink responsiveness using `scripts/validate/bench.sh` and `benchmarks/diagnostics.toml` after T070; enforce the prospective diagnostic-mode trade-off/metric bounds recorded before its critical-path changes and candidate measurements, using a matching pre-change reference; preserve results in `docs/performance.md`, including owner CPU, RSS, delivery/latency, queue/event/status loss and tracing caps, without accepting missing failure correlation as SC-010 success or delaying the already-completed MVP.
+
+**Phase 7 scoped evidence (2026-10-13)**: T064–T070 complete; T071 explicitly
+excluded by the user and remains unchecked. Fixed additive telemetry, bounded
+histograms/peaks and five-second active-path statistics, cumulative failure
+classes and session-correlated size/resource faults are implemented. Optional
+qlog reconstructs typed allowlisted metadata before writer persistence, shares
+the ordinary queue, preserves status reservation and enforces scratch/rate/file
+caps. A failed-first-chunk/later-ACK regression now preserves pending summaries.
+Operator docs/examples, atomic update/revocation/explicit rollback tests and the
+ordinary-user clean-install/failure walkthrough pass. Final native checks:
+locked default/qlog release builds, rustfmt, Clippy -D warnings, 165 Rust tests
+plus both externally enabled tests, 42 Python tests; independent interop 29/29.
+Walkthrough `phase7-operations-20261013-r3`: 8/8 release scenarios plus five check
+groups PASS, zero status coverage loss/write failures and no secret/payload
+sentinels. Its exact release SHA-256 is
+`c30a4983d18def84f643eaafaa98079208a59fb12db4bc76e5911bee84a4742c`;
+process tests use separately recorded debug hash. DNS/setup fault completion,
+intentional overflow/blocked-sink robustness and normal collected coverage are
+distinguished in [operations evidence](../../docs/validation/operations.md).
+Failed/intermediate runs remain preserved. The existing idle test's two-peer
+probe assumption was corrected without production recovery changes. T071
+diagnostic overhead/reference-policy measurements, explicit final security
+review, native ARM64 and Phase 8 release qualification remain pending. Checklist
+markers are unchanged; no independent reviewer, commit or publication is claimed.
+
+**T071 partial measurement evidence (2026-10-13)**: Repeatability measured on the declared
+one-Session/128-byte/100pps native loopback profile in `benchmarks/diagnostics.toml`.
+Immutable pre-T071 Phase 7 production/traffic binaries were copied before harness
+edits; production Rust is unchanged. Four safe diagnostic modes and separate
+unread-collector cases produced 70 valid reference and 70 candidate rows.
+Versioned `benchmarks/policies/phase7-diagnostics.json` was frozen from reference
+variability before candidate measurement; all 70 candidate rows PASS unchanged
+per-run CPU/owner/RSS/RTT/delivery/loss bounds. All active flows deliver 500/500
+messages per run. Normal collection has zero event/status/coverage loss, with
+active unstopped qlog. Ten blocked candidate runs preserve full traffic,
+observe real writer blocking and finish in 1.006–1.009s with explicitly incomplete
+collection/exit 1, not SC-010 success. 49 Python tests and proportional static
+checks pass. [Performance report](../../docs/performance.md#phase-7-t071-diagnostics-measurement-method--2026-10-13)
+records mode meanings, exact hashes, ranges and limits. **At this historical checkpoint T071 remained pending**:
+reference and candidate use the same already instrumented Phase 7 executable.
+The runs establish repeatability, not instrumentation regression acceptance.
+A matching pre-Phase-7 implementation, prospective trade-off limits and a new
+candidate cycle are still required. The missed freeze before the original
+critical-path edits cannot be reconstructed retroactively; no requirement
+exception has been approved. These runs also do not establish high-rate
+tracing/capacity, native ARM64 or Phase 8 release qualification. Earlier T071
+exclusion statements remain historical descriptions of the previous invocation.
+
+**Phase 7 review corrections (2026-10-13)**: Reverse truncation/ancillary faults
+and received-DATAGRAM size/egress slab/queue drops now retain known opaque
+Session/connection correlation. The lost-sequence envelope retains its maximum
+across non-monotonic live coalescing/session-finalization evictions. Three new
+regressions, the full Rust suite (168 pass; two external-peer tests ignored),
+49 Python tests, locked release builds (default/qlog), formatting and Clippy
+pass. [Correction evidence](../../docs/validation/operations.md#review-corrections--2026-10-13)
+records exact executable hashes and failing-before/passing-after checks.
+T071 was unchecked at this correction checkpoint; its historical same-binary runs remain partial evidence.
+
+**T071 cross-revision acceptance (2026-10-13)**: Completed for the declared
+native x86_64 one-Session / 128-byte / 100pps profile. Exact Phase 6 revision
+`34d4a8f` supplies 50 valid pre-change reference runs. The final policy
+`benchmarks/policies/phase7-diagnostics-regression-final.json` (SHA-256
+`4ea5872a3dddad6e62d7c1dfde65eb0ab753d587d49afdbd432b0865a0089cc6`)
+was frozen before candidate source reconstruction/build/measurement. All 70
+adjacent alternating baseline/candidate pairs PASS per-run absolute limits,
+paired deltas and the reference stationarity gate. Different exact executables
+and source identities are verified, with matched compiler/features/locks,
+profile/platform/clock/CPU affinity and child summaries. Every active flow
+retains 500/500 messages, normal collection has zero event/status/coverage loss,
+and normal qlog remains active within caps. Ten blocked candidate cases retain
+full delivery and stop in 1.006–1.008s with exact incomplete-collection failure,
+never SC-010 success. Four physical cores and interleaved reference rounds
+address the preserved earlier baseline-drift failure; bounded taskset readiness
+fixes the preserved startup-validation race. Cost budgets were not enlarged.
+64 Python tests and applicable static checks pass. The
+[final report](../../docs/performance.md#final-t071-cross-revision-results)
+records full hashes, noise allowances and retained failures. This is a new
+controlled acceptance cycle for the known proposal, not a claim that the
+original T064–T070 authorship followed its missed freeze. High-rate tracing,
+stopped-filter CPU/capacity, native ARM64 and Phase 8 release remain unqualified.
 
 **Checkpoint**: The documented operations and failure classes are reproducible; optional diagnostics satisfy the same privacy and resource obligations as normal operation.
 

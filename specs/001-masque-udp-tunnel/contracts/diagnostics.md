@@ -20,7 +20,7 @@ Record each terminal setup/session/connection failure in a fixed 256-entry, 64 K
 
 Ordinary event suppression does not suppress these status records. The existing 1 MiB/1024-record writer budget reserves 256 KiB/256 records for status output; events/qlog use at most the remaining 768 KiB/768 records. Prioritize pending status batches over ordinary events/qlog at record boundaries. Do not keep more than one status batch in flight; each batch is <=256 KiB with <=64 KiB chunks. The writer reports successful batch completion to the owner by a bounded acknowledgement; retire only entries covered by that completed batch. New or updated entries must not be cleared by an older acknowledgement. Failed/dropped writes leave entries pending for a later snapshot. Packet processing never waits for the sink. Preserve total queue accounting across both reservations.
 
-If the ring fills before completed output, evict the oldest pending entry with a monotonic coverage-loss count and lost-sequence range; expose status write failures, ring overflow and ordinary event loss separately. Their summaries remain in cumulative counters, but missing session correlation is not reconstructed or claimed. A blocked/broken sink or terminal churn above retention capacity cannot guarantee delivery of every session's diagnostics. SC-010 is verified with a functioning collector and injected failures within the documented status capacity; ordinary event-bucket exhaustion is explicitly included. Every injected failure must be correlated and coverage-loss counts must remain zero. An overflow/failed collection is a failed or invalid SC-010 run, never a pass. Separate robustness tests intentionally exceed the ring or block the sink and verify bounded memory, explicit coverage gaps and uninterrupted packet processing; they do not establish complete diagnostic coverage.
+If the ring fills before completed output, evict the earliest admitted pending summary (live coalescing updates its sequence in place without changing admission order), with a monotonic coverage-loss count and the minimum/maximum sequence envelope of all evicted summaries; expose status write failures, ring overflow and ordinary event loss separately. Their summaries remain in cumulative counters, but missing session correlation is not reconstructed or claimed. A blocked/broken sink or terminal churn above retention capacity cannot guarantee delivery of every session's diagnostics. SC-010 is verified with a functioning collector and injected failures within the documented status capacity; ordinary event-bucket exhaustion is explicitly included. Every injected failure must be correlated and coverage-loss counts must remain zero. An overflow/failed collection is a failed or invalid SC-010 run, never a pass. Separate robustness tests intentionally exceed the ring or block the sink and verify bounded memory, explicit coverage gaps and uninterrupted packet processing; they do not establish complete diagnostic coverage.
 
 ### Shutdown collection
 
@@ -166,3 +166,44 @@ packet-generation failures are 1001/1002/1003. Close observations retain only
 the numeric native local/peer close code, never its reason text. These additions
 do not replace the established authentication/authorization/capability/trust
 refusal contracts or expose network-controlled strings.
+
+## Phase 7 operational schema additions
+
+Schema 1 adds fixed `failure_totals` (all 15 fixed classes, including `size`),
+`lifecycle`, `histograms`, `quic`, `qlog` and `io_batch_size`. See the exact field
+meanings and inclusive histogram bounds in
+[troubleshooting](../../../docs/troubleshooting.md). Failure totals count repeat
+observations before log admission/cleanup; ACK retires correlated summaries,
+never cumulative totals. Queue-age samples are owner service visits; emitted
+bursts count accepted logical outer prefixes. Active-path QUIC samples describe
+currently live connections, including their retransmit/PTO counts, with a
+five-second packet-work sample interval; no endpoint identifiers are serialized.
+The cumulative process lost-packet estimate remains separate.
+
+FD/admission/pool and individual Session queue peaks are exact local ledger
+maxima. `queued_packets_observed_peak`/`queued_bytes_observed_peak` are sampled
+aggregate maxima and do not bound unsampled concurrent queue occupancy. Known
+local truncation records `size/3` without claiming exact original length;
+configured/path rejection records `size/1`/`size/2`, application slab/queue
+pressure records `resource/1`/`resource/2`. Unallocated rejected requests get a
+bounded opaque request ID; trust before Session creation identifies only the
+connection. Failed first status chunks cannot be retired by a later final ACK.
+
+Pinned upstream qlog file schema is
+`urn:ietf:params:qlog:file:sequential` with `JSON-SEQ`. Only
+`quic:packet_sent`, `quic:packet_received`, `quic:packet_lost` and
+`quic:recovery_metrics_updated` can reconstruct typed numeric metadata.
+Unknown/H3 events/fields are dropped; frame metadata is conservatively omitted.
+Each filter accepts at most 32 KiB input, reserving 64 KiB including bounded
+serde escape/nesting scratch. Partial input never persists. Each process uses
+fixed monotonic one-second windows for its 1000-event/1-MiB ceilings and retains
+lifetime file reservations across filter churn/failed writes. Stops are exposed
+in fixed `qlog.stops` schema/oversize/rate/retention/output/queue/incomplete/clock
+counters in the bounded status event, without an unbounded stop-log stream.
+Disk output failures separately count in `qlog.output_failures`; they do not
+fail or consume reserved status delivery. Every filename is local numeric
+metadata and files contain reconstructed Remora NDJSON, never raw qlog.
+
+These functional/privacy changes have no measured diagnostics-overhead claim.
+T071 is explicitly excluded; its prospective comparison policy/reference and
+measurements, plus final release/security review, remain required separately.

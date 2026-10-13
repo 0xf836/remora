@@ -1,0 +1,27 @@
+# T071: limited native loopback diagnostic overhead, not release throughput.
+schema_version = 1
+coverage = "diagnostics-operator-overhead"
+architecture = "x86_64"
+topology = "two-leg"
+sessions = 1
+payload_bytes = 128
+pps = 100
+warmup_seconds = 2
+measurement_seconds = 5
+drain_ms = 200
+paired_repetitions = 5
+io = "mmsg"
+batch_max = 32
+gso_requested = "off"
+gro_requested = "off"
+cc = "cubic"
+modes = ["off", "default", "verbose", "filtered-qlog"]
+directions = ["forward", "reverse", "simultaneous"]
+# Off suppresses ordinary detail (error threshold), preserving mandatory status.
+# qlog runs remain below its shared 1000-event/s ceiling; stop invalidates a run.
+blocked_sink_modes = ["default", "filtered-qlog"]
+
+# Each role inherits one distinct physical core, including its writer threads.
+# Spread baseline modes/directions over five rounds rather than one time block.
+role_cpu_pinning = true
+reference_order = "interleaved"

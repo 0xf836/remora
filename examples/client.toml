@@ -1,0 +1,22 @@
+# Local demonstration mapping. Provision these private files out of band.
+# No secret is included in this template; paths are relative to this file.
+schema_version = 1
+[client]
+listen = "127.0.0.1:51821"
+allow_non_loopback = false
+server_address = "127.0.0.1:7443"
+server_name = "remora.test"
+proxy_authority = "remora.test:7443"
+uri_template = "https://remora.test:7443/.well-known/masque/udp/{target_host}/{target_port}/"
+ca_file = "ca.pem"
+token_file = "client.token"
+target_host = "127.0.0.1"
+target_port = 51820
+[diagnostics]
+level = "info"
+snapshot_interval_ms = 1000
+[io]
+mode = "mmsg"
+batch_max = 32
+gso = "off"
+gro = "off"

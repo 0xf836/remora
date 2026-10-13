@@ -39,6 +39,11 @@ jobs:
               python3 -m unittest discover -s tests -p test_benchmark_compare.py
               python3 -m unittest discover -s tests -p test_wireguard_traffic.py
               python3 -m unittest discover -s tests -p test_libvirt_lab.py
+              python3 -m unittest discover -s tests -p test_operations.py
+              python3 -m unittest discover -s tests -p test_diagnostic_benchmark.py
+              python3 -m unittest discover -s tests -p test_diagnostic_regression.py
+              python3 -m unittest discover -s tests -p test_diagnostic_inputs.py
+              python3 -m unittest discover -s tests -p test_diagnostic_cpu.py
             '
       - name: Report qualification scope
         run: |

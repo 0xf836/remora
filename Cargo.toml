@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-# Compilation support only; safe filtering and runtime activation are later work.
+# Optional bounded metadata filtering; runtime activation requires a private empty directory.
 qlog = ["quiche/qlog"]
 
 [dependencies]

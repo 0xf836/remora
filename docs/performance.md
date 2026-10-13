@@ -590,3 +590,420 @@ Artifacts: `benchmarks/results/phase6-review-fixes-candidate/` including
 This is the same short loaded-path scope, with functional idle-probe timing
 separate. It does not extend the evidence to high-rate/idle CPU cost, WAN/VPS,
 ARM64 or final release duration/resource requirements.
+
+
+## Phase 7 T071 diagnostics measurement method — 2026-10-13
+
+**Historical checkpoint: T071 regression acceptance was pending.** The saved same-binary runs
+measure repeatability of the already instrumented Phase 7 implementation;
+they do not compare the instrumentation against a pre-Phase-7 implementation.
+The policy was frozen before candidate measurements, after the original
+critical-path edits, so it does not satisfy the original prospective requirement.
+A new matching implementation comparison with limits fixed before measurement
+is required; the missed historical freeze remains an explicit acceptance gap.
+No requirement exception has been approved.
+
+The original measurement-only invocation added test-only harness support;
+its production Rust sources were unchanged from the T064–T070 candidate. Before harness edits, copied the
+qlog-feature release and traffic executables into
+`benchmarks/results/t071-frozen-inputs/`, recording source and lock hashes.
+The immutable Remora SHA-256 is
+`c30a4983d18def84f643eaafaa98079208a59fb12db4bc76e5911bee84a4742c`;
+traffic SHA-256 is
+`e973d280db788bd948670d6e9d83e2db28e1f495f19cd87029bdaf99b621adad`.
+This is the **pre-T071 Phase 7 reference**, not a retrospective pre-T064
+instrumentation regression claim. No production critical-path change occurred
+in that invocation. Subsequent review corrections change production code;
+these saved results do not qualify the corrected executable. Earlier T064–T070
+reports retain their historical scope.
+
+`benchmarks/diagnostics.toml` declares one Session, 128-byte UDP payload,
+100pps/active direction, forward/reverse/simultaneous traffic, two-second setup
+warmup, five-second measurement, 200ms drain and five repetitions per workload.
+Four diagnostic modes yield 60 normal runs; default/qlog blocked collectors
+add ten simultaneous robustness runs. Reference and candidate mode orders
+are reversed. All child roles inherit the same four allowed CPU-affinity cores.
+Each run retains native kernel/CPU/affinity/locks/offload/socket-buffer/clock
+metadata, unique delivery/loss/integrity, RTT samples, process/owner CPU,
+headroom, RSS samples, JSON status/events, qlog sizes, exit and stop observations.
+Generator saturation, corruption, bad clock evidence or incomplete matrices
+invalidate the comparison. Runs are never averaged to hide a failure.
+
+| Mode | Actual settings / boundary |
+| --- | --- |
+| off | `level=error`; ordinary detail suppressed, mandatory counters/status/ring remain active |
+| default | `level=info`, 1000ms snapshots, no qlog |
+| verbose | `level=trace`, same fixed schema/rate bucket and snapshot cadence; arbitrary upstream targets remain excluded |
+| filtered-qlog | `level=info`, 1000ms snapshots and fresh private tracing directory |
+
+This safe off mode does not remove observability obligations or represent a
+build with all instrumentation removed. 100pps keeps qlog active below its
+shared 1000-event/s ceiling. A normal qlog run with a stopped/failed filter is
+invalid; it cannot be reported as the cost of active tracing. Trace file/scratch
+caps are checked separately. Trace output is reconstructed metadata, never raw
+H3/header/payload/keylog data.
+
+After collecting the complete reference, froze
+`benchmarks/policies/phase7-diagnostics.json`, SHA-256
+`146a29bdc8eefc5861147de405d351a9843b424bb1df539538951b9a73d8d99e`,
+before any candidate measurement. Every mode/direction/blocked state has its
+own explicit-unit bounds from reference extrema plus twice the five-repeat
+spread or declared measurement floors: two CPU clock ticks over the observed
+five-second interval (denominator 4.9 seconds), 256KiB RSS, 0.25ms RTT and two
+messages for delivery/loss. Tolerances describe reference variability and the
+observed mode trade-off, not universal percentages or confidence intervals.
+This versioned policy is bound to exact reference manifest/summary hashes,
+unchanged executable hashes, profile, affinity, production sources and child
+platform/lock/clock metadata. Missing or reinterpreted units/limits are rejected;
+a candidate predating policy freeze or a policy modified during collection is
+invalid. Original reference/bounds are not relaxed after seeing a candidate.
+
+Blocked stdout uses an unread 4096-byte pipe. Kernel `pipe_write` observations
+must prove the diagnostic writer actually blocked. Forwarding is measured by
+the independent traffic tool, not an absent status ACK. SIGTERM collection
+must finish within five seconds with the expected nonzero/incomplete result.
+Partial/absent status is explicitly incomplete collection; qlog may exhaust
+its ordinary reservation and stop. Such robustness measurements **do not pass
+SC-010 complete correlation**. Normal measurements require a functioning
+collector, zero coverage/write/overflow gaps and live filtered qlog; the
+separate T065/T070 fault matrix establishes observed failure correlation.
+
+```bash
+./scripts/validate/bench.sh --profile benchmarks/diagnostics.toml \
+  --diagnostics-stage reference \
+  --remora-binary benchmarks/results/t071-frozen-inputs/remora \
+  --traffic-binary benchmarks/results/t071-frozen-inputs/traffic \
+  --output benchmarks/results/t071-reference
+./scripts/validate/bench.sh --profile benchmarks/diagnostics.toml \
+  --diagnostics-stage freeze --reference benchmarks/results/t071-reference \
+  --output benchmarks/results/t071-comparison-policy.json
+./scripts/validate/bench.sh --profile benchmarks/diagnostics.toml \
+  --diagnostics-stage candidate --reference benchmarks/results/t071-reference \
+  --policy benchmarks/policies/phase7-diagnostics.json \
+  --remora-binary benchmarks/results/t071-frozen-inputs/remora \
+  --traffic-binary benchmarks/results/t071-frozen-inputs/traffic \
+  --output benchmarks/results/t071-candidate
+```
+
+The tracked policy is the unchanged versioned copy of the frozen local policy.
+Outputs must be fresh; failed/invalid artifacts remain retained. New production
+binaries/workloads need newly justified reference/policy coverage. This short,
+low-rate native loopback matrix does not establish high-rate tracing cost,
+sustainable capacity, WAN behavior, release SC-003/004/005/007 or native ARM64
+support. Mandatory status costs remain present in every mode.
+
+
+### T071 measured results
+
+**70/70 candidate workload checks PASS** against the original frozen policy.
+Reference also contains 70 valid runs. Production source/executable hashes,
+profile, affinity, platform/locks/clock metadata match; policy was frozen before
+candidate start and its SHA-256 remains unchanged. All active directions
+received 500/500 measured data messages per run: 0.1024Mbit/s per active
+direction and zero delivered loss, corruption or generator errors. Five short
+runs describe spread, not a statistical confidence interval.
+
+Simultaneous candidate ranges below show five separate runs. CPU is process /
+packet-owner cores; peak RSS is MiB. Separate forward/reverse results remain
+in the immutable summary; their largest RTT p95 was 0.929ms (qlog reverse).
+
+| Mode / role | CPU process / owner range | Peak RSS MiB | Mode maximum RTT p95 ms |
+| --- | --- | ---: | ---: |
+| off / client | 0.026–0.032 / 0.022–0.026 | 8.88 | 0.622 |
+| off / server | 0.024–0.028 / 0.020–0.026 | 8.79 | 0.622 |
+| default / client | 0.024–0.028 / 0.018–0.026 | 8.84 | 0.531 |
+| default / server | 0.020–0.028 / 0.016–0.024 | 8.73 | 0.531 |
+| verbose / client | 0.024–0.028 / 0.020–0.024 | 8.82 | 0.627 |
+| verbose / server | 0.022–0.032 / 0.020–0.026 | 8.80 | 0.627 |
+| filtered-qlog / client | 0.032–0.045 / 0.024–0.037 | 8.89 | 0.817 |
+| filtered-qlog / server | 0.030–0.045 / 0.024–0.039 | 8.87 | 0.817 |
+
+The descriptive mean process-CPU differences from matched candidate off runs
+across all directions were default −0.0014/−0.0007 cores (client/server),
+verbose −0.0007/+0.0008 and filtered-qlog +0.0105/+0.0117. Normal verbosity
+ranges overlap; these tiny negative observations do not imply an optimization.
+Qlog's measured additional processing is visible at this offered load; it is
+not an extrapolation to high-rate throughput. Acceptance uses each run's bounds,
+not these means. Packet-owner headroom is retained per sample/run and has no
+capacity interpretation beyond the measured offered workload.
+
+All 60 normal candidate runs have zero ordinary diagnostic drops, zero status
+write failures, zero coverage loss and no counter overflow. Every normal qlog
+filter stayed active, with zero schema/rate/queue/output stops. Per-role retained
+qlog files were at most 677518 bytes. The largest sampled scratch/active-filter gauges were 65536 bytes / one filter
+per role; final scratch is zero after connection cleanup. These are sampled
+gauges. The unchanged filter's
+64KiB/connection and 512KiB/global reservations remain qualified by T067;
+live file sizes and process RSS are measured here. Queue/slab/histogram/pacing
+and failure totals remain in each run's final status, with their documented
+sampling and ownership meanings.
+
+All ten candidate blocked-sink runs exchanged their full simultaneous traffic
+with zero delivered loss. Both writers were observed in kernel pipe-write
+blocking; both roles returned the expected exit 1 for incomplete diagnostic
+collection. Stop intervals were **1.006–1.009 seconds**, inside the shared
+five-second limit. Maximum observed role RSS was **9.05MiB**. Forwarding and
+owner scheduling stayed responsive at the specified load. Status/event loss
+after the unread prefix is unobservable and collection is explicitly incomplete;
+it is not recorded as zero loss or SC-010 success. Qlog can stop on ordinary
+queue saturation while the status reservation remains isolated. These are
+bounded-sink robustness results, not complete failure-correlation coverage.
+
+Retained artifacts: `benchmarks/results/t071-reference/`, `t071-candidate/`,
+`t071-frozen-inputs/` and `t071-comparison-policy.json`. Each mode directory has
+its source/platform manifest, per-run summaries/counters, RTT histogram and
+process samples, sanitized status/events and optional filtered trace files.
+Candidate `comparison.json` checks every run separately. Reference manifest /
+summary SHA-256:
+`4db328beb0112b6fa0055ce7c26f9cc26535264b455d391b4ce5b17471e664bf` /
+`5264836648d58b7ac691e4f22dd72245482e55c8e4d70b07e08d3f32de1210e9`.
+Candidate manifest / summary:
+`83e275135e974a026901900e19d6d581f0f62a4648fa857e35480b7398990206` /
+`a427f4893346b6c2832f0af279cd84ce57b5d9122a48fe1f71811f52054afae2`.
+No failing metric was removed, averaged away or reassessed with relaxed bounds.
+
+Validation of the changed Python harness and comparator: **49 Python tests
+PASS**, including seven T071 matrix/metadata/unit/collector rejection tests;
+shell/Python syntax and diff checks pass. Production source hashes match the
+frozen Phase 7 inputs, so the prior exact-binary Rust/native/privacy/interop
+verification is preserved; no changed Rust behavior or fresh Rust-suite pass
+is claimed by this measurement-only increment. The updated CI runs the new
+comparator tests. No sustained fuzz, native ARM64 or release claim follows.
+
+
+## Phase 7 T071 cross-revision acceptance cycle — 2026-10-13
+
+The original same-binary comparison above remains repeatability evidence. A new
+acceptance cycle uses the exact completed Phase 6 revision
+`34d4a8fa13aa67436e057773d1a3199b69aba233`, reconstructed from `git archive`,
+as its pre-change Remora reference. Baseline and candidate use the same pinned
+compiler, Cargo.lock and `qlog` feature. Phase 6 has no runtime tracing filter;
+its default mode is the explicit reference for the new filtered-qlog mode.
+Ordinary off means error threshold with mandatory diagnostics retained in both.
+
+Before collecting new reference data, recorded
+`benchmarks/policies/phase7-regression-pinned-plan.json`: CPU cost budgets of 0.02 core
+per role for mandatory modes and 0.05 core for filtered qlog, additional sampled
+RSS budgets of 2 MiB and 3 MiB respectively, and 0.5 ms added p95 RTT. Every active
+flow must deliver all offered messages with zero loss/integrity/generator errors.
+These absolute budgets apply only to the one-Session, 128-byte, 100pps workload.
+They reserve most of the single owner core, cover the fixed diagnostics memory
+plus a qlog allocation margin, and keep allowed added RTT below the separate
+release threshold. They are not universal percentage tolerances.
+
+The reference matrix has 50 runs: three pre-change modes × three directions ×
+five repetitions, plus five unread-default-collector runs. Numeric bounds are
+frozen from these measurements using twice each reference spread or fixed
+resolution floors (two CPU clock ticks over a 4.9-second denominator, 256 KiB
+sampled RSS and 0.25 ms RTT). No delivery variability allowance applies. The
+candidate source tree is then reconstructed from the frozen baseline archive
+and exact proposed Rust source overlay, and compiled in a separate target tree.
+The proposal is known existing code; this replay creates a new prospective
+acceptance cycle, not evidence that its original authorship followed a freeze.
+The original missed freeze remains recorded.
+
+The candidate matrix contains 70 adjacent pairs (140 runs): four modes × three
+directions × five repetitions, plus default/qlog unread-collector cases × five.
+The first executable alternates by pair index. Each pair re-measures the exact
+baseline binary, using default for the qlog counterpart. Every baseline must
+remain inside the frozen noise envelope; every candidate must pass the frozen
+absolute limit and the paired increase limit. A noisy or failed baseline is an
+invalid/failed comparison, never hidden by averaging. Reference, policy, proposed
+sources, compiler/features, executable hashes, generator, child measurements,
+profile, affinity, platform/locks/socket/offload/clock and pair order are checked.
+Both separate native source trees and the exact binaries remain preserved.
+
+Blocked collection requires `pipe_write` observed for each writer, the exact
+`DiagnosticCollectionIncomplete` runtime failure and stop within five seconds,
+while the independent traffic tool proves full delivery. It never passes SC-010.
+Normal collection requires zero event/status/coverage loss and numeric overflow;
+qlog must stay active within its filter/output/file reservations. High-rate
+stopped-filter CPU behavior, capacity, WAN, ARM64 and release qualification remain
+outside this deliberately limited active-qlog profile.
+
+The first cross-revision attempt used a shared four-CPU mask and grouped
+reference repeats. Its policy (`phase7-diagnostics-regression.json`, SHA-256
+`91f9d6cdc87ceed825187a28e250ac2c34db8cf0dbdd4631c4574f408e4a3cec`)
+was frozen before candidate reconstruction. After 30 completed pairs, 44 metric
+checks failed, including Phase 6 baseline CPU/RTT outside its reference envelope.
+This was stopped and retained as **failed/inconclusive regression evidence**,
+not an accepted instrumentation result. It did not justify relaxing bounds.
+Artifacts: `benchmarks/results/t071-phase6-reference-r2/` and
+`benchmarks/results/t071-phase7-paired-candidate/failure.json`.
+
+The next cycle keeps the same CPU/RSS/RTT budgets and zero-loss requirement,
+using a separate pinned plan/policy. `taskset` assigns client/server/generator/
+receiver to four distinct physical cores (0/2/4/6 on this host); all worker-thread
+masks are checked throughout each run. The controller shares that four-core
+mask. Reference repeats interleave modes/directions/blocked cases over five
+rounds, capturing temporal variability rather than one initial contiguous block.
+CPU governor/driver/min/max settings are recorded but not changed. This is
+process affinity, not exclusive CPU isolation or fixed frequency. Shared-host
+noise can still invalidate a comparison and is not attributed to instrumentation.
+
+The first pinned attempt (`t071-phase7-pinned-candidate/`) stopped after 31
+complete pairs when the next run reported a thread-affinity validation error.
+Its policy (`phase7-diagnostics-regression-pinned.json`, SHA-256
+`503327a8b3a0bb0e4c058f89214655b380e9a4284472cb9139f6551bb2d99635`)
+and invalid run remain preserved. A startup race was reproduced independently:
+10/10 immediately sampled `taskset` children still had the inherited parent mask
+before `taskset` installed the assigned mask. The sampler lacked an assignment
+readiness gate. The corrected `Owned` constructor waits at most three seconds
+for the assigned mask before sampling; worker threads inherit it across exec.
+Tests cover inherited-to-assigned transition and bounded cleanup on failure.
+This correction adds no production Rust changes and no metric allowance.
+
+A fresh 50-run reference was collected with the corrected, unchanged harness,
+then `phase7-diagnostics-regression-final.json` was frozen before a new candidate
+source reconstruction/build. SHA-256:
+`4ea5872a3dddad6e62d7c1dfde65eb0ab753d587d49afdbd432b0865a0089cc6`.
+Final-cycle artifacts are `benchmarks/results/t071-regression-final-inputs/`,
+`t071-phase6-final-reference/` and `t071-phase7-final-candidate/`.
+
+The final cycle completed with **70/70 paired regression checks PASS**. All earlier evidence continues
+to apply only to its recorded executable identity. Historical reproduction
+commands in the original same-binary section describe its original profile and
+harness; the current `diagnostics.toml` selects this pinned/interleaved workload.
+
+
+### Reproduce the cross-revision cycle
+
+Use fresh output/source/target paths. Both builds require the pinned toolchain
+and cached lockfile dependencies (`--offline` fails clearly if they are absent).
+The test-only traffic executable is built once and shared unchanged. Preparation
+snapshots the current proposed production sources and the exact Phase 6 archive;
+subsequent source changes require a new proposal/reference/policy/candidate cycle.
+
+```bash
+cargo build --locked --release --manifest-path tools/traffic/Cargo.toml
+python3 scripts/validate/diagnostic_inputs.py --prepare-baseline \
+  --revision 34d4a8fa13aa67436e057773d1a3199b69aba233 \
+  --inputs benchmarks/results/t071-new-inputs \
+  --source /tmp/remora-t071-new-phase6 --target /tmp/remora-t071-new-phase6-target \
+  --traffic-binary tools/traffic/target/release/remora-traffic
+./scripts/validate/bench.sh --profile benchmarks/diagnostics.toml \
+  --diagnostics-kind regression --diagnostics-stage reference \
+  --baseline-binary benchmarks/results/t071-new-inputs/phase6-remora \
+  --baseline-input-manifest benchmarks/results/t071-new-inputs/phase6-input.json \
+  --traffic-binary benchmarks/results/t071-new-inputs/traffic \
+  --regression-plan benchmarks/policies/phase7-regression-pinned-plan.json \
+  --proposal benchmarks/results/t071-new-inputs/proposal.json \
+  --output benchmarks/results/t071-new-reference
+./scripts/validate/bench.sh --profile benchmarks/diagnostics.toml \
+  --diagnostics-kind regression --diagnostics-stage freeze \
+  --reference benchmarks/results/t071-new-reference \
+  --regression-plan benchmarks/policies/phase7-regression-pinned-plan.json \
+  --proposal benchmarks/results/t071-new-inputs/proposal.json \
+  --output benchmarks/results/t071-new-policy.json
+python3 scripts/validate/diagnostic_inputs.py \
+  --inputs benchmarks/results/t071-new-inputs --policy benchmarks/results/t071-new-policy.json \
+  --source /tmp/remora-t071-new-phase7 --target /tmp/remora-t071-new-phase7-target
+./scripts/validate/bench.sh --profile benchmarks/diagnostics.toml \
+  --diagnostics-kind regression --diagnostics-stage candidate \
+  --reference benchmarks/results/t071-new-reference --policy benchmarks/results/t071-new-policy.json \
+  --baseline-binary benchmarks/results/t071-new-inputs/phase6-remora \
+  --baseline-input-manifest benchmarks/results/t071-new-inputs/phase6-input.json \
+  --remora-binary benchmarks/results/t071-new-inputs/phase7-remora \
+  --remora-input-manifest benchmarks/results/t071-new-inputs/phase7-input.json \
+  --traffic-binary benchmarks/results/t071-new-inputs/traffic \
+  --regression-plan benchmarks/policies/phase7-regression-pinned-plan.json \
+  --proposal benchmarks/results/t071-new-inputs/proposal.json \
+  --output benchmarks/results/t071-new-candidate
+```
+
+The tracked policy is evidence for its recorded inputs, not a reusable allowance
+for arbitrary future sources or workloads. Retain failures and frozen limits;
+correct a failed increment or define a new prospectively reviewed trade-off
+before a new comparison. Do not overwrite the recorded reference or policy.
+
+
+### Final T071 cross-revision results
+
+**PASS: all 70 candidate runs and all 70 adjacent baseline counterparts satisfy
+the unchanged frozen policy.** The separate pre-change reference has 50 valid
+runs. Comparator revalidation also passes: exact source/executable/feature/
+compiler identities, child summaries, profile, platform/clock/locks/affinity,
+measurement order, prospective construction/build timestamps and policy seal.
+No run is averaged into acceptance. The following averages are descriptive only.
+
+| Mode | Mean process CPU increase, client / server (cores) | Mean owner CPU increase, client / server (cores) | Candidate sampled RSS max (MiB, either role) | Largest paired added p95 RTT (ms) |
+| --- | --- | --- | --- | --- |
+| default | -0.00080 / -0.00053 | -0.00027 / -0.00094 | 8.840 | 0.687 |
+| filtered-qlog | +0.01071 / +0.01043 | +0.00827 / +0.00880 | 8.930 | 0.673 |
+| off | +0.00111 / +0.00031 | +0.00043 / +0.00043 | 8.836 | 0.562 |
+| verbose | -0.00071 / -0.00031 | -0.00030 / -0.00044 | 8.871 | 0.830 |
+
+Small off/default/verbose CPU deltas overlap clock-tick/reference noise; negative
+means do not establish an optimization. Active filtered qlog adds about 0.0107
+client / 0.0104 server process cores on this workload. Its largest observed
+process/owner increases are 0.01811 / 0.01408 cores across either role. The
+largest sampled RSS increase is 388 KiB across all normal modes. Candidate
+normal RSS max is 8.930 MiB and normal p95 RTT max is 1.305 ms.
+
+The 0.5 ms intended RTT increment is **added to the frozen reference noise
+allowance**, not a standalone observed-delta ceiling. Per-group RTT noise is
+0.444–1.866 ms, reflecting variability on this shared, dynamically clocked host.
+The largest paired increase is 0.830 ms and passes its specific frozen bound.
+These runs establish the declared budget check, not a tightly resolved causal
+latency cost or a confidence interval. No tolerance was enlarged after the
+final candidate started.
+
+Every active direction delivers **500/500** offered data messages per run
+(0.1024 Mbit/s per direction). Candidate data total: 50,000 unique messages,
+zero delivery loss, corruption or generator errors. Normal runs have zero
+ordinary diagnostic drops, status write failures, coverage loss and numeric
+overflow. All 15 normal filtered-qlog runs retain active filters with no stop or
+output failure. The largest retained trace file is 677,075 bytes per role;
+sampled active scratch is 65,536 bytes (one filter), final scratch zero.
+File/filter caps are verified for this one-filter workload; multi-filter/churn
+reservation pressure remains separate component-test evidence.
+
+All ten candidate unread-collector cases retain full bidirectional delivery,
+observe `pipe_write` for both writers, and exit 1 with the exact
+`DiagnosticCollectionIncomplete` failure. Stop time is 1.006–1.008 seconds;
+blocked sampled RSS max is 9.008 MiB. Missing status/correlation after the unread
+prefix stays unobservable and incomplete. `sc010_claim=false` remains explicit.
+
+Baseline revision: `34d4a8fa13aa67436e057773d1a3199b69aba233`.
+Both release builds use the pinned Rust 1.99.0/Cargo.lock and `qlog` feature,
+with source-archive build metadata recorded separately from the source identity.
+The final candidate contains the previously verified review corrections; no
+production Rust changes were made during this T071 measurement work.
+
+| Immutable evidence | SHA-256 |
+| --- | --- |
+| Phase 6 release executable | `78e7351678f7d402b5782b30acc93f2a0d4eb771f1692ede51e75e0a19879244` |
+| Corrected Phase 7 release executable | `4b68d6b5843965f60a071692dc26bbc690f327769df3d1070f08ccaedaeacd07` |
+| Shared traffic executable | `e973d280db788bd948670d6e9d83e2db28e1f495f19cd87029bdaf99b621adad` |
+| candidate_manifest | `19f45a78b6e1e53c0561466f01b67443a8775d8919878ea7523556a2d9e4fbb8` |
+| candidate_summary | `b7638e161052e03932a99eea7e22d429cac448671c2bf839a9efb6dabf74831a` |
+| comparison | `89e3b5f2671a127c0374c06db482f78c954b2d6b6a0f76a5908046e7425f6876` |
+| paired_baseline | `3a370e08d984b10a723612b51114e8b3bc04dc8c5089edaf1510e2265305a861` |
+| policy | `4ea5872a3dddad6e62d7c1dfde65eb0ab753d587d49afdbd432b0865a0089cc6` |
+| ref_manifest | `da2930a7f5c51688b789adc12b73ec24254901ae7f88c7a5a51db7f05a122e9f` |
+| ref_summary | `4839678acc37f7540a58f2632a07584ba3747f78d6b1d8cde71473aaf627d43b` |
+
+The policy freeze precedes materialization, build and collection respectively:
+`1791856343.2578025 < 1791856349.2625508 <= 1791856353.078742 < 1791856523.008746`
+(UTC epoch seconds). The reference is the actual pre-Phase-7 implementation;
+the candidate is a fresh reconstruction of a known existing proposal. This
+closes the current scoped T071 checkpoint. It does not rewrite the original
+missed freeze before the initial T064–T070 authorship; the comparison output
+preserves `original_freeze_sequence_repaired=false`.
+
+Native x86_64 Linux 7.2.9-arch1-1, Intel i7-13700K; four distinct physical cores
+0/2/4/6, one per role. The controller shares that mask. `intel_pstate/powersave`
+settings remain unchanged; frequency is not fixed and cores are not exclusively
+isolated. The result is limited to one Session / 128 bytes / 100pps / five
+five-second repetitions in each direction, active qlog below its rate ceiling.
+It does not establish high-rate tracing/stopped-filter CPU, sustained capacity,
+WAN, ARM64, release SC-003/004/005/007 or final Phase 8 qualification.
+
+Verification: 64 Python tests pass, including cross-revision/provenance/plan/
+child-summary/pair-order/single-run failure guards, exact blocked-failure checks,
+fresh source/build preparation and taskset startup readiness. Both exact
+release executables were built locked/offline with matched features. Syntax,
+local documentation targets and diff checks pass. The earlier full Rust suite
+verified the unchanged proposed production sources; no new full Rust, interop
+or standalone operations qualification is claimed by this measurement increment.
+All failed/invalid/preparation artifacts remain preserved; no commit/publication.
