@@ -4,6 +4,27 @@ use remora_traffic::{
     packet,
 };
 #[test]
+fn baseline_cli_recognizes_and_validates_outer_buffer_override() {
+    for value in ["0", "2147483648"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_remora-traffic"))
+            .args([
+                "baseline-client",
+                "--listen",
+                "127.0.0.1:0",
+                "--to",
+                "127.0.0.1:9",
+                "--outer-socket-buffer-bytes",
+                value,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("invalid input"), "{stderr}");
+        assert!(!stderr.contains("unknown option"), "{stderr}");
+    }
+}
+#[test]
 fn integrity_unique_duplicate_reorder_and_direction() {
     let mut c = Collection::default();
     for seq in [1, 3, 2, 3] {

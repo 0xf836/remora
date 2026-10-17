@@ -7,6 +7,7 @@ import json
 import os
 import platform
 from pathlib import Path
+from benchmark import install_termination_handler
 import secrets
 import select
 import socket
@@ -464,6 +465,7 @@ class Lab:
 
 
 def main():
+    install_termination_handler()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--scenario", choices=["isolation", "overload", "churn"], required=True

@@ -1,5 +1,7 @@
 # Accepted specification amendments: A1 and A2
 
+**Scope update — 2026-10-17:** [ADR 0024](../../docs/adr/0024-defer-arm64-release-scope.md) supersedes the original ARM64 commitment below. Linux GNU x86_64 is the sole current required release target; ARM64 is deferred outside completion gates. The original research/decision text remains historical.
+
 **Decision date**: 2026-10-11. **Status**: revised as instructed by the user and applied to `spec.md` and planning artifacts. The filename is retained so existing links remain valid. The former fixed 30-second socket quarantine and separate dual-architecture feasibility gate are superseded; they are not requirements.
 
 ## A1: Observable isolation and realistic UDP guarantees

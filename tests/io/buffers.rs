@@ -319,3 +319,33 @@ fn pressure_peaks_survive_dequeue_reclamation_and_zero_length_packets() {
         }
     );
 }
+
+#[test]
+fn bounded_cache_retirement_preserves_lent_bytes_reservations_and_reuse() {
+    let pool = BufferPool::new(128, 128 * 10).unwrap();
+    let mut slabs: Vec<_> = (0..10).map(|_| pool.acquire().unwrap()).collect();
+    let mut held = slabs.pop().unwrap();
+    held.bytes_mut().fill(0xab);
+    drop(slabs);
+    let bytes = held.bytes();
+    pool.trim_cached(3, 2);
+    assert_eq!(pool.retained().count, 8, "retire at most two idle slabs");
+    pool.trim_cached(3, usize::MAX);
+    assert_eq!(pool.retained().count, 4, "three idle plus one lent");
+    assert!(bytes.iter().all(|b| *b == 0xab));
+    let allocations = pool.allocations();
+    let reused: Vec<_> = (0..3).map(|_| pool.acquire().unwrap()).collect();
+    assert_eq!(
+        pool.allocations(),
+        allocations,
+        "reserve must remain reusable"
+    );
+    pool.trim_cached(0, usize::MAX);
+    assert_eq!(pool.retained().count, 4, "live leases cannot be retired");
+    let extra: Vec<_> = (0..6).map(|_| pool.acquire().unwrap()).collect();
+    assert!(matches!(pool.acquire(), Err(BudgetError::Exhausted)));
+    drop((held, reused, extra));
+    assert_eq!(pool.retained().count, 10, "return slots survive retirement");
+    pool.trim_cached(0, usize::MAX);
+    assert_eq!(pool.retained(), Usage::default());
+}

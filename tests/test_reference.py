@@ -16,17 +16,124 @@ from benchmark import Owned
 
 
 class ReferenceMethod(unittest.TestCase):
+    def test_socket_request_metadata_tracks_changed_shared_defaults(self):
+        source = """settings!(IoSettings {
+            outer_socket_buffer_bytes: usize = 2_000_000,
+            relay_socket_buffer_bytes: usize = 100_000,
+        });"""
+        self.assertEqual(
+            reference.socket_buffer_requests(source),
+            {"outer_bytes": 2000000, "application_bytes": 100000},
+        )
+
+    def test_socket_request_metadata_rejects_unrecognized_or_invalid_defaults(self):
+        source = """settings!(IoSettings {
+            outer_socket_buffer_bytes: usize = 1048576,
+            relay_socket_buffer_bytes: usize = 131072,
+        });"""
+        for invalid in [
+            source.replace("IoSettings", "OtherSettings"),
+            source + source,
+            source.replace("1048576", "1024 * 1024"),
+            source.replace("1048576", "0"),
+            source.replace("1048576", "2147483648"),
+            source.replace("relay_socket_buffer_bytes: usize = 131072,", ""),
+        ]:
+            with self.subTest(source=invalid), self.assertRaises(ValueError):
+                reference.socket_buffer_requests(invalid)
+
+    def test_manifest_reports_shared_runtime_default_socket_requests(self):
+        class ManifestCaptured(Exception):
+            pass
+
+        class Network:
+            def snapshot(self):
+                return {}
+
+        captured = {}
+
+        def record(path, value):
+            if path.name == "manifest.json":
+                captured.update(value)
+                raise ManifestCaptured
+
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+            reference.platform, "machine", return_value="x86_64"
+        ), patch.object(
+            reference.os, "sched_getaffinity", return_value=set(range(10))
+        ), patch.object(reference, "sha", return_value="test-hash"), patch.object(
+            reference, "input_hashes", return_value={}
+        ), patch.object(
+            reference.subprocess, "check_output", return_value="test-version"
+        ), patch.object(reference, "write", side_effect=record):
+            with self.assertRaises(ManifestCaptured):
+                reference.execute(Network(), Path(temp), self.profile)
+
+        self.assertEqual(
+            captured["requested_socket_buffers"],
+            {"outer_bytes": 1048576, "application_bytes": 131072},
+        )
+
+    def test_collector_placement_restored_after_success_and_failure(self):
+        before = os.sched_getaffinity(0)
+        cpus = sorted(before)
+        if len(cpus) < 3:
+            self.skipTest("requires three available CPUs")
+        placement = {"client": cpus[:1], "server": cpus[1:2], "tools": cpus[2:]}
+        for fail in [False, True]:
+            with self.subTest(fail=fail):
+                try:
+                    with reference.collector_affinity(placement) as evidence:
+                        self.assertEqual(os.sched_getaffinity(0), set(cpus[2:]))
+                        self.assertEqual(evidence["before"], cpus)
+                        self.assertEqual(evidence["actual"], cpus[2:])
+                        if fail:
+                            raise RuntimeError("injected run failure")
+                except RuntimeError as error:
+                    self.assertTrue(fail)
+                    self.assertEqual(str(error), "injected run failure")
+                self.assertEqual(os.sched_getaffinity(0), before)
+
+    def test_collector_overlap_or_unavailable_cpu_rejected_before_mutation(self):
+        for placement in [
+            {"client": [0], "server": [1], "tools": [0, 2]},
+            {"client": [0], "server": [1], "tools": [1, 2]},
+            {"client": [0], "server": [1], "tools": []},
+            {"client": [0], "server": [1], "tools": [3]},
+        ]:
+            with self.subTest(placement=placement), patch.object(
+                reference.os, "sched_getaffinity", return_value={0, 1, 2}
+            ), patch.object(reference.os, "sched_setaffinity") as mutate:
+                with self.assertRaises(ValueError):
+                    with reference.collector_affinity(placement):
+                        self.fail("invalid placement admitted")
+                mutate.assert_not_called()
+
     def setUp(self):
         self.profile = tomllib.loads(
             (ROOT / "benchmarks/reference-x86_64.toml").read_text()
         )
+
+    def test_arm64_profile_uses_identical_matrix_and_requires_native_execution(self):
+        arm = tomllib.loads((ROOT / "benchmarks/reference-arm64.toml").read_text())
+        self.assertEqual(reference.plan(arm), reference.plan(self.profile))
+        with patch.object(reference.platform, "machine", return_value="x86_64"):
+            with self.assertRaisesRegex(RuntimeError, "native architecture/profile mismatch"):
+                reference.execute(None, Path("/tmp/unused"), arm)
+        unknown = dict(arm, architecture="emulated-arm64")
+        with self.assertRaises(ValueError): reference.plan(unknown)
+
+    def test_unrecorded_or_changed_pacing_is_rejected(self):
+        for quantum in [None, 0, 50, 1000]:
+            profile = dict(self.profile, generator_pacing_quantum_us=quantum)
+            with self.assertRaises(ValueError): reference.plan(profile)
 
     def test_complete_unique_matrix_and_randomized_reproducible_order(self):
         method = reference.plan(self.profile)
         self.assertEqual(method, reference.plan(self.profile))
         self.assertEqual(len(method["searches"]), 18)
         pairs = method["pairs"]
-        self.assertEqual(len(pairs), 185)
+        self.assertEqual(len(pairs), 75)
         self.assertEqual(
             len(
                 {
@@ -40,7 +147,7 @@ class ReferenceMethod(unittest.TestCase):
                     for p in pairs
                 }
             ),
-            185,
+            75,
         )
         self.assertEqual({p["baseline_first"] for p in pairs}, {True, False})
         changed = copy.deepcopy(self.profile)
@@ -110,7 +217,7 @@ class ReferenceMethod(unittest.TestCase):
             paired_repetitions=4,
             warmup_seconds=1,
             measurement_seconds=3,
-            search_step_percent=10,
+            search_policy="linear",
             search_max_steps=10,
             sustainable_loss_percent_max=1,
             subcapacity_fraction=0.7,
@@ -195,6 +302,15 @@ class ReferenceMethod(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "measurement"):
             reference.resource_sample(roles, owned, 2001, 2000)
 
+    def test_proc_teardown_before_waitable_exit_has_bounded_post_interval_wait(self):
+        from types import SimpleNamespace
+        owned = [SimpleNamespace(p=object(), exited=lambda: False) for _ in range(3)]
+        owned[2].exited = unittest.mock.Mock(side_effect=[False, False, False, True])
+        with patch.object(reference, "measured_resource", side_effect=[{}, {}, FileNotFoundError()]):
+            sample = reference.resource_sample(["server", "client", "receiver"], owned, 2001, 2000)
+        self.assertEqual(sample["completed_traffic"], ["receiver"])
+        self.assertNotIn("receiver", sample["roles"])
+
     def test_namespace_holder_lives_until_owned_teardown_and_exit_is_detected(self):
         import network
 
@@ -214,9 +330,13 @@ class ReferenceMethod(unittest.TestCase):
                     network.time, "monotonic", return_value=time.monotonic() + 133200
                 ):
                     owned_network.ensure_alive()
-                self.assertIn(
-                    b"infinity", Path(f"/proc/{holder.p.pid}/cmdline").read_bytes()
-                )
+                # Popen may return before exec populates /proc/cmdline.
+                # Wait for the real holder, not a scheduler-dependent instant.
+                deadline = time.monotonic() + 3
+                while b"infinity" not in Path(f"/proc/{holder.p.pid}/cmdline").read_bytes():
+                    self.assertFalse(holder.exited(), "holder exited before exec readiness")
+                    self.assertLess(time.monotonic(), deadline, "holder exec readiness timeout")
+                    time.sleep(0.001)
                 owned_network.close()
                 self.assertTrue(holder.reaped)
             finally:
@@ -237,3 +357,95 @@ class ReferenceMethod(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BoundedBudget(unittest.TestCase):
+    def test_planned_intervals_fit_and_deadline_cannot_pass_incomplete_run(self):
+        profile = tomllib.loads((ROOT / "benchmarks/reference-x86_64.toml").read_text())
+        method = reference.plan(profile)
+        self.assertEqual(method["planned_interval_seconds"], 4965)
+        self.assertLess(method["planned_interval_seconds"], 5400 - 30)
+        self.assertEqual(method["wall_budget_seconds"], 5400)
+        self.assertEqual(sum(p["phase"] == "capacity" for p in method["pairs"]), 18)
+        class Network: reference_deadline = 20
+        with patch.object(reference.time, "monotonic", return_value=20):
+            with self.assertRaises(TimeoutError): reference.check_budget(Network())
+        with patch.object(reference.time, "monotonic", return_value=19): reference.check_budget(Network())
+
+    def test_capacity_extension_is_matched_and_limited_to_three_pairs(self):
+        profile = tomllib.loads((ROOT / "benchmarks/reference-x86_64.toml").read_text())
+        method = reference.plan(profile)
+        extended = [key for key in method["pairs"] if key["phase"] == "capacity"
+                    and key["sessions"] == 32 and key["direction"] == "simultaneous"]
+        self.assertEqual(len(extended), 3)
+        for key in method["pairs"]:
+            expected = 60 if key in extended or key["phase"] == "resource" else 15
+            self.assertEqual(reference.paired_seconds(profile, key), expected)
+        historical = dict(profile)
+        del historical["capacity_32_simultaneous_seconds"]
+        self.assertEqual(reference.plan(historical)["planned_interval_seconds"], 4695)
+        self.assertTrue(all(reference.paired_seconds(historical, key) == 15 for key in extended))
+        for invalid in [0, 30, 61]:
+            with self.assertRaisesRegex(ValueError, "unmatched full reference"):
+                reference.plan(dict(profile, capacity_32_simultaneous_seconds=invalid))
+    def test_bisection_uses_both_valid_and_rejected_brackets(self):
+        self.assertEqual(reference.bisect_rate(0, None, 0), 125)
+        self.assertEqual(reference.bisect_rate(125, None, 1), 250)
+        self.assertEqual(reference.bisect_rate(500, 1000, 2), 750)
+        self.assertEqual(reference.bisect_rate(500, 750, 3), 625)
+
+    def test_churn_budget_exhaustion_cleans_owned_process_group(self):
+        class Network: reference_deadline = 20
+        class Child:
+            stopped = False
+            def __init__(self, *args): pass
+            def exited(self): return False
+            def stop(self): self.stopped = True
+        child = Child()
+        with patch.object(reference, "Owned", return_value=child), patch.object(reference.time, "monotonic", return_value=20):
+            with self.assertRaises(TimeoutError): reference.run_churn(Network(), Path("/tmp/unused"))
+        self.assertTrue(child.stopped)
+
+    def test_live_progress_updates_without_overwriting_measurement_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp)
+            reference.write_progress(out, {"stage": "calibration"})
+            reference.write_progress(out, {"stage": "paired"})
+            import json
+            self.assertEqual(json.loads((out / "progress.json").read_text())["stage"], "paired")
+            self.assertFalse((out / "progress.tmp").exists())
+
+    def test_calibration_failure_names_exact_invalid_evidence(self):
+        row = dict(generator_errors=174, integrity_errors=0, generator_cpu_max=.245,
+                   clock_drift_ms=.000268, coverage_lost=0, counter_overflow=False)
+        self.assertEqual(reference.calibration_invalid_reasons(row), ["generator_errors=174"])
+        row["generator_errors"] = 0
+        self.assertEqual(reference.calibration_invalid_reasons(row), [])
+        row["clock_drift_ms"] = float("nan")
+        self.assertEqual(reference.calibration_invalid_reasons(row), ["clock_drift_ms=nan"])
+
+    def test_completion_guard_cannot_be_changed_or_omitted_from_new_method(self):
+        profile = tomllib.loads((ROOT / "benchmarks/reference-x86_64.toml").read_text())
+        for guard in [None, 0, 1, 21]:
+            with self.assertRaises(ValueError): reference.plan(dict(profile, generator_completion_guard_ms=guard))
+
+    def test_owned_setup_loopback_is_enabled_only_after_fresh_namespace_proof(self):
+        import network
+        from types import SimpleNamespace
+        fds = [os.open(f"/proc/self/ns/{kind}", os.O_RDONLY) for kind in ["net", "user"]]
+        try:
+            with tempfile.TemporaryDirectory() as temp, patch.object(network.os, "stat", return_value=SimpleNamespace(st_ino=-1)), patch.object(network, "run", return_value='[{"ifname":"lo"}]') as command, patch.object(network, "namespace_holder", side_effect=RuntimeError("stop after loopback initialization")):
+                with self.assertRaisesRegex(RuntimeError, "stop after loopback"):
+                    network.Network(Path(temp), "reference", *fds)
+                self.assertEqual(command.call_args_list[0].args, ("ip", "-j", "link", "show"))
+                self.assertEqual(command.call_args_list[1].args, ("ip", "link", "set", "lo", "up"))
+            with tempfile.TemporaryDirectory() as temp, patch.object(network.os, "stat", return_value=SimpleNamespace(st_ino=-1)), patch.object(network, "run", return_value='[{"ifname":"lo"},{"ifname":"eth0"}]') as command:
+                with self.assertRaisesRegex(RuntimeError, "not fresh"):
+                    network.Network(Path(temp), "reference", *fds)
+                self.assertEqual(command.call_count, 1)
+        finally:
+            for fd in fds: os.close(fd)
+
+    def test_ordinary_suppression_does_not_manufacture_status_coverage_loss(self):
+        self.assertEqual(reference.diagnostic_coverage_lost(dict(coverage_lost=0,status_write_failures=0,diagnostics_dropped=10144)), 0)
+        self.assertEqual(reference.diagnostic_coverage_lost(dict(coverage_lost=1,status_write_failures=2,diagnostics_dropped=10144)), 3)

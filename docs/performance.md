@@ -1,5 +1,205 @@
 # Performance evidence
 
+## Current selected native x86_64 profile — 2026-10-17
+
+The selected CUBIC executable passes the bounded reference criteria for the
+recorded native Linux GNU x86_64 profile. T076 functional qualification and T078
+requirement/review reconciliation also pass within their declared scope. See
+[the qualification report](validation/release.md) and
+[post-review corrections](validation/phase8-implementation-review-fixes.md).
+This is local evidence for an exact build/workload, not a published release,
+WAN guarantee or native ARM64 qualification. Linux GNU x86_64 is the only
+currently required platform; [ARM64 is deferred](adr/0024-defer-arm64-release-scope.md)
+outside the completion criteria, not an unfinished qualification gate.
+
+Measured qlog-build executable SHA-256:
+`7f7a3c4de7341b8edf0860ff3c8457642ff423cf4658f9aa93076db678cfe3b1`.
+The original traffic executable SHA-256 is
+`d2693daff0709b6c05c78a1476a35aaa0633139220f82a763e96d180c35ec36b`.
+The subsequent validator-only correction revalidates the saved suite as passed;
+its new tool build is not relabelled as the original measurement executable.
+
+Raw artifacts remain local under
+`benchmarks/results/release/phase8-x86-cubic-20261016/reference/benchmark/`;
+the input-bound coordinator is
+`benchmarks/results/phase8-cubic-reference-20261016/`. A fresh clone contains
+tracked reports/profiles, not those ignored raw bundles. See
+[artifact retention](validation/README.md).
+
+| Metric, worst applicable selected run | Measured result | Acceptance boundary |
+| --- | --- | --- |
+| Delivered/direct payload ratio, 1200-byte capacity cases | **99.815985% minimum** | >=80%, separately for each direction/pair |
+| Added subcapacity loss | **0.038594 percentage points maximum** | <=0.1 pp per active direction/pair |
+| Added end-to-end p95 RTT | **0.768 ms maximum** | <=5 ms |
+| 32-session resource delivery, each of three repeats | **500.736 Mbit/s in each direction**, zero measured endpoint loss | >=500 Mbit/s/direction |
+| Resource role CPU | **0.910608 core maximum** | <=2 average cores per role |
+| Resource role RSS | **12771328 bytes (12.18 MiB) maximum** | <=128 MiB |
+| 1000-cycle retained RSS growth / reclamation | **<=228 KiB / 0.119 s** | <=10 MiB within <=60 s |
+
+These are paired delivery ratios at a tested sustainable offered rate, not
+99.8% of universal physical link capacity. Calibration chooses a tested point;
+it does not interpolate an exact maximum. Maximum absolute tunnel loss was
+0.215847% in capacity and 0.128597% in subcapacity cases. Capacity acceptance
+uses delivered/direct ratio; SC-004 uses **added** loss relative to an
+independently valid matching baseline. Absolute tunnel loss is not hidden by
+those definitions, and no failed pair/direction is averaged away.
+
+## Workload and measurement method
+
+The [current profile](../benchmarks/reference-x86_64.toml) and
+[benchmark contract](../specs/001-masque-udp-tunnel/contracts/benchmarks.md)
+define schema 4, `bounded-reference-v2`. The run uses an Intel Core i7-13700K,
+Linux 7.2.9-arch1-1, owned network namespaces/veth and a two-leg route shaped to
+1000 Mbit/s per direction with 20 ms reference RTT. Client CPUs are 0–3, server
+4–7 and tools/collector 8–23. These are disjoint logical CPU masks; the QUIC/H3
+owner itself remains sequential. No competing build/test was scheduled during
+the numerical run.
+
+- **18 baseline searches:** 1/32 sessions × 128/512/1200-byte payloads × forward,
+  reverse and simultaneous traffic. Start at 125 Mbit/s, double to a rejected
+  point or 1000 Mbit/s, then bisect; at most six points, with early stopping at
+  a successful 1000. Every point has 2 s loaded warmup, 8 s measurement and
+  500 ms drain. Invalid generator/integrity evidence invalidates calibration.
+- **75 baseline/tunnel pairs, three repeats:** 54 subcapacity pairs at half the
+  selected rate, 18 capacity pairs at 1200 bytes, and three resource pairs.
+  All pairs use 3 s loaded warmup and 500 ms drain. Ordinary measurement is
+  15 s; the three 32-session simultaneous capacity pairs and all resource
+  pairs use 60 s per member. Pair order/seed and raw directional counts remain
+  recorded; each paired baseline independently confirms <=0.1% loss.
+- **Validity:** matching plaintext relay on the same two-leg path, bounded
+  sequence tracking, integrity/duplicate/scheduling checks, generator CPU below
+  0.9 core, >=100 RTT samples per session, >=10 resource samples/s, owner CPU,
+  kernel queue charges and process RSS recorded separately.
+- **Arrival waveform:** deadlines grouped at 100 microseconds and exact counts
+  generated over the declared interval minus a 20 ms completion reserve.
+  Collection/resources cover the full interval. Both pair members match; the
+  reserve slightly increases active intensity and does not permit missing or
+  late catch-up slots.
+- **Duration:** nominal intervals total 82m45s. The runner enforces a 5400 s
+  (90-minute) wall budget with a 30 s cleanup reserve. The selected complete
+  run took **84m42s**, including 1000-cycle churn. This replaces the historical
+  schema-2 multi-hour method; the old failures/results remain unchanged.
+
+CUBIC, mmsg/batch ceiling 32, GSO/GRO off and info diagnostics with runtime
+qlog inactive are the measured settings. Current buffer requests are 1 MiB
+outer and 128 KiB application/relay for each receive/send buffer; effective
+Linux reference values were 2 MiB and 256 KiB respectively. All 300 role records
+agree. The original manifest retained stale requested values; the
+[transparent metadata erratum](validation/phase8-benchmark-metadata-erratum.md)
+preserves it and supplies the correction. The current runner derives requests
+from the bound Rust defaults; kernel memory is additional to process RSS.
+
+T076 is a separate functional job: its **80m54s** selected execution includes
+30-minute generic/isolation and independently prepared VM WireGuard duration,
+10-minute overload, network/recovery/shutdown, security/operator/interop checks
+and prerequisites/cleanup. It is not part of the 90-minute T077 numerical
+budget. The VM workload is low-rate duration evidence, not WireGuard capacity.
+
+## Reproduce the current numerical profile
+
+Build the pinned root and traffic packages as described in [build](build.md).
+Use a native x86_64 host with at least ten available logical CPUs, disjoint
+four-CPU role masks plus generator/endpoint cores, working Linux user/network
+namespaces, `unshare`, `nsenter`, `taskset`, `ip`, `tc` and read-only `ethtool`
+queries. Local policy must permit the owned namespace setup. No host network
+or sysctl mutation is part of the runner. Record power/governor/affinity and
+kernel feature inventory rather than silently changing the machine.
+
+Inspect the plan first; plan-only does not collect acceptance evidence:
+
+```bash
+cargo build --locked --release --features qlog
+cargo build --locked --release --manifest-path tools/traffic/Cargo.toml
+./scripts/validate/bench.sh --profile benchmarks/reference-x86_64.toml \
+  --plan-only --output benchmarks/results/reference-plan-NEW
+```
+
+For a short plumbing check, use a separate fresh path. Smoke is intentionally
+**invalid for full release criteria** because its matrix/intervals are incomplete:
+
+```bash
+./scripts/validate/bench.sh --profile benchmarks/reference-x86_64.toml \
+  --development-smoke --smoke-selected \
+  --output benchmarks/results/reference-smoke-NEW
+```
+
+The actual complete numerical job is:
+
+```bash
+./scripts/validate/bench.sh --profile benchmarks/reference-x86_64.toml \
+  --output benchmarks/results/reference-full-NEW
+```
+
+Run sequentially, without competing measurements, builds or tests. Keep output
+paths fresh and retain failed/invalid/incomplete artifacts. The driver must
+have access to the whole intended role/tool CPU set; on the recorded host this
+was CPUs 0–23, with collector work confined to 8–23. Do not pin the whole driver
+to the collector mask and thereby exclude role CPUs. Preserve inputs while it
+runs. Inspect `suite.json`, `criteria.json`, pair/search/churn artifacts and
+process exit status; a generated manifest or finished process is not itself a
+pass. Exact selected reproduction also requires the original binaries/profiles;
+a new build produces evidence for its own recorded hash.
+
+Full functional qualification has its own peer/VM/prerequisite inputs and
+[runner contract](validation/release.md#runner-and-continuation-contract).
+Planning it is read-only:
+
+```bash
+./scripts/validate/release.sh --plan-only \
+  --peer-binary /absolute/pinned/remora-interop \
+  --output /absolute/fresh-functional-output
+```
+
+For execution, supply the prepared private WireGuard fixture and input-bound
+T073/T074/T075 prerequisite record described there. `--scope checks` is a useful
+subset, but its `checks-passed` result is not full T076, T077 or release acceptance.
+Do not reuse a historical prerequisite JSON with different source/binary inputs.
+
+## Known trade-offs and unqualified conditions
+
+CUBIC remains the default and the measured small CPU increase is accepted.
+The downstream-first output correction addresses observed eligible ciphertext
+waiting behind fresh producers; it is not a reason to bypass congestion control
+or enlarge every queue. BBR2 investigation is paused for this increment, not
+rejected as a useful direction for lossy paths.
+
+On the selected CUBIC executable, dropping exactly five reverse outer packets
+produced **1.956192–2.514200%** reverse application loss in three controlled runs,
+with zero measured endpoint kernel-overflow deltas. The clean reference pass
+does not qualify that loss amplification away. Earlier BBR2 observations are
+not a same-build proof of general superiority. See the
+[comparison](validation/phase8-cc-comparison.md),
+[loss diagnosis](validation/phase8-final-loss-diagnosis.md) and
+[future experiments](validation/phase8-decision-review-followup.md).
+
+Other limits remain explicit:
+
+- Three repeats and 15/60-second windows provide limited variance/tail evidence;
+  sparse p95 RTT is not a long-run p99 or maximum-delay guarantee.
+- Peak measured owner CPU across workloads is about 0.938 core. A two-core role
+  budget does not make the sequential owner two cores fast. Buffer/service-pause
+  headroom and heterogeneous-client density coupling remain future experiments.
+- Kernel buffering can delay UDP before the application's 20 ms residence clock;
+  unchanged userspace queue limits do not bound full end-to-end queueing delay.
+- Active high-rate filtered-qlog cost, enabled GSO/GRO, other CC choices, WAN
+  paths, high-rate WireGuard and native ARM64 are not qualified by this matrix.
+  Earlier T071 diagnostics measurements below are limited to their own low-rate
+  build/profile; filtered tracing correctness/privacy has separate native checks.
+- Overload intentionally lost 13 diagnostic records and exposed incomplete
+  correlation. VM warmup had 73 send errors; measured VM traffic was 72000/72000.
+  One post-review concurrent churn test failed with unexpected payload; sequential
+  e2e and final full native repeats passed. Its cause remains unestablished in
+  the [correction record](validation/phase8-implementation-review-fixes.md).
+
+## Historical development records
+
+The records below preserve previous binaries, policies, methods and failures.
+Their statements about pending tasks, older defaults, four-packet quotas,
+schema-2 37-hour runs and saved-path commands describe those historical
+checkpoints. They are not the current reproduction instructions or evidence for
+a different executable. Current commands and accepted scope are above.
+
+
 This report retains measured outcomes and limits. Raw manifests, samples, logs
 and historical comparisons remain in ignored local `benchmarks/results/`
 archives, not Git. See [artifact retention](validation/README.md).

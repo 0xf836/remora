@@ -33,6 +33,69 @@ fn millis() -> u64 {
         .unwrap()
         .as_millis() as u64
 }
+fn slot_offset(tick: u64, rate: u64, quantum_us: u64) -> Duration {
+    let nanos = tick * 1_000_000_000 / rate;
+    let nanos = if quantum_us == 0 {
+        nanos
+    } else {
+        nanos / (quantum_us * 1000) * (quantum_us * 1000)
+    };
+    Duration::from_nanos(nanos)
+}
+fn scheduled_offset(
+    tick: u64,
+    rate: u64,
+    warmup: u64,
+    seconds: u64,
+    quantum_us: u64,
+    guard_ms: u64,
+) -> Duration {
+    if guard_ms == 0 || tick < warmup * rate {
+        return slot_offset(tick, rate, quantum_us);
+    }
+    let measured_tick = tick - warmup * rate;
+    if measured_tick >= seconds * rate {
+        return Duration::from_secs(warmup + seconds);
+    }
+    let active_ns = seconds * 1_000_000_000 - guard_ms * 1_000_000;
+    let offset_ns = (measured_tick as u128 * active_ns as u128 / (seconds * rate) as u128) as u64;
+    let offset_ns = if quantum_us == 0 {
+        offset_ns
+    } else {
+        offset_ns / (quantum_us * 1000) * (quantum_us * 1000)
+    };
+    Duration::from_secs(warmup) + Duration::from_nanos(offset_ns)
+}
+fn receive_visit_allowed(
+    now: Instant,
+    next_send: Instant,
+    finish: Instant,
+    generating: bool,
+) -> bool {
+    // Receiving one packet can cross a slot deadline. Recheck between packets,
+    // rather than finishing the entire 32-packet visit before servicing output.
+    !generating || now >= finish || next_send >= finish || now < next_send
+}
+fn generator_pause(
+    now: Instant,
+    next_send: Instant,
+    finish: Instant,
+    generating: bool,
+) -> Duration {
+    // A service visit is bounded to 32 slots. Eligible backlog needs another
+    // visit immediately; sleeping here changes the declared offered load.
+    // Only the final <=2ms uses a bounded no-sleep guard against timer overshoot.
+    // No slot eligibility/cutoff is changed, and drain-only work still sleeps.
+    if generating
+        && now < finish
+        && next_send < finish
+        && (next_send <= now || finish.duration_since(now) <= Duration::from_millis(2))
+    {
+        Duration::ZERO
+    } else {
+        Duration::from_micros(50)
+    }
+}
 fn main() {
     if let Err(e) = run() {
         eprintln!("traffic tool failed: {e}");
@@ -49,6 +112,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "--seconds",
         "--pps",
         "--reverse-pps",
+        "--pacing-quantum-us",
+        "--completion-guard-ms",
         "--size",
         "--session",
         "--start-ms",
@@ -56,6 +121,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "--sessions",
         "--batch-max",
         "--application-pool-bytes",
+        "--outer-socket-buffer-bytes",
         "--warmup-seconds",
         "--input",
         "--output",
@@ -96,6 +162,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             a.get("--io").map_or("mmsg", String::as_str),
             number(&a, "--batch-max", 32)? as usize,
             number(&a, "--application-pool-bytes", 8 * 1024 * 1024)? as usize,
+            usize::try_from(number(
+                &a,
+                "--outer-socket-buffer-bytes",
+                remora::config::IoSettings::default().outer_socket_buffer_bytes as u64,
+            )?)?,
         )
         .map_err(Into::into);
     }
@@ -107,10 +178,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let sessions = number(&a, "--sessions", 1)?;
     let pps = number(&a, "--pps", 1000)?;
     let reverse = number(&a, "--reverse-pps", 0)?;
+    let completion_guard = number(&a, "--completion-guard-ms", 0)?;
+    let pacing_quantum = number(&a, "--pacing-quantum-us", 0)?;
     let size = number(&a, "--size", 128)? as usize;
     let session = number(&a, "--session", 1)?;
     let drain = number(&a, "--drain-ms", 200)?;
-    if seconds == 0
+    if ![0, 20].contains(&completion_guard)
+        || ![0, 100].contains(&pacing_quantum)
+        || seconds == 0
         || seconds > 300
         || warmup > 60
         || ![1, 32].contains(&sessions)
@@ -171,8 +246,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut probe_seq = 0u64;
     let mut sequence = 0u64;
     let mut buffer = [0; 65536];
+    let mut previous_visit = base;
+    let mut tail_max_visit_gap_us = 0u128;
+    let mut last_measured_submission_remaining_us: Option<i128> = None;
     while Instant::now() < end {
         let now = Instant::now();
+        if previous_visit < finish && now >= finish - Duration::from_millis(20) {
+            tail_max_visit_gap_us =
+                tail_max_visit_gap_us.max(now.duration_since(previous_visit).as_micros());
+        }
+        previous_visit = now;
         if sender && now < finish && now >= next_probe {
             let bytes = packet(
                 128,
@@ -190,7 +273,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // A generator catches up at most 32 packets; enqueue errors and scheduling
             // inability remain evidence, rather than changing offered rate silently.
             for _ in 0..32 {
-                if Instant::now() < next_send || next_send >= finish {
+                let visit_now = Instant::now();
+                if visit_now < next_send || visit_now >= finish || next_send >= finish {
                     break;
                 }
                 let measured = next_send >= start;
@@ -230,6 +314,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else {
                     for (id, to) in &peers {
+                        if Instant::now() >= finish {
+                            break;
+                        }
                         let seq = if measured {
                             sequences.entry(*id).or_default()
                         } else {
@@ -254,11 +341,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         *seq += 1;
                     }
                 }
+                if measured {
+                    let submitted_at = Instant::now();
+                    last_measured_submission_remaining_us = Some(if submitted_at < finish {
+                        finish.duration_since(submitted_at).as_micros() as i128
+                    } else {
+                        -(submitted_at.duration_since(finish).as_micros() as i128)
+                    });
+                }
                 send_ticks += 1;
-                next_send = warm_start + Duration::from_nanos(send_ticks * 1_000_000_000 / rate);
+                next_send = warm_start
+                    + scheduled_offset(
+                        send_ticks,
+                        rate,
+                        warmup,
+                        seconds,
+                        pacing_quantum,
+                        completion_guard,
+                    );
             }
         }
         for _ in 0..32 {
+            if !receive_visit_allowed(Instant::now(), next_send, finish, rate > 0) {
+                break;
+            }
             match socket.recv_from(&mut buffer) {
                 Ok((n, from)) => {
                     let bytes = &buffer[..n];
@@ -309,7 +415,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => return Err(e.into()),
             }
         }
-        std::thread::sleep(Duration::from_micros(50));
+        let pause = generator_pause(Instant::now(), next_send, finish, rate > 0);
+        if pause.is_zero() {
+            std::hint::spin_loop();
+        } else {
+            std::thread::sleep(pause);
+        }
     }
     let rate = if sender { pps } else { reverse };
     let expected = rate * seconds * if sender { 1 } else { peers.len() as u64 };
@@ -317,7 +428,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let p95 = measurement::percentile(&mut rtt.clone(), 95);
     println!(
         "{}",
-        serde_json::json!({"schema_version":1,"role":cmd,"size":size,"sessions":if sender{1}else{peers.len()},"interval_seconds":seconds,"drain_ms":drain,"warmup_seconds":warmup,"warmup_offered":warm_offered,"warmup_failures":warm_failures,"offered":offered,"submitted":sent,"enqueue_failures":enqueue_failures,"generator_unscheduled":generator_unscheduled,"generator_excess":offered.saturating_sub(expected),"reverse_received":reverse_collection,"forward_received":collected,"rtt_samples_us":rtt,"rtt_p95_us":p95,"start_ms":start_ms,"elapsed_ms":base.elapsed().as_millis()})
+        serde_json::json!({"schema_version":1,"completion_guard_ms":completion_guard,"tail_max_visit_gap_us":tail_max_visit_gap_us,"last_measured_submission_remaining_us":last_measured_submission_remaining_us,"pacing_quantum_us":pacing_quantum,"role":cmd,"size":size,"sessions":if sender{1}else{peers.len()},"interval_seconds":seconds,"drain_ms":drain,"warmup_seconds":warmup,"warmup_offered":warm_offered,"warmup_failures":warm_failures,"offered":offered,"submitted":sent,"enqueue_failures":enqueue_failures,"generator_unscheduled":generator_unscheduled,"generator_excess":offered.saturating_sub(expected),"reverse_received":reverse_collection,"forward_received":collected,"rtt_samples_us":rtt,"rtt_p95_us":p95,"start_ms":start_ms,"elapsed_ms":base.elapsed().as_millis()})
     );
     Ok(())
 }
@@ -369,4 +480,134 @@ fn exercise(to: SocketAddr, sessions: usize) -> Result<(), Box<dyn std::error::E
         serde_json::json!({"event":"exercise","sessions":sessions,"delivered_datagrams":delivered,"setup_attempts":attempts,"sizes":[0,1,128,512,1200],"capacity_claim":false})
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+    #[test]
+    fn completion_reserve_preserves_phase_counts_and_exact_cutoff() {
+        for rate in [1, 3814, 213623, 1_000_000] {
+            for seconds in [8, 15, 60, 300] {
+                let warmup = 2;
+                let first = warmup * rate;
+                let after = (warmup + seconds) * rate;
+                assert_eq!(
+                    scheduled_offset(first, rate, warmup, seconds, 100, 20),
+                    Duration::from_secs(warmup)
+                );
+                assert!(
+                    scheduled_offset(first - 1, rate, warmup, seconds, 100, 20)
+                        < Duration::from_secs(warmup)
+                );
+                assert!(
+                    scheduled_offset(after - 1, rate, warmup, seconds, 100, 20)
+                        < Duration::from_secs(warmup + seconds) - Duration::from_millis(20)
+                );
+                assert_eq!(
+                    scheduled_offset(after, rate, warmup, seconds, 100, 20),
+                    Duration::from_secs(warmup + seconds)
+                );
+                let mid = first + seconds * rate / 2;
+                let scheduled = scheduled_offset(mid, rate, warmup, seconds, 100, 20);
+                assert!(
+                    scheduled >= Duration::from_secs(warmup)
+                        && scheduled < Duration::from_secs(warmup + seconds)
+                );
+                assert_eq!(
+                    scheduled_offset(mid, rate, warmup, seconds, 100, 0),
+                    slot_offset(mid, rate, 100)
+                );
+            }
+        }
+    }
+    #[test]
+    fn receive_visit_yields_at_send_deadline_and_keeps_drain_available() {
+        let now = Instant::now();
+        let finish = now + Duration::from_millis(1);
+        assert!(!receive_visit_allowed(now, now, finish, true));
+        assert!(!receive_visit_allowed(
+            now,
+            now - Duration::from_micros(1),
+            finish,
+            true
+        ));
+        assert!(receive_visit_allowed(
+            now,
+            now + Duration::from_micros(1),
+            finish,
+            true
+        ));
+        assert!(receive_visit_allowed(finish, now, finish, true));
+        assert!(receive_visit_allowed(now, finish, finish, true));
+        assert!(receive_visit_allowed(now, now, finish, false));
+    }
+    #[test]
+    fn micro_batches_keep_counts_boundaries_and_bounded_advance() {
+        for rate in [1, 39062, 124511, 1_000_000] {
+            let mut previous = Duration::ZERO;
+            let mut ticks = [0, 1, rate - 1, rate, rate + 1, 2 * rate - 1, 2 * rate];
+            ticks.sort_unstable();
+            for tick in ticks {
+                let exact = slot_offset(tick, rate, 0);
+                let batched = slot_offset(tick, rate, 100);
+                assert!(batched >= previous);
+                assert!(batched <= exact && exact - batched < Duration::from_micros(100));
+                assert_eq!(batched.as_nanos() % 100_000, 0);
+                assert_eq!(batched >= Duration::from_secs(1), tick >= rate);
+                assert_eq!(batched >= Duration::from_secs(2), tick >= 2 * rate);
+                previous = batched;
+            }
+            if rate >= 10000 {
+                assert_eq!(
+                    slot_offset(2 * rate - 1, rate, 100),
+                    Duration::from_secs(2) - Duration::from_micros(100)
+                );
+            }
+        }
+    }
+    #[test]
+    fn overdue_slots_are_not_delayed_by_an_idle_sleep() {
+        let now = Instant::now();
+        assert!(
+            generator_pause(
+                now,
+                now - Duration::from_micros(1),
+                now + Duration::from_secs(1),
+                true
+            )
+            .is_zero()
+        );
+    }
+    #[test]
+    fn final_interval_guard_is_finite_and_does_not_extend_sending() {
+        let now = Instant::now();
+        let finish = now + Duration::from_micros(900);
+        assert!(generator_pause(now, now + Duration::from_micros(100), finish, true).is_zero());
+        assert_eq!(
+            generator_pause(finish, now, finish, true),
+            Duration::from_micros(50)
+        );
+        assert_eq!(
+            generator_pause(now, finish, finish, true),
+            Duration::from_micros(50)
+        );
+        assert_eq!(
+            generator_pause(now, now, finish, false),
+            Duration::from_micros(50)
+        );
+    }
+    #[test]
+    fn future_slots_outside_guard_keep_bounded_idle_wait() {
+        let now = Instant::now();
+        assert_eq!(
+            generator_pause(
+                now,
+                now + Duration::from_millis(5),
+                now + Duration::from_secs(1),
+                true
+            ),
+            Duration::from_micros(50)
+        );
+    }
 }

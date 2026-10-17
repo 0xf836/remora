@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "frozen": true,
+  "scope": "prospective method for three-repeat focused history32 comparison, not final qualification",
+  "baseline_binary_sha256": "3912e2574812ae86af4d3da580511409ed972f1eeef8c3ef9e52c295a24cccba",
+  "history_observations": 32,
+  "reference_repetitions": 3,
+  "comparison_repetitions": 3,
+  "workloads": {
+    "small-simultaneous": {
+      "sessions": 1,
+      "size": 128,
+      "pps": 64849,
+      "seconds": 15
+    },
+    "capacity-simultaneous": {
+      "sessions": 32,
+      "size": 1200,
+      "pps": 91136,
+      "seconds": 15
+    },
+    "resource-simultaneous": {
+      "sessions": 32,
+      "size": 1200,
+      "pps": 52160,
+      "seconds": 60
+    }
+  },
+  "regression_method": "candidate against reference extrema plus max(two reference spreads, declared floor); every repeat and both directions; alternating control/candidate order and contemporary two-leg UDP baseline",
+  "floors": {
+    "loss_and_delivery": "two messages per measurement interval",
+    "cpu_cores": 0.002,
+    "rss_bytes": 262144,
+    "rtt_ms": 0.25
+  },
+  "additional_small_packet_gate": "candidate may deliver at most two messages fewer than its adjacent control per direction",
+  "absolute_criteria": "unchanged SC003 >=80% capacity delivery; SC004 <=0.1pp added subcapacity loss; SC005 <=5ms added subcapacity RTT; SC007 resource >=500 Mbit/s per direction, <=2 cores and <=128 MiB per role",
+  "validity": "generator/clock/diagnostic checks, >=100 RTT samples/session in each comparative row; reference validity preserved explicitly",
+  "wall_budget_seconds": 5400,
+  "on_failure": "stop candidate comparison at first failed pair; retain all completed/failed evidence; no changed thresholds"
+}

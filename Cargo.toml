@@ -43,3 +43,12 @@ minimum-linux-version = "6.1"
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
+
+# Pinned packet-padding correction; see docs/adr/0016-quiche-minimum-payload.md.
+[patch.crates-io]
+quiche = { git = "https://github.com/0xf836/quiche", rev = "154ce1995f23efa434e72dac269f707145be2015" }
+
+# Keep the other upstream workspace crates on their existing registry pins.
+[patch."https://github.com/0xf836/quiche"]
+octets = { version = "=0.3.7" }
+qlog = { version = "=0.18.1" }

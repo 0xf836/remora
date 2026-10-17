@@ -174,6 +174,14 @@ impl BufferPool {
             .checked_mul(std::mem::size_of::<StoredSlab>())
             .expect("Vec allocation bound")
     }
+    /// Retire a bounded suffix of idle payload storage while keeping a reuse
+    /// reserve. Lent slabs and their preallocated return slots remain intact.
+    pub fn trim_cached(&self, keep: usize, quota: usize) {
+        let mut state = self.state.borrow_mut();
+        for _ in 0..quota.min(state.free.len().saturating_sub(keep)) {
+            state.free.pop();
+        }
+    }
     pub fn trim_idle(&self) {
         let mut state = self.state.borrow_mut();
         state.free.clear();

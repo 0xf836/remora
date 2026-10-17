@@ -6,7 +6,7 @@
 
 **Tests**: Automated verification of every behavioral change and relevant failure modes is mandatory under Constitution V and review correction R6. No TDD ordering was requested: implementation and its checks follow actual dependencies, and applicable checks must pass before accepting an increment. Pure documentation receives static review. Never substitute self-interoperation or source inspection for independent interoperability or measured performance.
 
-**Organization**: Setup and a small foundation precede five story phases in specification priority order. The first authenticated end-to-end MVP and immediate reproducible measurements are an internal checkpoint of US1; independent-peer/WireGuard qualification follows that checkpoint. Later tasks complete concurrency, performance, recovery and operations. Numeric targets remain release acceptance criteria; unmet early targets inform further work and do not halt normal development. ARM64 availability does not block initial x86_64 work.
+**Organization**: Setup and a small foundation precede five story phases in specification priority order. The first authenticated end-to-end MVP and immediate reproducible measurements are an internal checkpoint of US1; independent-peer/WireGuard qualification follows that checkpoint. Later tasks complete concurrency, performance, recovery and operations. Numeric targets remain release acceptance criteria; unmet early targets inform further work and do not halt normal development. Linux GNU x86_64 is the sole current required platform; ARM64 is deferred outside this task set by ADR 0024.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -20,7 +20,7 @@
 
 **Purpose**: Establish the reproducible x86_64 development path and assess existing I/O reuse before adding unsafe code.
 
-- [X] T001 Initialize the single production package in `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/lib.rs` and `src/main.rs`: Rust 1.99.0/edition 2024, quiche =0.30.0/BoringSSL, Tokio 1.53.2 current-thread features and the justified dependencies in research; declare Linux GNU x86_64/aarch64 targets without making ARM64 execution a setup prerequisite, and keep optional qlog disabled by default.
+- [X] T001 Initialize the single production package in `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `src/lib.rs` and `src/main.rs`: Rust 1.99.0/edition 2024, quiche =0.30.0/BoringSSL, Tokio 1.53.2 current-thread features and the justified dependencies in research; declare the required Linux GNU x86_64 platform, with any existing aarch64 build hints treated as optional/unqualified compatibility, and keep optional qlog disabled by default.
 - [X] T002 [P] Record pinned C/C++/CMake/BoringSSL build prerequisites, build-image inputs and locked release commands in `tools/build/Dockerfile` and `docs/build.md` after T001; document how each input is reproduced without runtime privileges or changes to operator hosts.
 - [X] T003 [P] Create native x86_64 locked build, rustfmt, Clippy `-D warnings` and implemented-contract test jobs in `.github/workflows/ci.yml` after T001; register the test entry points in `tests/protocol.rs`, `tests/io.rs`, `tests/security.rs`, `tests/lifecycle.rs` and `tests/e2e.rs`, with explicit reporting for privileged checks that run separately.
 - [X] T004 [P] Assess the exact compatible Cloudflare datagram-socket source for truncation, mmsg, pktinfo/source selection and PMTU/error handling; record reusable parts versus the necessary local syscall boundary in `docs/adr/0002-runtime-and-linux-io.md` after T001, without adding another runtime/backend or claiming measured superiority.
@@ -81,7 +81,7 @@
 - [X] T033 [US1] Complete the first-forwarding x86_64 checks and explicit protocol/security/unsafe-boundary review in `scripts/validate/mvp.sh` and `docs/validation/mvp.md` after T009/T011/T013/T015/T017/T019/T023/T026/T030/T031/T032: locked build, formatting, Clippy and applicable automated tests; record revision, outcomes and unresolved evidence, including R1–R3/R5 and initial GOAWAY tests, without spawning the independent reviewer automatically or claiming broader release qualification.
 - [X] T034 [US1] Run and preserve the first paired x86_64 baseline/tunnel measurements in `benchmarks/results/mvp-x86_64/` with `scripts/validate/bench.sh` immediately after T033: each direction separately and simultaneous, delivered throughput/loss/RTT/CPU/RSS plus owner headroom, exact coverage/interval/topology and unmet targets; record pre-change reference variability and establish prospective workload-specific throughput/loss/p95 RTT/CPU/RSS regression bounds in the comparison manifest before subsequent critical-path changes, following the benchmark contract rather than inventing values now; document bottlenecks and next engineering choices in `docs/performance.md`, with no separate prototype, ARM64 dependency or retrospective target relaxation.
 
-**Early MVP checkpoint (T034)**: Authenticated generic-UDP forwarding, enforceable isolation, first-forwarding contract tests (including initial GOAWAY), finite resources and safe status work on x86_64; reproducible early measurements exist. Continue normal implementation when release targets remain unmet. Optional qlog/offloads, full independent/WireGuard matrices and ARM64 evidence follow this checkpoint.
+**Early MVP checkpoint (T034)**: Authenticated generic-UDP forwarding, enforceable isolation, first-forwarding contract tests (including initial GOAWAY), finite resources and safe status work on x86_64; reproducible early measurements exist. Continue normal implementation when release targets remain unmet. Optional qlog/offloads and full independent/WireGuard matrices follow this checkpoint. ARM64 evidence is outside the current scope.
 
 **Deferred US1 qualification (T035–T037)**: Implement/run these tasks when their prerequisites are available. A missing independent peer/toolchain or independently prepared WireGuard fixture may leave the corresponding qualification task unchecked with the limitation recorded; it does not prevent dependency-ready T039/T058 or publication of T038 after the checked T034 milestone. A failing check of implemented behavior is not missing external qualification and must be corrected before accepting its increment. The full US1/SC-001/FR-026 claims and final qualification still require the relevant evidence (or the explicitly allowed independent-peer limitation with alternative evidence); no unavailable test is counted as passed.
 
@@ -370,16 +370,193 @@ stopped-filter CPU/capacity, native ARM64 and Phase 8 release remain unqualified
 
 ## Phase 8: Polish & Cross-Cutting Release Qualification
 
-**Purpose**: Qualify the final supported behavior and targets with recorded evidence. These obligations do not become prerequisites for initial x86_64 implementation.
+**Purpose**: Qualify the currently required Linux GNU x86_64 behavior with recorded evidence. ARM64 is deferred outside this scope; earlier dated ARM64-pending statements are historical and do not create a current gate.
 
-- [ ] T072 [P] Add native ARM64 locked build/unit/property/component/syscall/process jobs in `.github/workflows/arm64.yml` and a matching `benchmarks/reference-arm64.toml` after T034 as a runner becomes available; record actual native BoringSSL/Linux behavior and exact hardware, retain x86_64 independence, and treat cross-builds only as supplemental evidence before an ARM64 support claim.
-- [ ] T073 [P] Add/run maintained fuzz targets in `fuzz/Cargo.toml`, `fuzz/fuzz_targets/masque.rs`, `fuzz/fuzz_targets/policy.rs`, `fuzz/fuzz_targets/ancillary.rs` and `fuzz/fuzz_targets/lifecycle.rs`, plus `.github/workflows/fuzz.yml`, after T010/T014/T016/T041/T052/T059: malformed lengths/fields/GRO/control input and lifecycle event sequences must remain bounded, panic-free and free of unauthorized/cross-generation forwarding; preserve crashing inputs/seeds/toolchain, with CI smoke and longer scheduled campaigns.
-- [ ] T074 [P] Run applicable pure-Rust Miri/property ownership checks and document the syscall/FFI safety audit in `scripts/validate/safety.sh` and `docs/validation/safety.md` after T017/T023/T042/T052/T060; verify cancellation/borrows/slab lifetimes and selected offload ownership without claiming Miri qualifies real Linux syscalls or BoringSSL.
-- [ ] T075 [P] Audit resolved Rust/Go dependency graphs, known applicable vulnerabilities and reproducible build inputs in `scripts/validate/dependencies.sh` and `docs/validation/dependencies.md` after T035 and final dependency changes: archive lock hashes/advisory timestamps and justified dependency purposes, remediate or explicitly mitigate applicable advisories before release, and verify both claimed native targets with the pinned build procedure.
-- [ ] T076 Run final-revision locked formatting/Clippy/applicable automated suites and full functional/security/protocol/interop/operator/network qualification through `scripts/validate/release.sh` after US1–US5 and T073–T075, plus T072 before an ARM64 claim, for each target claimed: SC-001 generic/WireGuard 30 minutes, SC-002 monitored negatives/redaction, SC-006 recovery, SC-008 shutdown, SC-009 isolation/10-minute probes and SC-010 correlation; retain results/limitations in `docs/validation/release.md`, explicitly separating missing peer/privileged/native evidence from passes.
-- [ ] T077 Run the final full reference benchmark matrix with `scripts/validate/bench.sh` and `benchmarks/reference-x86_64.toml`/`benchmarks/reference-arm64.toml` after T076 on each claimed native target, preserving immutable manifest/counters/histogram/samples/summary/profile/lock hashes in `benchmarks/results/release/`: enforce every applicable SC-003/004/005/007 threshold in each of >=five paired runs, report separate simultaneous directions, variance, owner-thread headroom, kernel memory and churn, and retain failures/invalid runs. An unavailable/unqualified ARM64 target cannot be claimed supported and must not erase x86_64 results.
-- [ ] T078 Resolve release evidence against FR-001–029/SC-001–010 in `docs/validation/release.md` after T076–T077, recording explicit protocol/security/unsafe/performance review, residual risks and known profile/provenance limitations; fix failures with targeted regressions and repeat affected qualification on the changed revision, or prospectively review architecture/target changes before a release claim. Do not change reviewer-owned checklist markers or treat planning readiness as successful runtime acceptance.
-- [ ] T079 Finalize the verified build/operation/WireGuard/compatibility/performance instructions and changelog in `README.md`, `docs/build.md`, `docs/operations.md`, `docs/wireguard.md`, `docs/performance.md`, `CHANGELOG.md` and `specs/001-masque-udp-tunnel/quickstart.md` after T078; state the actual qualified targets/evidence, remaining limitations and migration/revocation behavior, and statically check document links/commands without adding unrelated deployment automation.
+- **T072 — Deferred / outside current scope (2026-10-17):** Native ARM64 qualification is not a requirement or completion gate for this feature. Retain `.github/workflows/arm64.yml` as manual-only experimental tooling and `benchmarks/reference-arm64.toml` as a future profile. Do not mark unexecuted checks passed. Reintroduce this task only with explicit scope approval and native evidence; see [ADR 0024](../../docs/adr/0024-defer-arm64-release-scope.md).
+- [X] T073 [P] Add/run maintained fuzz targets in `fuzz/Cargo.toml`, `fuzz/fuzz_targets/masque.rs`, `fuzz/fuzz_targets/policy.rs`, `fuzz/fuzz_targets/ancillary.rs` and `fuzz/fuzz_targets/lifecycle.rs`, plus `.github/workflows/fuzz.yml`, after T010/T014/T016/T041/T052/T059: malformed lengths/fields/GRO/control input and lifecycle event sequences must remain bounded, panic-free and free of unauthorized/cross-generation forwarding; preserve crashing inputs/seeds/toolchain, with CI smoke and longer scheduled campaigns.
+- [X] T074 [P] Run applicable pure-Rust Miri/property ownership checks and document the syscall/FFI safety audit in `scripts/validate/safety.sh` and `docs/validation/safety.md` after T017/T023/T042/T052/T060; verify cancellation/borrows/slab lifetimes and selected offload ownership without claiming Miri qualifies real Linux syscalls or BoringSSL.
+- [X] T075 [P] Audit resolved Rust/Go dependency graphs, known applicable vulnerabilities and reproducible build inputs in `scripts/validate/dependencies.sh` and `docs/validation/dependencies.md` after T035 and final dependency changes: archive lock hashes/advisory timestamps and justified dependency purposes, remediate or explicitly mitigate applicable advisories before release, and verify the currently claimed native x86_64 target with the pinned build procedure.
+- [X] T076 Run final-revision locked formatting/Clippy/applicable automated suites and full functional/security/protocol/interop/operator/network qualification through `scripts/validate/release.sh` after US1–US5 and T073–T075, for each target claimed: SC-001 generic/WireGuard 30 minutes, SC-002 monitored negatives/redaction, SC-006 recovery, SC-008 shutdown, SC-009 isolation/10-minute probes and SC-010 correlation; retain results/limitations in `docs/validation/release.md`, explicitly separating missing peer/privileged/native evidence from passes.
+- [X] T077 Run the final full reference benchmark matrix with `scripts/validate/bench.sh` and `benchmarks/reference-x86_64.toml` after T076 on each claimed native target, preserving immutable manifest/counters/histogram/samples/summary/profile/lock hashes in `benchmarks/results/release/`: enforce every applicable SC-003/004/005/007 threshold in each of three bounded-reference-v2 paired runs, report separate simultaneous directions, variance, owner-thread headroom, kernel memory and churn, and retain failures/invalid runs. ARM64 is outside current requirements; experimental profiles are not support evidence.
+- [X] T078 Resolve release evidence against FR-001–029/SC-001–010 in `docs/validation/release.md` after T076–T077, recording explicit protocol/security/unsafe/performance review, residual risks and known profile/provenance limitations; fix failures with targeted regressions and repeat affected qualification on the changed revision, or prospectively review architecture/target changes before a release claim. Do not change reviewer-owned checklist markers or treat planning readiness as successful runtime acceptance.
+- [X] T079 Finalize the verified build/operation/WireGuard/compatibility/performance instructions and changelog in `README.md`, `docs/build.md`, `docs/operations.md`, `docs/wireguard.md`, `docs/performance.md`, `CHANGELOG.md` and `specs/001-masque-udp-tunnel/quickstart.md` after T078; state the actual qualified targets/evidence, remaining limitations and migration/revocation behavior, and statically check document links/commands without adding unrelated deployment automation.
+
+**Current scope update (2026-10-17, owner requested):** Linux GNU x86_64 is
+now the sole required platform. T072 is deferred outside the active task set,
+not passed or left as an unfinished Phase 8 acceptance gate. T073–T079 remain
+complete; Phase 8 has no remaining active task for the current scope. Earlier
+ARM64 requirements and pending-status notes below describe the previous scope.
+Existing source/build compatibility hints and prepared ARM64 tools are not
+release-support promises. See [ADR 0024](../../docs/adr/0024-defer-arm64-release-scope.md).
+
+**T079 completed (2026-10-17, newly authorized scope):** Final README,
+build/operation/WireGuard/performance instructions, quickstart and Unreleased
+changelog now match the selected native x86_64 CUBIC executable and recorded
+qualification. Static links/anchors, fenced shell syntax, CLI flags and read-only
+reference/functional plan checks pass; current buffer/default/migration,
+revocation, compatibility and evidence limitations are explicit. Historical
+performance records remain labelled as history. No production source/dependency,
+VM state or benchmark result changes; no new runtime qualification is claimed.
+See [current release/documentation status](../../docs/validation/release.md) and
+local `benchmarks/results/phase8-t079-docs-20261017/` checks/snapshots.
+T073–T079 are complete for the declared native x86_64 scope. T072 remains
+unchecked/unqualified; prepared ARM64 CI/profile do not constitute execution.
+Earlier T079-exclusion notes below describe their historical invocation scope.
+
+**Post-qualification implementation review corrections (2026-10-17):** The two
+P2 findings are corrected and verified: early-ceiling bounded search validation
+and lifecycle fuzzing of actual owner transitions with independent oracles.
+See [the correction record](../../docs/validation/phase8-implementation-review-fixes.md).
+Final checks pass 183 native/24 traffic tests and four ASan smoke campaigns;
+the saved T077 still passes. All selected production inputs and qlog executable
+remain identical, so T076/T077/T078 retain their measured native x86_64 scope.
+An earlier isolated churn test failure remains disclosed with successful repeats
+and no causal-fix claim. T072 and T079 remain unchanged.
+
+**Final qualification restart (2026-10-16)**: T076/T077/T078 remain unchecked.
+The combined candidate `1229d87f…e78cdee` passed all nine focused comparison
+checks. Fresh prerequisite/functional execution is tracked at
+`benchmarks/results/phase8-final-qualification-20261016/progress.json`, with
+separate 30-minute preparation and 90-minute functional/VM-cleanup budgets.
+ADR 0020 prospectively extends only the three 32-session simultaneous capacity
+pairs to 60 seconds per member before T077 collection; nominal intervals total
+4965 seconds, deadline remains 5400 seconds, all numerical gates unchanged.
+T077 waits for exact-input T076 success; T078 waits for both and final review.
+Native ARM64 remains unqualified and T079 remains excluded.
+
+**T076 completed (2026-10-16)**: all 23 full functional stages passed for the
+current native x86_64 candidate `1229d87f…e78cdee`; total preparation plus
+qualification/VM cleanup 80m50s, functional/VM phase 77m40s. Fresh T073–T075
+evidence and all 100 frozen runner/test/profile inputs match. VM generic and
+WireGuard measured channels delivered 72000/72000 datagrams with no integrity,
+duplicate, send or skipped errors; 47 warmup send errors are retained separately.
+Both owned guests are shut off. Overload intentionally saturated queues and
+lost 28 diagnostic records; it makes no correlation completeness claim, with
+normal diagnostic correlation checked separately by operations. T077/T078
+remain pending, ARM64 remains unqualified, T079 remains excluded. Evidence:
+`benchmarks/results/phase8-final-qualification-20261016/summary.json` and
+`functional/summary.json`.
+
+**T077 started (2026-10-16)** after exact-input T076 success. Coordinator:
+`benchmarks/results/phase8-final-reference-20261016/progress.json`; raw matrix:
+`benchmarks/results/release/phase8-x86-final-20261016/reference/benchmark/`.
+18 bounded calibration searches, 75 pairs, 1000-cycle churn, ADR 0020 intervals,
+5400-second wall budget. Production binary remains `1229d87f…e78cdee`; traffic
+tool with the reviewed interval validator is `cb2f0d71…cb866f50`.
+T077/T078 remain unchecked pending numerical results and final reconciliation.
+
+**T077 completed unsuccessfully (2026-10-16)**: all 75 pairs/150 runs and churn
+finished in 84m42s, with unchanged inputs/executables. Invalid baseline capacity
+32×1200 simultaneous repeat 0: 0.115706% forward loss exceeds 0.1%. Additional
+SC-004 failure: 1×512 simultaneous repeat 2 reverse tunnel loss 1.974980%,
+baseline zero; measured bracketing server snapshots add 26923 reverse queue-full
+and 28 queue-expired drops. All three resource repetitions and 1000-cycle churn
+have no reported numerical failure. Retain
+`benchmarks/results/phase8-final-reference-20261016/analysis.json` and raw data;
+T076 remains complete, T077/T078 remain unchecked, T079 excluded. Diagnose with
+focused repeats before another full cycle; do not waive numerical thresholds.
+
+**Focused loss diagnosis (2026-10-16)**: 27 diagnostic runs on the unchanged
+candidate establish outer-loss amplification: exactly five injected outer
+packets cause 2.78–2.87% reverse application loss in three repeats. Equal 5ms
+client pauses yield 2.10–2.22% with the 256KiB outer request, about 0.020–0.021%
+with explicit 1MiB request; the latter has no outer kernel drops. All six
+unperturbed 512-byte pairs meet the loss bound and three repeated capacity
+baselines have zero loss, without superseding full-cycle failures. Original
+host-trigger cause and final buffer/default/baseline qualification are pending.
+See `docs/validation/phase8-final-loss-diagnosis.md`. Production source/defaults
+are unchanged; T076 stays complete, T077/T078 pending, T079 excluded.
+
+**Outer-buffer candidate and CC comparison (2026-10-16)**: three repeated
+control/drop-five pairs per CC confirm reverse injected-run loss CUBIC
+2.04–2.77%, Reno 10.96–11.42%, BBR2 0.00066–0.00073% (9–10 datagrams).
+See `docs/validation/phase8-cc-comparison.md`. ADR 0021 implements the 1MiB
+outer request default, explicit 256KiB compatibility override and matched
+baseline CLI; application queues and CUBIC default remain unchanged.
+The new qlog binary `a766bdb7…5633add` passes short automated checks; T076 is
+reopened for this changed source. A 48-row focused matrix is running with
+three repeats of four workloads across direct/control/candidate/BBR2, retaining
+preceding numeric regression bounds and adding <=0.1% candidate capacity loss.
+Coordinator: `benchmarks/results/phase8-outer-buffer-20261016/resume1/progress.json`;
+rows: `comparison-r2/progress.json` in its parent. Initial comparison exited
+before traffic because the new CLI flag was missing from its allowlist; retain
+that failed attempt, its fix and CLI regression. T077/T078 remain pending,
+native ARM64 unqualified, T079 excluded.
+
+**Outer-buffer focused matrix completed (2026-10-16)**: all 48 rows retained,
+34m49s. CUBIC candidate passes 10/12 frozen checks; capacity repeat 0 reverse
+loss 0.019732% exceeds historical 0.003676%, and small repeat 2 server CPU
+0.408422 exceeds 0.402575. Adjacent old control CPU 0.406689 also exceeds that
+historical bound; no waiver is applied. Capacity still has 92 measured server
+outer drops. BBR2 passes 12/12 general SC checks (not the historical CUBIC CPU
+bounds), with 10.1–12.5% more small-packet CPU and worst 512-byte forward loss
+0.086727%. Both algorithms' resource repeats deliver 500.736Mbit/s/direction
+without loss; every matched baseline is sustainable. Candidate remains
+unqualified; T076/T077/T078 unchecked, T079 excluded. See
+`docs/validation/phase8-outer-buffer-comparison.md` and raw `comparison-r2/analysis.json`.
+
+**Phase 8 scoped evidence (2026-10-13)**: T073–T075 complete for the implemented
+native x86_64 qualification scope. Four ASan fuzz smoke targets (30 seconds
+per target; about 30.95 million final inputs) pass; scheduled 900-second CI
+campaigns are configured, not claimed executed. Two actual-source ownership
+Miri tests and applicable native properties/syscalls/lifecycle suites pass.
+Four Rust locks/current RustSec and Go symbol/import applicability audits pass;
+ten module-only Go advisories affect packages absent from the fixture graph.
+Locked native default/qlog/traffic/peer builds pass. Final local check runner:
+168 Rust tests plus both externally enabled tests, 29/29 independent interop,
+8/8 operator scenarios and five check groups; final targeted tooling checks:
+72 Python and 12 traffic Rust tests, formatting/Clippy/release build. Preserved
+failures include sandbox UDP denial, the corrected bounded holder-exec test
+race and the ARM64 planner/validator x86-only regression. The test-only
+validator/profile now support both declared native architectures without
+changing thresholds; each plan contains 18 searches/185 pairs, not measurements.
+T072 workflow/profile are prepared but native ARM64 evidence is absent. Full
+T076 preflight is blocked by a missing prepared private WireGuard fixture;
+T077 measurements and final T078 reconciliation/reviews remain dependency
+blocked and unchecked. T079 is explicitly excluded by the user. No release,
+ARM64 support, performance acceptance, independent reviewer audit, commit or
+publication is claimed. See [release status](../../docs/validation/release.md),
+[safety](../../docs/validation/safety.md) and
+[dependency audit](../../docs/validation/dependencies.md). Checklist markers,
+production Rust and its lock remain unchanged.
+
+**Phase 8 VM continuation (2026-10-14, in progress)**: A new owned KVM lab
+was created from the verified image cache because all historical Remora labs
+were destroyed. Private fixture and installed current-release hash are
+verified; 10-second VM WG/generic smoke passes. Full T076 passed 30-minute
+32-session isolation, 10-minute overload with 100% timely probes in both
+directions, and 1000 churn cycles with <=0.22 MiB RSS growth/role and 0.736-second
+settlement. A preserved network dispatch harness failure was fixed with
+failing-before/passing-after tests. Exact source/executable/command-bound
+continuation preserves passed evidence without rerunning long intervals.
+All 76 Python tests, nine network scenarios, nine recovery scenarios and
+shutdown checks pass; final 30-minute VM WG/generic traffic is running.
+T076–T078 remain unchecked until required final evidence exists. No production
+Rust, target threshold, checklist marker or T079 document was changed.
+
+**T076 native x86_64 acceptance (2026-10-14)**: Complete on unchanged production
+source and release SHA-256 `b548cada020465f3399da6244e770b48dafd26d6ea8d432e0313f3152c6bef32`.
+The resumed full matrix preserves the original failed network harness run and
+exact passed prefix. 30-minute VM WireGuard/generic qualification delivers
+72000/72000 measured datagrams across both channels/directions, with zero
+integrity/duplicate/send/skipped errors, fresh handshakes, growing counters and
+unchanged Remora process identities. Full network/recovery/shutdown,
+functional/security/protocol/interop/operator, 30-minute isolation, 10-minute
+overload and 1000-cycle churn evidence is recorded in
+`benchmarks/results/phase8-full-20261013` and `phase8-full-r2-20261013`.
+T077 reference measurements are next; T078 final release resolution and native
+ARM64 remain pending. This is functional qualification, not numerical
+performance/release acceptance. T079 remains excluded.
+
+**T077 generator continuation (2026-10-14)**: The first two complete reference
+attempts remain invalid (48 omitted slots at 128-byte forward; two at 512-byte
+reverse). ADR 0012 and the benchmark contract define prospective explicit 100us
+micro-batch pacing in matching baseline/tunnel profiles without changing SC
+thresholds. Eight matching direct reverse trials each submit 373533/373533 with
+zero generator failures. All 16 traffic tests and 77 Python tests pass, with
+Clippy/locked release build. A fresh full cycle runs in
+`benchmarks/results/release/phase8-x86-r3-20261014`; T077/T078 stay unchecked
+until complete valid numerical evidence exists. T079 remains excluded.
 
 ## Dependencies & Execution Order
 
@@ -397,20 +574,18 @@ flowchart TD
     U3 -. network runner T056 .-> U4
     U2 --> U5[US5 operations and diagnostics T064-T071]
     U4 --> U5
-    M --> A[ARM64 native checks T072]
     U1 --> R[Final qualification T073-T079]
     D --> R
     U3 --> R
     U5 --> R
-    A -->|ARM64 claim| R
 ```
 
 - Setup precedes foundation; only T005–T009 are common blocking prerequisites. T012/T016 and other story implementation do not require completed later acceptance tools.
-- Default single-contributor execution follows task IDs and P1 story order subject to actual prerequisites. The accepted T034 checkpoint explicitly permits moving to dependency-ready US2/US4 while T035–T037 remain pending external qualification; complete T038 from available evidence without waiting for them. This is an allowed incremental transition, not a full US1 acceptance claim or a general permission to skip failing tasks. T034 remains the first measurement checkpoint before complete later matrices, qlog and ARM64 evidence.
+- Default single-contributor execution follows task IDs and P1 story order subject to actual prerequisites. The accepted T034 checkpoint explicitly permits moving to dependency-ready US2/US4 while T035–T037 remain pending external qualification; complete T038 from available evidence without waiting for them. This is an allowed incremental transition, not a full US1 acceptance claim or a general permission to skip failing tasks. T034 remains the first measurement checkpoint before complete later matrices and qlog.
 - US2 and US4 implementation may start after T034; US1 compatibility work may continue independently. US3 requires US2's completed concurrency behavior for 32-session characterization. US4's process/network scenario requires T056; deterministic recovery work does not.
 - US5 completeness requires concurrency/recovery behavior for its failure/status matrix; minimal safe diagnostics and correlation already accompany the MVP. Optional qlog never delays first forwarding.
-- T072 can start after T034 whenever a native runner is available. Missing ARM64 evidence blocks its support claim at release qualification, not development or x86_64 measurements.
-- T073–T075 can grow alongside implemented behaviors rather than waiting for all stories. T076/T077 qualify the final revision; missing ARM64 qualification does not prevent recording x86_64 results, but remains pending before any ARM64 claim. All earlier evidence remains explicitly incremental. Applicable constitution checks accompany each accepted behavioral increment.
+- T072 is deferred outside the current dependency graph and release/completion criteria; optional manual experiments do not reopen Phase 8.
+- T073–T075 can grow alongside implemented behaviors rather than waiting for all stories. T076/T077 qualify the final revision; only Linux GNU x86_64 is currently required; ARM64 is deferred rather than pending acceptance work. All earlier evidence remains explicitly incremental. Applicable constitution checks accompany each accepted behavioral increment.
 - Shared production files (`src/reactor.rs`, `src/transport.rs`, `src/session.rs`, `src/diagnostics.rs`, `src/udp.rs`) require serialized edits/integration across stories. Branching or separate test files does not make conflicting production changes parallelizable.
 
 ### Within each user story
@@ -433,7 +608,7 @@ These examples are scheduling opportunities, not instructions to spawn subagents
 | US5 | T064 complete | T065, T068 and T069 | Diagnostic tests, operator examples/docs and update tests |
 | US5 | T066 complete, other prerequisites met | T067 and pending T068/T069 | Qlog tests versus documentation/update tests |
 
-Tests that need exclusive CPU/network resources or mutate a shared fixture run in isolated environments or sequentially; parallel authoring does not justify contaminated performance measurements. Foundation T007/T008 and final T072–T075 also have disjoint outputs once their prerequisites are met.
+Tests that need exclusive CPU/network resources or mutate a shared fixture run in isolated environments or sequentially; parallel authoring does not justify contaminated performance measurements. Foundation T007/T008 and final T073–T075 also have disjoint outputs once their prerequisites are met.
 
 ## Implementation Strategy
 
@@ -477,3 +652,387 @@ Run the complete unchanged acceptance matrix on the final candidate and each cla
 - Missing runner/peer/collector evidence is recorded honestly; a failing or invalid run cannot be relabelled as a pass. Existing numerical thresholds remain unchanged.
 - Commit completed logical groups under the user's chosen Git workflow; optional extension hooks do not override disabled auto-commit configuration.
 - Files and tools in task descriptions are planned outputs. This invocation creates only this task list and performs proportional document/format checks.
+
+
+**User-approved T077 method revision (2026-10-14)**: The user requested a
+complete measurement cycle of at most 60–90 minutes and authorized prospective
+method revision. ADR 0013/spec/benchmark contract now select schema 3,
+18 bounded searches/75 pairs, three repetitions, 3s warmup/15s measurement
+(60s resource), and a 90-minute wall budget including cleanup. Numerical SC
+thresholds are unchanged. The long r3 cycle was interrupted and preserved;
+no earlier results are relabelled. T077/T078 remain unchecked until fresh
+numerical evidence and final review exist. T079 remains excluded. Historical
+T053/T054/schema-2 evidence above describes the earlier implemented method.
+
+
+**T077 bounded continuation (2026-10-14)**: First bounded cycle retained as
+invalid before pairs: 174 unscheduled sender slots at simultaneous/128-byte/
+218.75 Mbit/s calibration. Receive service now checks outgoing slot deadlines
+between packets; four matching direct trials submit exact counts in both
+directions. All 18 traffic tests/83 Python tests and applicable static checks
+pass. Fresh `phase8-x86-bounded-r2-20261014` cycle uses the same 90-minute
+budget/SC gates; T077/T078 remain pending, T079 excluded.
+
+
+**T077 32-session diagnosis (2026-10-14)**: Second bounded cycle is retained
+invalid: nine sender slots omitted at 32-session/128-byte/simultaneous/125Mbit/s
+with complete delivery of submitted packets. Four exact namespace repeats
+reproduce errors 0/4/36/0 and final service gaps up to 2070us. One-session tests
+were insufficient. ADR 0014/spec/contract define prospective explicit 20ms
+completion reserve (schema 4 / bounded-reference-v2), with exact counts and
+unchanged SC/invalid gates. No full cycle starts before targeted 32-session
+8/15/60-second checks finish. T077/T078 remain unchecked; T079 excluded.
+
+**T077 reserve verification (2026-10-14)**: Nine native 32-session simultaneous
+probes pass (4×8s, 4×15s, 1×60s); no generator/integrity/clock/coverage errors.
+Resource baseline delivers 500.4288 Mbit/s per direction with zero measured loss.
+All 20 traffic tests/85 Python tests and applicable static checks pass. A fresh
+schema-4 `phase8-x86-bounded-r3-20261014` cycle uses the same 90-minute budget.
+This is fixture readiness, not candidate SC acceptance; T077/T078 remain pending.
+
+
+**T077 full measured result (2026-10-14)**: r3 retains 108 calibration points
+and all 75 pairs, zero measured generator errors; final churn failed because
+private setup loopback was DOWN. Owned-only loopback initialization is fixed,
+and integrated 1000-cycle churn passes without rerunning pairs. Ordinary event
+suppression was erroneously included in status coverage loss; the contract-based
+accounting fix is derived from preserved raw snapshots, with hash provenance.
+Strict evaluation remains invalid/unsuccessful: 30 insufficient RTT-sample runs,
+one unsustainable baseline, 18 SC-004 checks and two SC-007 delivery directions
+fail across 16 paired workloads. 87 Python tests pass; production is unchanged.
+No complete repeat is active. T077/T078 remain unchecked pending targeted
+performance/evidence corrections; no averaging, threshold waiver or T079 work.
+
+**T078 targeted production correction (2026-10-15, in progress)**: Five matching
+old-binary diagnostic repetitions reproduce actual small/resource loss. Frozen
+`benchmarks/policies/phase8-reactor-service.json` predates production edits;
+absolute SC targets and its per-metric bounds remain unchanged. Candidates gate
+idle reads on owner-local readiness and split finite receive/enqueue/generate
+visits with fair packet rounds. Failed prototypes and their RSS/loss evaluations
+are retained in `phase8-performance-fix-20261015`; see ADR 0015. Packet-dependent
+active-session membership was rejected because it destabilized the positional
+owner cursor; current candidates preserve stable active-session membership.
+173 native Rust tests pass (two external-peer cases remain separately invoked),
+including real readiness and coalesced-DATAGRAM regressions; Clippy passes.
+These are candidate checks, not final qualification. T076 is reopened because
+production source changed; original T076 binary-bound passes remain historical.
+T077/T078 stay unchecked, native ARM64 unqualified and T079 excluded.
+
+**T078 dependency root cause (2026-10-15, in progress)**: Isolating the collector
+is necessary method hygiene but did not fix a fresh source12 reverse-resource
+failure (44.392% loss). Numeric boundary traces identify malformed 36-byte
+PING-only QUIC packets, physically sent and received without outer/kernel/qdisc
+loss but discarded before accepted-packet accounting. Official quiche 0.30.0
+can skip required minimum padding after its congestion-credit clamp. A 24-case
+native regression fails before and passes after a minimal guard; all 1164
+quiche library tests pass on the imported source. ADR0016 records a checksum-
+verified local 0.30.0 patch, unchanged transitive production versions, source
+integrity gates and pending application/resource/interop qualification. T073 and
+T075 are reopened for source-bound fuzz and dependency validation; original
+passes remain historical. No numerical threshold, queue capacity, CUBIC/HyStart
+setting or T079 document is changed. T076/T077/T078 remain unchecked.
+
+**Candidate13 targeted resource milestone (2026-10-15)**: The uninstrumented
+padding-corrected qlog binary passes three paired60s probes: both directions
+>=500.72352Mbit/s, forward loss<=0.002492%, reverse zero, p95<=20.589ms,
+per-role CPU<=0.916/RSS<=12824576bytes; all generator/integrity/clock/coverage
+and sample checks pass. 173 application/1164 dependency/92 Python checks pass.
+Guarded background comparison and conditional VM qualification are retained in
+`phase8-padding-followup-20261015`; first failure stops the chain. This milestone
+does not close T073/T075/T076/T077/T078 or qualify ARM64; T079 stays excluded.
+
+
+**Candidate13 source-bound continuation (2026-10-15)**: The targeted comparison
+passes all ten candidate checks (five repetitions each of small-forward and
+resource-simultaneous); the five resource runs deliver 500.736 Mbit/s in each
+direction with zero measured loss. This remains diagnostic evidence, not T077.
+The first qualification attempt passed all four fuzz targets and safety, then
+stopped on crates.io TLS/RustSec fetch failures; its artifacts remain unchanged.
+`phase8-packet-fix-qualification-resume1-20261015` verifies identical production
+inputs/binary, retains that fuzz/safety evidence, and passes all 22 dependency
+checks with explicit Cargo/HTTPS proxy settings. T073/T075 are complete for the
+current native x86_64 scope; scheduled fuzz campaigns and native ARM64 are not
+claimed executed. RustSec reports no vulnerabilities; the upstream quiche test
+lock has a retained yanked `yoke-derive` 0.8.3 warning, documented separately.
+The owned VM pair is started/configured and source-bound full T076 runs in the
+background with a 90-minute budget including cleanup. T076/T077/T078 remain
+unchecked until their required results exist. No T079 work or commit is made.
+
+
+**Candidate13 final functional acceptance (2026-10-15)**: The source-bound
+continuation `phase8-packet-fix-qualification-resume1-20261015` finishes
+`T076-passed` in 4757 seconds (79m17s), including successful owned-VM shutdown.
+All 23 full functional stages pass on native x86_64, with unchanged production
+inputs and qlog release SHA-256
+`ff75ff9fd493235e16affca4b8827d6514ebb6617b6ae160381c2bbd3312bc76`.
+173 ordinary Rust tests, one explicit external-process case, 1164 quiche tests,
+93 Python and 20 traffic tests pass; independent interoperability, operator,
+network/recovery/shutdown, 30-minute isolation, 10-minute overload and 1000-cycle
+churn pass. The separate 30-minute two-VM WireGuard/generic test delivers all
+72000 measured datagrams, without duplicates, integrity or measured send/skipped
+errors; warmup counters are retained separately. T076 is complete for this
+native x86_64 scope. T077 full numerical matrix and T078 final evidence/reviews
+remain unchecked; no ARM64, release acceptance, independent review or T079 claim.
+
+
+**Candidate13 T077 full matrix — running (2026-10-15)**: After exact-input
+T076 acceptance, the unchanged schema-4 bounded-reference-v2 x86_64 profile
+starts in `benchmarks/results/release/phase8-x86-patched13-20261015`.
+The source/binary-bound guard and archived plan are in
+`benchmarks/results/phase8-patched13-reference-20261015`; it binds the passed
+T076 summary, production/build/source/runner/profile hashes and both measured
+executables. The full 18-search/75-pair matrix retains all original numerical
+criteria, three repetitions, 15s ordinary/60s resource measurements and the
+90-minute wall budget. Calibration has started. Earlier successful targeted
+comparisons and functional tests are not rerun or substituted for this matrix.
+T077/T078 stay unchecked until complete required evidence; T079 stays excluded.
+
+
+**Candidate13 T077 completed but unsuccessful (2026-10-15)**: The full cycle
+retains all 108 calibration points, 75 pairs and valid 1000-cycle churn, finishing
+in 80m12s within budget. Final validation is `invalid`: capacity 32x1200
+simultaneous repeat 0 has 30 sessions below 100 RTT samples (minimum 74),
+forward 594.5024 versus baseline 874.9056 Mbit/s and 32.049538% measured loss.
+Two additional valid pairs fail numeric gates: subcapacity 1x128 simultaneous
+repeat 0 adds 0.596154 percentage points forward loss (0.604584% tunnel versus
+0.008430% baseline), and resource simultaneous repeat 1 delivers only
+485.01696 Mbit/s forward (3.139187% loss), versus 500.736 Mbit/s reverse.
+All pair generator error counts are zero. Owned UDP socket drop increments,
+outer QUIC losses and local queue expiry/full counters are preserved for
+analysis; cumulative diagnostics include warmup/drain and are not substituted
+for measured traffic loss. Cause of intermittent receive/service deficits is
+not yet established; this is not proof of another malformed-PING defect.
+Raw evidence remains unchanged; derived hash-bound analysis is in
+`benchmarks/results/phase8-patched13-analysis-20261015/summary.json`.
+T076 remains passed for its exact binary; T077/T078 remain unchecked.
+The separately queued fork check then passes all 1164 library tests and verifies
+published SHA 154ce1995f23efa434e72dac269f707145be2015. Remora still uses the
+vendored source; Git-source integration is pending. T079 stays excluded.
+
+
+**Quiche Git-source migration (2026-10-15)**: At the user's request, before
+further performance investigation, root/traffic/fuzz resolve the separate fork
+`https://github.com/0xf836/quiche` at
+`154ce1995f23efa434e72dac269f707145be2015`. All other resolved package entries
+are identical to the preceding locks. The old vendored tree and validator are
+archived outside the project; source/hash/symlink policy and the published test
+manifest/lock remain as metadata under `dependencies/`. CI and provenance,
+release, fuzz/dependency/reference runners use the actual pinned Git source.
+All 16 short native check stages pass (173 ordinary Rust, one explicit external
+process, 1164 quiche, 94 Python, 20 traffic, operator/interop), as do all
+22 dependency checks and four new 30s ASan fuzz targets. T073/T075 are complete
+for the new native x86_64 check scope; T074's unchanged Miri ownership inputs
+remain applicable. Qlog release SHA-256 is
+`3912e2574812ae86af4d3da580511409ed972f1eeef8c3ef9e52c295a24cccba`.
+T076 is reopened for final source-bound long qualification; historical
+vendored-binary T076 remains passed for its archived executable. T077's full
+matrix remains unsuccessful and T078 pending. No new long measurement,
+production Rust change, numerical-threshold change or T079 work is included.
+No Remora commit/push is made.
+
+**Post-migration loss research (2026-10-15, recorded 2026-10-16)**: Four short
+diagnostic series (27 rows, 848 seconds total) reproduce server outer-UDP drops
+on the Git-source binary. Increasing outer socket buffers alone still loses
+traffic. A numeric service probe exposes permanently reduced receive quotas
+after coalesced short DATAGRAMs; the native probe-to-large-packet transition
+regression fails on the current high-water estimator (quota 4 rather than 32)
+and passes on an experimental recent-density source copy. Matched two-repeat
+A/B reduces large-packet loss/RTT but introduces small-packet losses up to
+0.007299%, so the simple replacement is not accepted. Production Rust source,
+binary, buffers, dependency pin and numerical gates remain unchanged. See
+`docs/validation/phase8-loss-research.md` and the hash-bound aggregate under
+`benchmarks/results/phase8-git-loss-research-20261015/`. Temporary instrumentation
+and regression sources remain in ignored result directories. All diagnostic
+jobs have completed; owned namespace holders are cleaned up. T076/T077/T078
+remain unchecked, T079 excluded; no commit or push.
+
+
+**Receive-density correction authorized (2026-10-16, in progress)**: The user
+approved bounded recent history as the first correction, with coordinated
+receive/native-drain scheduling as a fallback if needed. ADR 0017 selects a
+fixed 32-observation nonempty history with a cached maximum, preserving native
+queue and owner-work bounds, control-only retention and active-flow isolation.
+The archived Git-source executable and source precede edits. A fresh three-repeat
+reference and a prospectively declared method precede numeric policy freeze and
+candidate measurements; check both directions and reject any failed repeat,
+including a strict adjacent small-packet gate. Native transition/property/shared-
+listener tests and normal Rust checks are required. No threshold waiver, buffer
+default change, quiche edit or T079 work is authorized by this increment.
+T076/T077/T078 remain pending; no commit/push or independent review is implied.
+
+**Receive-density correction implemented (2026-10-16)**: ADR 0017 replaces the
+lifetime maximum with a bounded 32-observation nonempty history. The first
+candidate passes native checks but fails a prospective small-packet comparison
+with six measured session-queue drops. ADR 0018 services queued native output
+and admitted application queues before producer reads, with finite per-connection
+continuations across owner windows. Its native regression delivers all 102
+ordered payloads instead of dropping six; missing continuation found by E2E is
+corrected. The combined no-buffer-change candidate then fails a strict repeat
+on 13 client application-socket kernel drops, with no measured software queue
+increase or outer QUIC loss. These original failures remain retained.
+
+A separate config-only crossover observes seven server application kernel drops
+with 64 KiB requested buffers and zero loss/drops in three 128 KiB repeats.
+The prospective author review in ADR 0019 selects the existing application
+socket default at 131072 requested bytes, preserving explicit 65536 overrides.
+This extends the initial no-buffer-change candidate with a declared kernel-memory
+trade-off: at 32 server sockets, combined configured RX/TX limits rise by 8 MiB;
+client listener limit rises by 256 KiB. No user-space/native queue, packet expiry,
+admission threshold or numeric performance tolerance is enlarged.
+
+Final qlog binary SHA-256 is
+`1229d87f5fe1fbfbf5c0ccf231d033af2e96f1645184d05cd7f826c94e78cdee`.
+Locked default/qlog builds, formatting, Clippy, 179 ordinary Rust tests, one
+independent-peer process test and 20 traffic tests pass. A fresh 27-row focused
+comparison passes all nine candidate checks under policy
+`e16362935def466725f5862fe23a9803a92b36abc9201ecadea0c696a1709dd6`,
+whose preceding delivery/loss/RTT/CPU/RSS bounds remain unchanged. All three
+small/resource repeats have zero measured endpoint loss in both directions;
+capacity delivers >=874.89536 Mbit/s/direction with <=0.001171% loss. Worst
+per-role CPU is 0.918404 core and RSS is 12726272 bytes. New direct UDP baseline
+buffers match the candidate; generator/responder source and locks stay unchanged.
+Production inputs are stable during measurement; owned namespaces are closed.
+
+See `docs/validation/phase8-density-window.md` and
+`benchmarks/results/phase8-density-window-20261016/drain-order/receiver-buffer/summary.json`.
+This completes the focused correction increment, not final qualification.
+T076/T077/T078 stay unchecked for full source-bound qualification/evidence;
+ARM64 remains unqualified, T079 excluded. No independent review, commit or push.
+
+**Output visit order correction (2026-10-16)**: Instrumented BBR2 diagnostics
+observe ready committed ciphertext alongside full native/application queues.
+ADR 0022 drains the eligible committed prefix before native generation, sharing
+the existing 16-descriptor submission budget across both call opportunities.
+Expiry/PMTU preparation, FIFO/pacing and the 16-generation limit remain intact.
+The native six-ingress-message regression fails before with six queue-full
+drops and passes after with zero. Locked default/qlog builds, format, Clippy,
+182 ordinary Rust tests, one explicitly run independent-peer process test,
+23 traffic-tool tests and 95 Python tests pass.
+
+The new qlog executable is
+`7f7a3c4de7341b8edf0860ff3c8457642ff423cf4658f9aa93076db678cfe3b1`.
+A 60-row focused old/new CUBIC/BBR2 comparison is running under
+`benchmarks/results/phase8-output-order-fix-20261016/` with prospectively frozen
+policy `benchmarks/policies/phase8-output-order.json`; all modes use identical
+socket buffers, medium/capacity/resource measurements last 60 seconds and the
+whole comparison is bounded to 66 minutes including coordinator teardown.
+Historical CUBIC bounds remain unchanged; BBR2 has separate paired/general SC
+checks. The earlier rare outer overflow is not yet causally resolved.
+See `docs/validation/phase8-output-order.md`. T076/T077/T078 stay unchecked for
+new-executable full qualification; T079 remains excluded. No commit/push or
+independent review is implied.
+
+**Output-order comparison completed, acceptance failed (2026-10-16)**: All
+60 rows complete in 54m44s with stable production/policy inputs and valid
+generator/integrity/calibration checks. CUBIC passes 9/12 frozen checks; all
+three small repeats fail historical process/owner CPU bounds. Adjacent old
+CUBIC exceeds those historical bounds too; corrected small process CPU adds
+0.04–4.98% against adjacent control. Medium endpoint losses aggregate 50720
+old versus 413 corrected, with individual directions not uniformly improved.
+All corrected CUBIC medium/capacity/resource checks pass. Both corrected
+algorithms deliver 500.736Mbit/s/direction losslessly in all resource repeats.
+
+BBR2 passes 9/12 separate checks: two medium repeats fail paired loss bounds;
+one resource repeat fails the full-lifetime socket count on a single startup
+sample 4965ms before measurement. Measured socket counts are expected, but
+the startup socket identity/cause is unavailable and the failed gate remains.
+One old BBR2 resource control separately loses 13.31%/6.01% with substantial
+queue expiry; it is not a healthy equal-delivery CPU control. Raw failures
+and frozen thresholds remain unchanged. See `docs/validation/phase8-output-order.md`
+and the source-bound derivative `analysis.json` under
+`benchmarks/results/phase8-output-order-fix-20261016/`.
+T076/T077/T078 remain unchecked, T079 excluded, CUBIC default unchanged.
+No production edit, new long test, commit or publication accompanies this
+result inspection.
+
+**CUBIC selected and measured CPU trade-off accepted (2026-10-16)**: The owner
+accepts the small historical CPU regression for the exact corrected executable
+`7f7a3c4de7341b8edf0860ff3c8457642ff423cf4658f9aa93076db678cfe3b1`,
+authorizes stopping CPU/BBR2 investigation and proceeding to final qualification.
+ADR 0023 and `benchmarks/policies/phase8-cubic-adoption.json` preserve the failed
+raw comparison, constrain the exception to the recorded small CPU metrics/hash
+and require reconciliation at T078. SC-003/004/005/007 remain unchanged.
+
+The short current-CUBIC characterization completes three valid alternating
+control/drop-five pairs with exact nft counter proof. Injected reverse losses
+remain 2.198022%/1.956192%/2.514200% at 1x512 bytes and 91552pps/direction;
+this high-rate outer-loss amplification is retained as a limitation, not
+passed impaired-path qualification. Original and current evidence are distinct.
+Source-bound full T073–T076 execution is running under
+`benchmarks/results/phase8-cubic-qualification-20261016/`, with fresh prerequisites
+and owned generic/WireGuard VM use, a hard total 90-minute budget and required
+VM cleanup. T076/T077/T078 remain unchecked until their required evidence passes;
+T079 stays excluded. No production edit, reviewer, commit or push is added.
+
+**Selected CUBIC T076 passed; T077 next (2026-10-16)**: Exact-candidate full
+native x86_64 qualification completes all 23 functional stages in 80m54s total,
+including fresh T073–T075 prerequisites and VM cleanup. Inputs, runner/profile
+hashes, independent peer and qlog executable
+`7f7a3c4de7341b8edf0860ff3c8457642ff423cf4658f9aa93076db678cfe3b1`
+match. Evidence includes 182 ordinary Rust tests, 1164 quiche tests, 95 Python
+tests, 23 traffic tests, the explicitly run independent-peer process test,
+four fresh fuzz targets and native safety/Miri/dependency checks. Full runtime
+stages pass 30-minute isolation, 10-minute overload, 1000-cycle churn,
+network/recovery/shutdown/operator/interop and 30-minute VM generic/WireGuard.
+VM measured traffic is 72000/72000 with no invalid/duplicate/send-error/skipped
+messages; 73 warmup send errors are separate. Overload retains 13 diagnostic
+coverage losses and no full overload-correlation claim. Both owned guests are
+observed shut off. See `benchmarks/results/phase8-cubic-qualification-20261016/`.
+T076 is checked for native x86_64 only; ARM64 remains unqualified. T077 runs
+next with unchanged SC targets and profile; T078 remains pending, T079 excluded.
+
+**Selected CUBIC T077 running (2026-10-16)**: The exact-input T076-passed
+candidate now runs the complete native x86_64 bounded-reference-v2 matrix:
+18 bounded searches, 75 pairs/150 measurements, then 1000-cycle churn. The
+coordinator binds T076/prerequisite summaries, production/runner/profile inputs,
+adoption policy and Remora/traffic executable hashes. Raw data is under
+`benchmarks/results/release/phase8-x86-cubic-20261016/reference/benchmark/`;
+coordinator state is under `benchmarks/results/phase8-cubic-reference-20261016/`.
+Nominal intervals are 4965s with a 5400s total budget and 30s cleanup reserve;
+all numerical targets, baseline sustainability and generator validity remain
+unchanged. Client/server/tools use disjoint CPUs 0–3/4–7/8–23. No production
+changes or concurrent compilation are part of collection. T077/T078 remain
+unchecked until required evidence is complete; T079 remains excluded.
+
+**Selected CUBIC T077 passed; T078 reconciled (2026-10-16)**: The unchanged
+native x86_64 candidate completes 18 searches, all 75 pairs/150 measurements
+and 1000-cycle churn in 84m42s. Criteria record `passed`, no invalid/failed rows;
+current production, qualified runners/profile and executable hashes still
+match exact-input T076. Minimum capacity delivered/direct is 99.815985%; maximum
+added subcapacity loss is 0.038594 percentage points and added p95 RTT 0.768ms.
+All three resource repeats deliver 500.736Mbit/s/direction with zero loss,
+<=0.910608 process core and <=12.179688MiB RSS. Churn retained growth <=233472
+bytes settles in 0.119239s. Per-repeat spread and kernel queue/socket evidence
+are retained. Absolute capacity/subcapacity losses remain explicit rather than
+described as uniformly lossless.
+
+`docs/validation/release.md` now reconciles all FR-001–029/SC-001–010 with current
+functional/security/operator/independent-peer/VM and full numerical evidence,
+plus explicit author protocol/security/unsafe/performance review. The bound
+machine record is `benchmarks/results/phase8-cubic-reconciliation-20261016/summary.json`.
+ADR 0023's owner-approved CPU cost is reconciled for this exact candidate;
+the historical focused FAIL and all earlier artifacts remain unchanged. Current
+CUBIC outer-loss amplification, UDP tuple-reuse provenance, optional diagnostic/
+offload scope, test-lock warning and native-platform limits are recorded.
+T076/T077/T078 are checked for the selected native x86_64 scope. T072 remains
+unqualified, T079 remains excluded. No independent audit, production edit,
+new runtime test, commit, publication or deployment accompanies reconciliation.
+
+**Independent decision review follow-up and metadata correction (2026-10-17)**:
+The owner requests recording the reviewer's future ideas and correcting the
+manifest's requested-buffer metadata. The backlog in
+`docs/validation/phase8-decision-review-followup.md` retains CC/credit timeline,
+heterogeneous-client shared-quota and buffer/service-pause experiments, with
+observations distinguished from hypotheses. No experiment or new task is started.
+
+`reference.py` now derives manifest requests from the shared literal IoSettings
+defaults and fails on unrecognized declarations instead of duplicating stale
+numbers. A manifest regression fails before with 262144/65536 and passes after
+with 1048576/131072; changed/default-invalid cases and all 98 Python tests pass.
+All 150 paired diagnostics/300 role records confirm identical effective buffers.
+The original T077 manifest/source/report/result identities are preserved; an
+additive `manifest.socket-buffers-erratum.json` and
+`docs/validation/phase8-benchmark-metadata-erratum.md` document the correction.
+No production behavior or numerical criterion changes, no full test rerun,
+reviewer-owned checklist edit, commit or publication. T076/T077/T078 retain their
+recorded native x86_64 scope, T072 remains unqualified, T079 remains excluded.

@@ -1,0 +1,42 @@
+name: Fuzz boundaries
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '19 3 * * 1'
+permissions:
+  contents: read
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install native prerequisites and pinned test toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev pkg-config ripgrep
+          rustup toolchain install nightly-2026-10-12 --profile minimal --component rust-src,miri
+          cargo install cargo-fuzz --version 0.13.1 --locked
+      - name: Smoke or scheduled campaign
+        env:
+          CAMPAIGN_SECONDS: ${{ github.event_name == 'schedule' && '900' || '30' }}
+        run: ./scripts/validate/fuzz.sh "$CAMPAIGN_SECONDS" benchmarks/results/ci-fuzz
+      - name: Pure Rust Miri ownership checks
+        run: cargo +nightly-2026-10-12 miri test --locked --manifest-path tools/safety/Cargo.toml
+      - name: Retain public corpus and crash evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-evidence
+          path: |
+            benchmarks/results/ci-fuzz/*/corpus
+            benchmarks/results/ci-fuzz/*/artifacts
+            benchmarks/results/ci-fuzz/*/run.log
+            benchmarks/results/ci-fuzz/*/status
+            benchmarks/results/ci-fuzz/*.txt
+            benchmarks/results/ci-fuzz/inputs.sha256
+            benchmarks/results/ci-fuzz/quiche-provenance.json
+            benchmarks/results/ci-fuzz/*/quiche-provenance.json

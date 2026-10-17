@@ -1,0 +1,73 @@
+[package]
+name = "remora-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+test = false
+doc = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+qlog = ["quiche/qlog"]
+
+[dependencies]
+libfuzzer-sys = "=0.4.10"
+remora = { path = ".." }
+libc = "0.2"
+rustix = { version = "1.1", features = ["fs", "process"] }
+socket2 = { version = "0.6", features = ["all"] }
+toml = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+boring = "=5.2.0"
+getrandom = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2.6"
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["rt", "net", "time", "signal", "sync"] }
+quiche = "=0.30.0"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "masque"
+path = "fuzz_targets/masque.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy"
+path = "fuzz_targets/policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ancillary"
+path = "fuzz_targets/ancillary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lifecycle"
+path = "fuzz_targets/lifecycle.rs"
+test = false
+doc = false
+bench = false
+
+# Pinned packet-padding correction; see docs/adr/0016-quiche-minimum-payload.md.
+[patch.crates-io]
+quiche = { git = "https://github.com/0xf836/quiche", rev = "154ce1995f23efa434e72dac269f707145be2015" }
+
+# Match the production workspace's upstream subcrate pins for optional qlog.
+[patch."https://github.com/0xf836/quiche"]
+octets = { version = "=0.3.7" }
+qlog = { version = "=0.18.1" }

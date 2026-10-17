@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from benchmark import install_termination_handler
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,9 @@ class Network:
         if len(links) != 1 or links[0]["ifname"] != "lo":
             raise RuntimeError("setup namespace is not fresh")
         try:
+            # The proven private setup namespace also hosts the loopback churn
+            # fixture. Its lo starts DOWN after unshare; never mutate host lo.
+            run("ip", "link", "set", "lo", "up")
             for name in ["client", "server"]:
                 child = namespace_holder(root / f"namespace-{name}")
                 self.children.append(child)
@@ -341,6 +345,7 @@ def characterize(network, out):
 
 
 def main():
+    install_termination_handler()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scenario", choices=["all", *SCENARIOS], default="all")
     p.add_argument("--output", type=Path, required=True)
@@ -437,9 +442,9 @@ def main():
             if a.recovery_scenario:
                 if a.scenario != "reference" or a.benchmark_profile:
                     raise ValueError("recovery requires its isolated reference path")
-                from recovery import characterize
+                from recovery import characterize as characterize_recovery
 
-                characterize(network, out, a.recovery_scenario, a.peer_binary)
+                characterize_recovery(network, out, a.recovery_scenario, a.peer_binary)
             elif a.benchmark_profile:
                 if a.scenario != "reference":
                     raise ValueError("reference path required")
@@ -458,8 +463,15 @@ def main():
                 characterize(network, out)
         except Exception as e:
             write(
-                out / "failure.json", {"status": "invalid", "reason": type(e).__name__}
+                out / "failure.json", {"status": "invalid", "reason": type(e).__name__, "detail": str(e)}
             )
+            progress_file = out / "benchmark/progress.json"
+            if a.benchmark_profile and progress_file.is_file():
+                from reference import write_progress
+                write_progress(progress_file.parent, {
+                    **json.loads(progress_file.read_text()),
+                    "status": "invalid", "reason": type(e).__name__, "detail": str(e),
+                })
             raise
         finally:
             if network:

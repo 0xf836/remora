@@ -1,0 +1,47 @@
+schema_version = 4
+coverage = "full-reference-methodology"
+architecture = "aarch64"
+topology = "two-leg"
+link_mbit_s_each_direction = 1000
+reference_rtt_ms = 20
+sessions = [1, 32]
+payload_bytes = [128, 512, 1200]
+directions = ["forward", "reverse", "simultaneous"]
+io = "mmsg"
+batch_max = 32
+cc = "cubic"
+gso_requested = "off"
+gro_requested = "off"
+diagnostics = "info"
+warmup_seconds = 3
+measurement_seconds = 15
+# Experimental future profile only; ARM64 is outside current requirements (ADR 0024).
+capacity_32_simultaneous_seconds = 60
+drain_ms = 500
+paired_repetitions = 3
+pair_order_seed = 5053054
+# Calibration bracket is preliminary; every measured paired baseline must
+# independently confirm <=0.1% loss. No averaging or automatic relabelling.
+search_policy = "bounded-bisection"
+search_warmup_seconds = 2
+search_measurement_seconds = 8
+search_max_steps = 6
+sustainable_loss_percent_max = 0.1
+subcapacity_fraction = 0.5
+resource_mbit_s_each_direction = 500
+resource_sessions = 32
+resource_payload_bytes = 1200
+churn_cycles = 1000
+churn_settle_seconds_max = 60
+generator_cpu_core_max_exclusive = 0.9
+# Four disjoint available logical cores per role; generator/endpoint use the
+# remaining cores. Record actual affinity and CPU/kernel/veth/offload inventory.
+role_cores = 4
+# Slot deadlines are grouped at 100us boundaries in both members of every pair.
+generator_pacing_quantum_us = 100
+
+methodology = "bounded-reference-v2"
+resource_measurement_seconds = 60
+wall_budget_seconds = 5400
+
+generator_completion_guard_ms = 20

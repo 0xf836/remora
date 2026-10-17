@@ -6,22 +6,31 @@ use crate::{
     udp::Udp,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
     sync::Weak,
     time::Instant,
 };
 use tokio::io::unix::AsyncFd;
-pub struct PollSocket(pub RefCell<Udp>);
+pub struct PollSocket(pub RefCell<Udp>, Cell<bool>);
 impl AsRawFd for PollSocket {
     fn as_raw_fd(&self) -> RawFd {
         self.0.borrow().as_raw_fd()
     }
 }
 impl PollSocket {
+    // New sockets get one native probe. A successful/budget-limited read keeps
+    // the continuation; only actual EAGAIN clears it until reactor readiness.
+    pub(crate) fn read_pending(&self) -> bool {
+        self.1.get()
+    }
+    pub(crate) fn set_read_pending(&self, pending: bool) {
+        self.1.set(pending);
+    }
+
     pub fn register(socket: Udp) -> std::io::Result<AsyncFd<Self>> {
-        AsyncFd::new(Self(RefCell::new(socket)))
+        AsyncFd::new(Self(RefCell::new(socket), Cell::new(true)))
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,7 +167,17 @@ pub(crate) struct FairCursor {
     pub ceiling: Option<u64>,
 }
 /// Select a bounded cyclic visit, freezing new arrivals out of the current round.
-pub(crate) fn round_robin(mut ids: Vec<u64>, cursor: &mut FairCursor, limit: usize) -> Vec<u64> {
+pub(crate) fn round_robin(ids: Vec<u64>, cursor: &mut FairCursor, limit: usize) -> Vec<u64> {
+    round_robin_recorded(ids, cursor, limit, |_| {})
+}
+/// Record each selection's cursor so a consumer can commit only actual progress
+/// if native backpressure interrupts the selected visit.
+pub(crate) fn round_robin_recorded(
+    mut ids: Vec<u64>,
+    cursor: &mut FairCursor,
+    limit: usize,
+    mut record: impl FnMut(FairCursor),
+) -> Vec<u64> {
     ids.sort_unstable();
     let Some(maximum) = ids.last().copied() else {
         return Vec::new();
@@ -182,6 +201,7 @@ pub(crate) fn round_robin(mut ids: Vec<u64>, cursor: &mut FairCursor, limit: usi
         };
         cursor.last = Some(id);
         selected.push(id);
+        record(*cursor);
     }
     selected
 }

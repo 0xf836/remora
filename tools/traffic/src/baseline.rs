@@ -177,8 +177,12 @@ pub fn run(
     mode: &str,
     batch_max: usize,
     application_pool_bytes: usize,
+    outer_socket_buffer_bytes: usize,
 ) -> io::Result<()> {
-    if !(1..=64).contains(&batch_max) || application_pool_bytes < 1200 * batch_max {
+    if !(1..=64).contains(&batch_max)
+        || application_pool_bytes < 1200 * batch_max
+        || !(1..=i32::MAX as usize).contains(&outer_socket_buffer_bytes)
+    {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let io = IoSettings {
@@ -190,6 +194,7 @@ pub fn run(
             return Err(io::ErrorKind::InvalidInput.into());
         },
         batch_max,
+        outer_socket_buffer_bytes,
         ..IoSettings::default()
     };
     let (mut diagnostics, receiver) = remora::diagnostics::Diagnostics::new(
@@ -399,6 +404,22 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_outer_buffer_requests_fail_before_binding() {
+        for bytes in [0, i32::MAX as usize + 1, usize::MAX] {
+            let error = run(
+                false,
+                "127.0.0.1:0".parse().unwrap(),
+                "127.0.0.1:9".parse().unwrap(),
+                "mmsg",
+                32,
+                8 * 1024 * 1024,
+                bytes,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
     #[test]
     fn native_queued_partial_prefix_never_replays_and_keeps_original_suffix() {
         let settings = IoSettings::default();

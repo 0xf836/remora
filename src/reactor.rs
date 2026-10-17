@@ -7,7 +7,7 @@ use crate::{
     policy::{self, PolicyError, SetupKey, SystemResolver},
     session::{
         ClientState, FairCursor, MappingLatch, PollSocket, RetrySchedule, Session, State,
-        round_robin,
+        round_robin, round_robin_recorded,
     },
     transport::{self, Connection, TrackedFactory, TransportError},
     udp::{MonotonicTimer, ReceiveFault, SendPacket, Udp},
@@ -25,6 +25,38 @@ use tokio::{
     io::unix::AsyncFd,
     signal::unix::{SignalKind, signal},
 };
+// Generation and physical submission share one 32-item owner visit.
+const OUTPUT_QUOTA: usize = 16;
+const DENSITY_HISTORY: usize = 32;
+
+/// Recent nonempty outer-packet observations, local to one connection owner.
+/// ACK-only packets and queue drains must not age out coalescing evidence.
+#[derive(Default)]
+struct ReceiveDensity {
+    recent: [u8; DENSITY_HISTORY],
+    next: usize,
+    maximum: u8,
+}
+impl ReceiveDensity {
+    fn observe(&mut self, datagrams: usize) {
+        if datagrams == 0 {
+            return;
+        }
+        // Every density >=32 already requests one outer packet per visit.
+        let density = datagrams.min(32) as u8;
+        let previous = self.recent[self.next];
+        self.recent[self.next] = density;
+        self.next = (self.next + 1) % DENSITY_HISTORY;
+        if density >= self.maximum {
+            self.maximum = density;
+        } else if previous == self.maximum {
+            self.maximum = self.recent.iter().copied().max().unwrap_or(0);
+        }
+    }
+    fn estimate(&self) -> usize {
+        usize::from(self.maximum.max(1))
+    }
+}
 type SetupFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(usize, policy::ResolvedTarget), PolicyError>> + 'a>>;
 struct Pending<'a> {
@@ -40,6 +72,21 @@ struct OwnedConnection {
     id: crate::diagnostics::OpaqueId,
     initial_cid: Vec<u8>,
     cursors: [FairCursor; 7],
+    receive_density: ReceiveDensity,
+    enqueue_pending: bool,
+    output_pending: bool,
+}
+impl OwnedConnection {
+    fn generate_output(
+        &mut self,
+        pool: &crate::buffers::BufferPool,
+        now: Instant,
+    ) -> Result<usize, TransportError> {
+        // One attempted output visit consumes this continuation, even if
+        // congestion blocks progress. Credit/readiness/timers wake it again.
+        self.output_pending = false;
+        self.transport.generate(pool, now, OUTPUT_QUOTA)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
@@ -61,6 +108,11 @@ impl std::fmt::Display for RuntimeError {
     }
 }
 impl std::error::Error for RuntimeError {}
+#[derive(Debug)]
+enum OutputError {
+    Transport(TransportError),
+    Socket(RuntimeError),
+}
 struct SourceBucket {
     last: Instant,
     credits: u32,
@@ -117,6 +169,28 @@ fn native_drop(error: TransportError) -> crate::diagnostics::DropReason {
 }
 fn resource<T, E>(result: Result<T, E>) -> Result<T, RuntimeError> {
     result.map_err(|_| RuntimeError::Resource)
+}
+fn read_io<T>(
+    socket: &AsyncFd<PollSocket>,
+    mut operation: impl FnMut(&PollSocket) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut attempted = false;
+    let result = socket.try_io(tokio::io::Interest::READABLE, |inner| {
+        attempted = true;
+        operation(inner)
+    });
+    // New sockets and quota continuations must probe even before Tokio reports
+    // an edge. This fallback never clears readiness. Cached EAGAIN is cleared
+    // atomically by try_io, so an edge racing with the syscall is retained.
+    if !attempted
+        && result
+            .as_ref()
+            .is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock)
+    {
+        operation(socket.get_ref())
+    } else {
+        result
+    }
 }
 fn poll_timer(
     timer: &AsyncFd<MonotonicTimer>,
@@ -419,6 +493,9 @@ impl<'a> Runner<'a> {
                 id,
                 initial_cid: cid.to_vec(),
                 cursors: [FairCursor::default(); 7],
+                receive_density: ReceiveDensity::default(),
+                enqueue_pending: false,
+                output_pending: false,
             },
         );
         self.primary = Some(generation.0);
@@ -948,19 +1025,32 @@ impl<'a> Runner<'a> {
                     id,
                     initial_cid: header.dcid.as_ref().to_vec(),
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             generation.0
         };
         if let Some(c) = self.connections.get_mut(&connection) {
-            match c.transport.receive(
+            let queued_before = c.transport.quic.dgram_recv_queue_len();
+            let received = c.transport.receive(
                 bytes,
                 quiche::RecvInfo {
                     from: meta.peer,
                     to: meta.local,
                 },
                 now,
-            ) {
+            );
+            // Retain recent decoded DATAGRAM density, not encrypted packet
+            // length. Sparse tails/ACKs do not immediately erase a dense burst.
+            c.receive_density.observe(
+                c.transport
+                    .quic
+                    .dgram_recv_queue_len()
+                    .saturating_sub(queued_before),
+            );
+            match received {
                 Ok(_) | Err(quiche::Error::Done) => {}
                 Err(error) => {
                     self.failure(
@@ -990,6 +1080,9 @@ impl<'a> Runner<'a> {
         Ok(())
     }
     fn receive_outer(&mut self, index: usize, now: Instant) -> Result<bool, RuntimeError> {
+        if !self.outer[index].get_ref().read_pending() {
+            return Ok(false);
+        }
         let errors = self.outer[index]
             .get_ref()
             .0
@@ -1028,8 +1121,12 @@ impl<'a> Runner<'a> {
                 errors.malformed as u64,
             )
             .map_err(|_| RuntimeError::Diagnostics)?;
-        let mut slabs = Vec::with_capacity(self.cfg.io().batch_max.min(32));
-        for _ in 0..self.cfg.io().batch_max.min(32) {
+        // Match a socket visit to the incoming-DATAGRAM service quota. Keep
+        // large-payload batches broad enough to coalesce ACK work; coalesced
+        // small payloads reduce the visit before the bounded native queue fills.
+        let quota = self.outer_receive_quota(index);
+        let mut slabs = Vec::with_capacity(quota);
+        for _ in 0..quota {
             if let Ok(s) = self.pools.scratch.acquire() {
                 slabs.push(s);
             } else {
@@ -1040,11 +1137,9 @@ impl<'a> Runner<'a> {
             return Ok(false);
         }
         let mut packets = Vec::with_capacity(slabs.len());
-        let result = self.outer[index]
-            .get_ref()
-            .0
-            .borrow_mut()
-            .recv_batch(&mut slabs, &mut packets);
+        let result = read_io(&self.outer[index], |inner| {
+            inner.0.borrow_mut().recv_batch(&mut slabs, &mut packets)
+        });
         let overflow = self.outer[index].get_ref().0.borrow_mut().take_overflow();
         self.snapshot.counters.kernel_rx_overflow = self
             .snapshot
@@ -1103,13 +1198,7 @@ impl<'a> Runner<'a> {
                 Ok(n > 0 || errors.pending)
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if let Ok(mut guard) = self.outer[index]
-                    .try_io(tokio::io::Interest::READABLE, |_| {
-                        Err::<(), _>(io::ErrorKind::WouldBlock.into())
-                    })
-                {
-                    let _ = &mut guard;
-                }
+                self.outer[index].get_ref().set_read_pending(errors.pending);
                 Ok(errors.pending)
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(true),
@@ -1125,10 +1214,27 @@ impl<'a> Runner<'a> {
             Err(_) => Err(RuntimeError::Socket),
         }
     }
+    fn outer_receive_quota(&self, index: usize) -> usize {
+        // A connection without an admitted active flow must not influence
+        // the service quantum of other clients on a shared server socket.
+        let density = self
+            .sessions
+            .values()
+            .filter(|s| s.state == State::Active)
+            .filter_map(|s| self.connections.get(&s.connection.0))
+            .filter(|c| c.socket == index)
+            .map(|c| c.receive_density.estimate())
+            .max()
+            .unwrap_or(1);
+        self.cfg.io().batch_max.min((32 / density).max(1))
+    }
     fn client_input(&mut self, now: Instant) -> Result<bool, RuntimeError> {
         let Some(listener) = self.listener.as_ref() else {
             return Ok(false);
         };
+        if !listener.get_ref().read_pending() {
+            return Ok(false);
+        }
         let mut slabs = Vec::with_capacity(self.cfg.io().batch_max.min(32));
         for _ in 0..self.cfg.io().batch_max.min(32) {
             if let Ok(s) = self.pools.application.acquire() {
@@ -1141,11 +1247,9 @@ impl<'a> Runner<'a> {
             return Ok(false);
         }
         let mut packets = Vec::with_capacity(slabs.len());
-        let result = listener
-            .get_ref()
-            .0
-            .borrow_mut()
-            .recv_batch(&mut slabs, &mut packets);
+        let result = read_io(listener, |inner| {
+            inner.0.borrow_mut().recv_batch(&mut slabs, &mut packets)
+        });
         let overflow = listener.get_ref().0.borrow_mut().take_overflow();
         self.snapshot.counters.kernel_rx_overflow = self
             .snapshot
@@ -1250,9 +1354,7 @@ impl<'a> Runner<'a> {
                 Ok(n > 0)
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                let _ = listener.try_io(tokio::io::Interest::READABLE, |_| {
-                    Err::<(), _>(io::ErrorKind::WouldBlock.into())
-                });
+                listener.get_ref().set_read_pending(false);
                 Ok(false)
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(true),
@@ -1656,6 +1758,7 @@ impl<'a> Runner<'a> {
         if s.state != State::Active {
             return Ok(());
         }
+        let connection = s.connection.0;
         let ceiling = self
             .connections
             .get(&s.connection.0)
@@ -1714,6 +1817,8 @@ impl<'a> Runner<'a> {
         if s.queue.push(packet).is_err() {
             self.failure(Failure::Resource, 2, Some(session_id), connection_id);
             self.drop_packet(crate::diagnostics::DropReason::QueueFull, direction)?;
+        } else if let Some(c) = self.connections.get_mut(&connection) {
+            c.enqueue_pending = true;
         }
         Ok(())
     }
@@ -1747,58 +1852,118 @@ impl<'a> Runner<'a> {
                 .then_some(*id)
             })
             .collect();
-        let ids = self.select_sessions(connection, 3, ids, 4);
+        let Some(c) = self.connections.get_mut(&connection) else {
+            return Ok(false);
+        };
+        c.enqueue_pending = false;
+        // Preview a finite round, but do not commit unserved producers when a
+        // partially full native queue interrupts it. The fixed array bounds
+        // progress metadata without an extra heap allocation.
+        let mut preview = c.cursors[3];
+        let mut steps = [FairCursor::default(); 32];
+        let mut selected = 0;
+        let ids = round_robin_recorded(ids, &mut preview, 32, |step| {
+            steps[selected] = step;
+            selected += 1;
+        });
+        let horizon = ids.iter().copied().max();
         let mut scratch = resource(self.pools.scratch.acquire())?;
-        for id in ids {
-            let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
-            let packet = s.queue.front(direction).ok_or(RuntimeError::Transport)?;
-            self.snapshot.profile.application_queue_age_max_us =
-                self.snapshot.profile.application_queue_age_max_us.max(
+        let mut serviced = 0;
+        for round in 0..32 {
+            let before = serviced;
+            for (index, &id) in ids.iter().enumerate() {
+                if serviced == 32 {
+                    break;
+                }
+                let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
+                let Some(packet) = s.queue.front(direction) else {
+                    continue;
+                };
+                let cursor = &mut self
+                    .connections
+                    .get_mut(&connection)
+                    .ok_or(RuntimeError::Transport)?
+                    .cursors[3];
+                let previous = *cursor;
+                *cursor = if round == 0 {
+                    steps[index]
+                } else {
+                    FairCursor {
+                        last: Some(id),
+                        ceiling: horizon,
+                    }
+                };
+                serviced += 1;
+                self.snapshot.profile.application_queue_age_max_us =
+                    self.snapshot.profile.application_queue_age_max_us.max(
+                        now.saturating_duration_since(packet.received_at())
+                            .as_micros() as u64,
+                    );
+                self.snapshot.histograms.application_queue_age_us.observe(
                     now.saturating_duration_since(packet.received_at())
                         .as_micros() as u64,
                 );
-            self.snapshot.histograms.application_queue_age_us.observe(
-                now.saturating_duration_since(packet.received_at())
-                    .as_micros() as u64,
-            );
-            if packet.session() != s.generation || packet.connection() != s.connection {
-                s.queue.pop(direction);
-                self.drop_packet(crate::diagnostics::DropReason::StaleGeneration, direction)?;
-                continue;
+                if packet.session() != s.generation || packet.connection() != s.connection {
+                    s.queue.pop(direction);
+                    self.drop_packet(crate::diagnostics::DropReason::StaleGeneration, direction)?;
+                    continue;
+                }
+                let result = self
+                    .connections
+                    .get_mut(&connection)
+                    .ok_or(RuntimeError::Transport)?
+                    .transport
+                    .enqueue(
+                        s.stream,
+                        packet.bytes(),
+                        packet.received_at(),
+                        now,
+                        scratch.bytes_mut(),
+                    );
+                match result {
+                    Ok(()) => {
+                        s.queue.pop(direction);
+                        self.connections
+                            .get_mut(&connection)
+                            .ok_or(RuntimeError::Transport)?
+                            .output_pending = true;
+                        self.snapshot.counters.quic_dgram_enqueued = self
+                            .snapshot
+                            .counters
+                            .quic_dgram_enqueued
+                            .checked_add(1)
+                            .ok_or(RuntimeError::Diagnostics)?;
+                    }
+                    Err(TransportError::Capacity) => {
+                        // No packet was consumed: retry this producer first
+                        // when a native slot next becomes available.
+                        self.connections
+                            .get_mut(&connection)
+                            .ok_or(RuntimeError::Transport)?
+                            .cursors[3] = previous;
+                        return Ok(true);
+                    }
+                    Err(error) => {
+                        s.queue.pop(direction);
+                        self.drop_packet(native_drop(error), direction)?;
+                    }
+                }
             }
-            let result = self
-                .connections
-                .get_mut(&connection)
-                .ok_or(RuntimeError::Transport)?
-                .transport
-                .enqueue(
-                    s.stream,
-                    packet.bytes(),
-                    packet.received_at(),
-                    now,
-                    scratch.bytes_mut(),
-                );
-            match result {
-                Ok(()) => {
-                    s.queue.pop(direction);
-                    self.snapshot.counters.quic_dgram_enqueued = self
-                        .snapshot
-                        .counters
-                        .quic_dgram_enqueued
-                        .checked_add(1)
-                        .ok_or(RuntimeError::Diagnostics)?;
-                }
-                Err(TransportError::Capacity) => {}
-                Err(error) => {
-                    s.queue.pop(direction);
-                    self.drop_packet(native_drop(error), direction)?;
-                }
+            if serviced == before || serviced == 32 {
+                break;
             }
         }
-        Ok(self
+        let pending = self
             .sessions
             .values()
-            .any(|s| s.connection.0 == connection && s.queue.front(direction).is_some()))
+            .any(|s| s.connection.0 == connection && s.queue.front(direction).is_some());
+        if pending {
+            self.connections
+                .get_mut(&connection)
+                .ok_or(RuntimeError::Transport)?
+                .enqueue_pending = true;
+        }
+        Ok(pending)
     }
     fn defer_headers(
         &mut self,
@@ -2135,7 +2300,7 @@ impl<'a> Runner<'a> {
         }
         let controls_pending = self.service_session_controls(connection)?;
         let mut scratch = resource(self.pools.scratch.acquire())?;
-        for _ in 0..4 {
+        for _ in 0..32 {
             let expiry = self
                 .connections
                 .get(&connection)
@@ -2167,8 +2332,15 @@ impl<'a> Runner<'a> {
                 Err(_) => return Err(RuntimeError::Transport),
             }
         }
-        let outgoing = self.schedule_datagrams(connection, now)?;
-        Ok(outgoing
+        let direction = if self.server {
+            Direction::ToClient
+        } else {
+            Direction::ToTarget
+        };
+        Ok(self
+            .sessions
+            .values()
+            .any(|s| s.connection.0 == connection && s.queue.front(direction).is_some())
             || self
                 .connections
                 .get(&connection)
@@ -2486,6 +2658,14 @@ impl<'a> Runner<'a> {
         if !self.sessions.contains_key(&id) {
             return Ok(false);
         }
+        if self
+            .sessions
+            .get(&id)
+            .and_then(|s| s.relay.as_ref())
+            .is_none_or(|relay| !relay.get_ref().read_pending())
+        {
+            return Ok(false);
+        }
         let error_info = self.sessions.get(&id).and_then(|s| {
             s.relay.as_ref().map(|relay| {
                 (
@@ -2548,11 +2728,9 @@ impl<'a> Runner<'a> {
             return Ok(false);
         }
         let mut packets = Vec::with_capacity(slabs.len());
-        let result = relay
-            .get_ref()
-            .0
-            .borrow_mut()
-            .recv_batch(&mut slabs, &mut packets);
+        let result = read_io(relay, |inner| {
+            inner.0.borrow_mut().recv_batch(&mut slabs, &mut packets)
+        });
         let overflow = relay.get_ref().0.borrow_mut().take_overflow();
         self.snapshot.counters.kernel_rx_overflow = self
             .snapshot
@@ -2594,9 +2772,7 @@ impl<'a> Runner<'a> {
                 Ok(n > 0 || error_pending)
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                let _ = relay.try_io(tokio::io::Interest::READABLE, |_| {
-                    Err::<(), _>(io::ErrorKind::WouldBlock.into())
-                });
+                relay.get_ref().set_read_pending(error_pending);
                 Ok(error_pending)
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(true),
@@ -2623,7 +2799,63 @@ impl<'a> Runner<'a> {
             }
         }
     }
+    fn service_output(&mut self, connection: u64, now: Instant) -> Result<bool, OutputError> {
+        let ready = self
+            .connections
+            .get(&connection)
+            .ok_or(OutputError::Socket(RuntimeError::Transport))?
+            .transport
+            .output
+            .front()
+            .is_some_and(|p| p.at() <= now);
+        let mut remaining = OUTPUT_QUOTA;
+        let mut more = false;
+        if ready {
+            // A zero-generation preparation preserves expiry, setup and PMTU
+            // checks before any committed packet is physically submitted.
+            self.connections
+                .get_mut(&connection)
+                .ok_or(OutputError::Socket(RuntimeError::Transport))?
+                .transport
+                .generate(&self.pools.ciphertext, now, 0)
+                .map_err(OutputError::Transport)?;
+            let offered = self.connections[&connection]
+                .transport
+                .output
+                .iter()
+                .take(remaining)
+                .take_while(|p| p.at() <= now)
+                .count();
+            more |= self
+                .flush_limit(connection, now, remaining)
+                .map_err(OutputError::Socket)?;
+            // Spend the descriptors offered, including unaccepted suffixes.
+            // Partial sends/errors cannot enlarge this visit's send budget.
+            remaining -= offered;
+        }
+        let generated = self
+            .connections
+            .get_mut(&connection)
+            .ok_or(OutputError::Socket(RuntimeError::Transport))?
+            .generate_output(&self.pools.ciphertext, Instant::now())
+            .map_err(OutputError::Transport)?;
+        if remaining != 0 {
+            more |= self
+                .flush_limit(connection, Instant::now(), remaining)
+                .map_err(OutputError::Socket)?;
+        }
+        Ok(more || generated == OUTPUT_QUOTA)
+    }
+    #[cfg(test)]
     fn flush(&mut self, connection: u64, now: Instant) -> Result<bool, RuntimeError> {
+        self.flush_limit(connection, now, OUTPUT_QUOTA)
+    }
+    fn flush_limit(
+        &mut self,
+        connection: u64,
+        now: Instant,
+        limit: usize,
+    ) -> Result<bool, RuntimeError> {
         let c = self
             .connections
             .get_mut(&connection)
@@ -2633,7 +2865,7 @@ impl<'a> Runner<'a> {
             .transport
             .output
             .iter()
-            .take(4)
+            .take(limit)
             .take_while(|p| p.at() <= now)
             .map(|p| SendPacket {
                 bytes: p.bytes(),
@@ -3143,6 +3375,45 @@ impl<'a> Runner<'a> {
         }
         Ok(())
     }
+    fn owner_visits(&self) -> Vec<(u8, u64)> {
+        let mut visits: Vec<(u8, u64)> = (0..self.outer.len()).map(|i| (0, i as u64)).collect();
+        if self.listener.is_some() {
+            visits.push((1, 0));
+        }
+        for &id in self.connections.keys() {
+            visits.extend([(2, id), (4, id), (5, id)]);
+        }
+        visits.extend(
+            self.sessions
+                .iter()
+                // Keep active-session membership stable across packet
+                // arrivals/drains: the owner window cursor is positional.
+                // Readiness gating makes an empty visit cheap.
+                .filter(|(_, s)| s.state == State::Active)
+                .map(|(id, _)| (3, *id)),
+        );
+        // Release available native output capacity and service admitted queues
+        // before reading another producer batch. Otherwise a full application
+        // queue can drop fresh input even when this same turn can drain it.
+        // Each stage keeps its original quota and stable ring membership.
+        visits.sort_unstable_by_key(|&(kind, id)| {
+            let priority = match kind {
+                0 => 0, // outer input may return transport credit
+                2 => 1, // process control/close before committing output
+                5 => 2, // generate/submit the previous native batch
+                4 => 3, // make room in application queues
+                1 => 4, // client listener
+                _ => 5, // server relay producers
+            };
+            (priority, id)
+        });
+        visits
+    }
+    fn packet_continuation(&self) -> bool {
+        self.connections
+            .values()
+            .any(|c| c.enqueue_pending || c.output_pending)
+    }
     async fn run(
         &mut self,
         mut term: tokio::signal::unix::Signal,
@@ -3161,21 +3432,14 @@ impl<'a> Runner<'a> {
             // Timers/cancellation are checked between bounded owner turns.
             let mut more = self.service_recovery(now)?;
             more |= self.service_transport_timers(now)?;
+            // Keep one complete owner window of idle payload storage for
+            // reuse. Startup/overload high-water caches must not pin all their
+            // slabs for the connection lifetime; maintenance itself is bounded.
+            self.pools.application.trim_cached(256, 32);
             // At most eight owner visits before timers/cancellation. Connection
             // work has per-class item quotas; metadata enumeration and internal
             // quiche work are not a fixed number of API calls/instructions.
-            let mut visits: Vec<(u8, u64)> = (0..self.outer.len()).map(|i| (0, i as u64)).collect();
-            if self.listener.is_some() {
-                visits.push((1, 0));
-            }
-            visits.extend(self.connections.keys().map(|id| (2, *id)));
-            visits.extend(
-                self.sessions
-                    .iter()
-                    .filter(|(_, s)| s.state == State::Active)
-                    .map(|(id, _)| (3, *id)),
-            );
-            visits.sort_unstable();
+            let visits = self.owner_visits();
             let (window, next, continuation) = service_window(visits.len(), self.turn);
             for &(kind, id) in &visits[window] {
                 self.snapshot.profile.owner_visits = self
@@ -3187,9 +3451,19 @@ impl<'a> Runner<'a> {
                 match kind {
                     0 => more |= self.receive_outer(id as usize, now)?,
                     1 => more |= self.client_input(now)?,
-                    2 => {
-                        more |= self.reclaim_control(id);
-                        match self.h3_work(id, now) {
+                    2 | 4 => {
+                        if !self.connections.contains_key(&id) {
+                            continue;
+                        }
+                        if kind == 2 {
+                            more |= self.reclaim_control(id);
+                        }
+                        let result = if kind == 2 {
+                            self.h3_work(id, now)
+                        } else {
+                            self.schedule_datagrams(id, now)
+                        };
+                        match result {
                             Ok(pending) => more |= pending,
                             Err(error) => {
                                 self.failure(
@@ -3230,14 +3504,17 @@ impl<'a> Runner<'a> {
                                 }
                             }
                         }
-                        let generated = self.connections.get_mut(&id).map(|c| {
-                            c.transport
-                                .generate(&self.pools.ciphertext, Instant::now(), 4)
-                        });
-                        match generated {
-                            Some(Ok(n)) => more |= n == 4,
-                            Some(Err(error)) => {
-                                self.failure(
+                    }
+                    5 => {
+                        if !self.connections.contains_key(&id) {
+                            continue;
+                        }
+                        if let Err(error) = self
+                            .service_output(id, Instant::now())
+                            .map(|pending| more |= pending)
+                        {
+                            let (class, code) = match error {
+                                OutputError::Transport(error) => (
                                     Failure::Transport,
                                     match error {
                                         TransportError::Native(code) => code,
@@ -3246,20 +3523,18 @@ impl<'a> Runner<'a> {
                                         TransportError::Protocol => 1003,
                                         _ => 0,
                                     },
-                                    None,
-                                    self.connections.get(&id).map(|c| c.id),
-                                );
-                                self.stop_connection(id)?;
-                            }
-                            None => {}
-                        }
-                        if let Err(error) = self.flush(id, Instant::now()) {
+                                ),
+                                OutputError::Socket(error) => (
+                                    Failure::Socket,
+                                    match error {
+                                        RuntimeError::SocketErrno(code) => code as u64,
+                                        _ => 0,
+                                    },
+                                ),
+                            };
                             self.failure(
-                                Failure::Socket,
-                                match error {
-                                    RuntimeError::SocketErrno(code) => code as u64,
-                                    _ => 0,
-                                },
+                                class,
+                                code,
                                 None,
                                 self.connections.get(&id).map(|c| c.id),
                             );
@@ -3377,6 +3652,9 @@ impl<'a> Runner<'a> {
                 .get_ref()
                 .arm(deadline)
                 .map_err(|_| RuntimeError::Socket)?;
+            // A stage may have queued work in an earlier eight-visit window.
+            // Do not sleep at the ring boundary before its downstream visit.
+            more |= self.packet_continuation();
             if more {
                 tokio::task::yield_now().await;
             }
@@ -3413,14 +3691,19 @@ impl<'a> Runner<'a> {
                 }
                 for socket in &self.outer {
                     if socket.poll_read_ready(cx).is_ready() {
+                        socket.get_ref().set_read_pending(true);
                         ready = true;
                     }
                 }
                 if let Some(socket) = &self.listener {
                     if socket.poll_read_ready(cx).is_ready() {
+                        socket.get_ref().set_read_pending(true);
                         ready = true;
                     }
-                    if self.sessions.values().any(|s| s.queue.used().count > 0)
+                    if self
+                        .sessions
+                        .values()
+                        .any(|s| s.queue.front(Direction::ToClient).is_some())
                         && socket.poll_write_ready(cx).is_ready()
                     {
                         ready = true;
@@ -3429,10 +3712,16 @@ impl<'a> Runner<'a> {
                 for s in self.sessions.values() {
                     if s.state == State::Active
                         && let Some(socket) = &s.relay
-                        && (socket.poll_read_ready(cx).is_ready()
-                            || (s.queue.used().count > 0 && socket.poll_write_ready(cx).is_ready()))
                     {
-                        ready = true;
+                        if socket.poll_read_ready(cx).is_ready() {
+                            socket.get_ref().set_read_pending(true);
+                            ready = true;
+                        }
+                        if s.queue.front(Direction::ToTarget).is_some()
+                            && socket.poll_write_ready(cx).is_ready()
+                        {
+                            ready = true;
+                        }
                     }
                 }
                 for c in self.connections.values() {
@@ -3589,6 +3878,734 @@ mod tests {
     use super::*;
     use crate::common::{Fixtures, quic::Pair};
     use std::{cell::Cell, rc::Rc};
+    proptest::proptest! {
+        #[test]
+        fn receive_density_matches_bounded_nonempty_history(
+            observations in proptest::collection::vec(0usize..256, 0..2048)
+        ) {
+            let mut density = ReceiveDensity::default();
+            let mut model = std::collections::VecDeque::new();
+            for observed in observations {
+                density.observe(observed);
+                if observed != 0 {
+                    model.push_back(observed.min(32));
+                    if model.len() > DENSITY_HISTORY { model.pop_front(); }
+                }
+                proptest::prop_assert_eq!(density.estimate(), model.iter().copied().max().unwrap_or(1));
+            }
+        }
+    }
+    #[test]
+    fn receive_density_retains_bursts_and_ignores_empty_observations() {
+        let mut density = ReceiveDensity::default();
+        assert_eq!(density.estimate(), 1);
+        density.observe(usize::MAX);
+        for _ in 0..4096 {
+            density.observe(0);
+        }
+        assert_eq!(density.estimate(), 32);
+        for _ in 1..DENSITY_HISTORY {
+            density.observe(1);
+        }
+        assert_eq!(density.estimate(), 32);
+        density.observe(1);
+        assert_eq!(density.estimate(), 1);
+        for _ in 0..8 {
+            density.observe(8);
+            for _ in 1..DENSITY_HISTORY {
+                density.observe(1);
+            }
+            assert_eq!(
+                density.estimate(),
+                8,
+                "recurring dense bursts stay protected"
+            );
+        }
+        for _ in 0..DENSITY_HISTORY {
+            density.observe(1);
+        }
+        assert_eq!(density.estimate(), 1);
+    }
+
+    // Exchange real QUIC packets while keeping the native receive queue drained.
+    // Reverse ACKs give the sender credit for a complete history of large packets.
+    fn density_native_round(
+        runner: &mut Runner<'_>,
+        client: &mut Connection,
+        payloads: &[&[u8]],
+    ) -> (usize, usize) {
+        for payload in payloads {
+            client.quic.dgram_send(payload).unwrap();
+        }
+        let mut bytes = [0; 1350];
+        let mut packets = 0;
+        while let Ok((length, info)) = client.quic.send(&mut bytes) {
+            runner
+                .outer_packet(
+                    0,
+                    &mut bytes[..length],
+                    crate::udp::Received {
+                        index: 0,
+                        length,
+                        peer: info.from,
+                        local: info.to,
+                        overflow: None,
+                        fault: None,
+                    },
+                    Instant::now(),
+                )
+                .unwrap();
+            packets += 1;
+        }
+        let server = &mut runner.connections.get_mut(&2).unwrap().transport.quic;
+        let mut delivered = 0;
+        while let Ok(n) = server.dgram_recv(&mut bytes) {
+            assert_eq!(&bytes[..n], payloads[delivered]);
+            delivered += 1;
+        }
+        while let Ok((length, info)) = server.send(&mut bytes) {
+            client
+                .quic
+                .recv(
+                    &mut bytes[..length],
+                    quiche::RecvInfo {
+                        from: info.from,
+                        to: info.to,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            delivered,
+            payloads.len(),
+            "fixture must deliver each real DATAGRAM"
+        );
+        (delivered, packets)
+    }
+
+    #[test]
+    fn outer_read_quota_recovers_after_probe_burst_and_protects_new_bursts() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let mut p = Pair::new(true);
+            p.negotiate().unwrap();
+            session_tests::install(&mut r, p.server);
+            let id = r.create_session(2, 0, None, now).unwrap();
+            r.sessions.get_mut(&id).unwrap().state = State::Active;
+            let short = [7; 128];
+            let large = [9; 1200];
+            density_native_round(&mut r, &mut p.client, &[&short[..]; 8]);
+            let reduced = r.outer_receive_quota(0);
+            assert!(
+                reduced < 32,
+                "real short-packet coalescing must lower quota"
+            );
+            // A control-only packet and its ACK must not age the history.
+            p.client.quic.send_ack_eliciting().unwrap();
+            let (_, control_packets) = density_native_round(&mut r, &mut p.client, &[]);
+            assert!(control_packets > 0);
+            assert_eq!(r.outer_receive_quota(0), reduced);
+            for _ in 1..32 {
+                density_native_round(&mut r, &mut p.client, &[&large]);
+                assert_eq!(r.outer_receive_quota(0), reduced);
+            }
+            density_native_round(&mut r, &mut p.client, &[&large]);
+            assert_eq!(
+                r.outer_receive_quota(0),
+                32,
+                "a historical probe burst must not permanently throttle large packets"
+            );
+            density_native_round(&mut r, &mut p.client, &[&short[..]; 8]);
+            assert!(
+                r.outer_receive_quota(0) < 32,
+                "large-to-small transition must protect the queue"
+            );
+            assert_eq!(
+                r.outer_receive_quota(1),
+                32,
+                "unrelated sockets stay independent"
+            );
+            r.sessions.get_mut(&id).unwrap().state = State::Closed;
+            assert_eq!(
+                r.outer_receive_quota(0),
+                32,
+                "closed/unadmitted flows cannot constrain a shared socket"
+            );
+        });
+    }
+    #[test]
+    fn density_history_is_per_connection_and_only_active_flows_limit_shared_socket() {
+        session_tests::runtime().block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let p = Pair::new(true);
+            session_tests::install(&mut r, p.server);
+            let first = r.create_session(2, 0, None, now).unwrap();
+            r.sessions.get_mut(&first).unwrap().state = State::Active;
+            r.connections
+                .get_mut(&2)
+                .unwrap()
+                .receive_density
+                .observe(4);
+            let mut other_pair = Pair::new(true);
+            other_pair.negotiate().unwrap();
+            let mut other = other_pair.server;
+            other.generation = crate::buffers::Generation(3);
+            let mut density = ReceiveDensity::default();
+            density.observe(8);
+            let permit = r.budgets.connections.reserve(1, 0).unwrap();
+            let connection_id = r.diagnostics.next_id().unwrap();
+            r.connections.insert(
+                3,
+                OwnedConnection {
+                    transport: other,
+                    socket: 0,
+                    _permit: permit,
+                    _socket_permit: None,
+                    id: connection_id,
+                    initial_cid: vec![],
+                    cursors: [FairCursor::default(); 7],
+                    receive_density: density,
+                    enqueue_pending: false,
+                    output_pending: false,
+                },
+            );
+            assert_eq!(
+                r.outer_receive_quota(0),
+                8,
+                "unadmitted connection has no influence"
+            );
+            let second = r.create_session(3, 4, None, now).unwrap();
+            r.sessions.get_mut(&second).unwrap().state = State::Active;
+            assert_eq!(r.outer_receive_quota(0), 4);
+            for _ in 0..32 {
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .receive_density
+                    .observe(1);
+            }
+            assert_eq!(r.connections[&2].receive_density.estimate(), 1);
+            assert_eq!(r.connections[&3].receive_density.estimate(), 8);
+            assert_eq!(
+                r.outer_receive_quota(0),
+                4,
+                "aging one connection must not erase another's burst"
+            );
+            r.sessions.get_mut(&second).unwrap().state = State::Closed;
+            assert_eq!(r.outer_receive_quota(0), 32);
+            assert_eq!(r.outer_receive_quota(1), 32);
+        });
+    }
+    #[test]
+    fn ready_ciphertext_backlog_releases_native_credit_before_fresh_ingress() {
+        session_tests::runtime().block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Client, Instant::now(), Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let mut peer = Pair::new(true);
+            let (stream, _) = peer.requests();
+            peer.client.generation = crate::buffers::Generation(2);
+            r.connections.clear();
+            session_tests::install(&mut r, peer.client);
+            r.primary = Some(2);
+            let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let local = r
+                .listener
+                .as_ref()
+                .unwrap()
+                .get_ref()
+                .0
+                .borrow()
+                .local_addr();
+            let id = r
+                .create_session(
+                    2,
+                    stream,
+                    Some((sender.local_addr().unwrap(), local)),
+                    Instant::now(),
+                )
+                .unwrap();
+            r.sessions.get_mut(&id).unwrap().state = State::Active;
+            let now = Instant::now();
+            let payload = [7; 128];
+            let mut scratch = [0; 1350];
+            for _ in 0..64 {
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .enqueue(stream, &payload, now, now, &mut scratch)
+                    .unwrap();
+            }
+            for _ in 0..32 {
+                r.queue_outgoing(id, &payload, now).unwrap();
+            }
+            // A full already-committed FIFO can be writable while the native
+            // queue and application queue are full. Keep the original records
+            // observable through the scripted physical-send boundary.
+            for sequence in 0..32 {
+                let mut slab = r.pools.ciphertext.acquire().unwrap();
+                slab.bytes_mut()[0] = sequence as u8;
+                let packet = crate::buffers::Ciphertext::new(
+                    slab,
+                    1,
+                    local,
+                    sender.local_addr().unwrap(),
+                    now,
+                    crate::buffers::Generation(2),
+                    sequence,
+                    now,
+                    now + Duration::from_secs(1),
+                )
+                .unwrap();
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .output
+                    .push_back(packet);
+            }
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let observed = sent.clone();
+            r.outer_send_hook = Some(Box::new(move |packets| {
+                for packet in packets {
+                    observed.borrow_mut().push(packet.bytes.to_vec());
+                }
+                Ok(packets.len())
+            }));
+            for _ in 0..6 {
+                sender.send_to(&payload, local).unwrap();
+            }
+            r.service_output(2, Instant::now()).unwrap();
+            assert_eq!(
+                sent.borrow().len(),
+                OUTPUT_QUOTA,
+                "one submission budget across the visit"
+            );
+            for (sequence, bytes) in sent.borrow().iter().enumerate() {
+                assert_eq!(
+                    bytes.as_slice(),
+                    &[sequence as u8],
+                    "committed FIFO prefix must not be replayed/reordered"
+                );
+            }
+            r.schedule_datagrams(2, Instant::now()).unwrap();
+            r.client_input(Instant::now()).unwrap();
+            assert_eq!(
+                r.snapshot.counters.local_drops.queue_full.to_target, 0,
+                "writable committed output must release native credit before reading new ingress"
+            );
+            assert_eq!(r.sessions[&id].queue.used().count, 6);
+        });
+    }
+    #[test]
+    fn output_visit_shares_submission_budget_after_partial_send_or_pressure() {
+        for old_count in [8, 32] {
+            for first_result in [
+                Ok(1),
+                Err(libc::EAGAIN),
+                Err(libc::EINTR),
+                Err(libc::ENOBUFS),
+            ] {
+                session_tests::runtime().block_on(async {
+                    let f = Fixtures::new();
+                    let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+                    let resolver = SystemResolver::new(1).unwrap();
+                    let (diag, _receiver) =
+                        Diagnostics::new(Role::Client, Instant::now(), Duration::from_secs(1))
+                            .unwrap();
+                    let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                    let mut peer = Pair::new(true);
+                    let (stream, _) = peer.requests();
+                    peer.client.generation = crate::buffers::Generation(2);
+                    r.connections.clear();
+                    session_tests::install(&mut r, peer.client);
+                    let now = Instant::now();
+                    let local = r.outer[0].get_ref().0.borrow().local_addr();
+                    let remote = "127.0.0.1:4433".parse().unwrap();
+                    let mut scratch = [0; 1350];
+                    for _ in 0..64 {
+                        r.connections
+                            .get_mut(&2)
+                            .unwrap()
+                            .transport
+                            .enqueue(stream, &[7; 128], now, now, &mut scratch)
+                            .unwrap();
+                    }
+                    for sequence in 0..old_count {
+                        let mut slab = r.pools.ciphertext.acquire().unwrap();
+                        slab.bytes_mut()[0] = sequence as u8;
+                        let packet = crate::buffers::Ciphertext::new(
+                            slab,
+                            1,
+                            local,
+                            remote,
+                            now,
+                            crate::buffers::Generation(2),
+                            sequence,
+                            now,
+                            now + Duration::from_secs(1),
+                        )
+                        .unwrap();
+                        r.connections
+                            .get_mut(&2)
+                            .unwrap()
+                            .transport
+                            .output
+                            .push_back(packet);
+                    }
+                    let offered = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                    let observed = offered.clone();
+                    r.outer_send_hook = Some(Box::new(move |packets| {
+                        let first = observed.borrow().is_empty();
+                        observed
+                            .borrow_mut()
+                            .push(packets.iter().map(|p| p.bytes.to_vec()).collect::<Vec<_>>());
+                        if first {
+                            first_result.map_err(io::Error::from_raw_os_error)
+                        } else {
+                            Ok(packets.len())
+                        }
+                    }));
+                    r.service_output(2, now).unwrap();
+                    let calls = offered.borrow();
+                    assert_eq!(calls[0].len(), old_count.min(OUTPUT_QUOTA as u64) as usize);
+                    assert_eq!(
+                        calls.iter().map(Vec::len).sum::<usize>(),
+                        OUTPUT_QUOTA,
+                        "partial/error results must not refund offered descriptors"
+                    );
+                    if old_count == 32 {
+                        assert_eq!(calls.len(), 1);
+                    } else {
+                        assert_eq!(calls.len(), 2);
+                        let first_remaining = match first_result {
+                            Ok(1) | Err(libc::ENOBUFS) => 1,
+                            _ => 0,
+                        };
+                        assert_eq!(
+                            calls[1][0],
+                            vec![first_remaining],
+                            "accepted/discarded prefix cannot be replayed"
+                        );
+                    }
+                    assert!(r.connections[&2].transport.output.len() <= 32);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn output_visit_checks_expiry_and_pacing_before_preflush() {
+        for expired in [false, true] {
+            session_tests::runtime().block_on(async {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Client, Instant::now(), Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut peer = Pair::new(true);
+                peer.requests();
+                peer.client.generation = crate::buffers::Generation(2);
+                r.connections.clear();
+                session_tests::install(&mut r, peer.client);
+                let now = Instant::now();
+                let local = r.outer[0].get_ref().0.borrow().local_addr();
+                let mut slab = r.pools.ciphertext.acquire().unwrap();
+                slab.bytes_mut()[0] = 42;
+                let packet = crate::buffers::Ciphertext::new(
+                    slab,
+                    1,
+                    local,
+                    "127.0.0.1:4433".parse().unwrap(),
+                    if expired {
+                        now
+                    } else {
+                        now + Duration::from_secs(1)
+                    },
+                    crate::buffers::Generation(2),
+                    0,
+                    now,
+                    now + Duration::from_secs(2),
+                )
+                .unwrap();
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .output
+                    .push_back(packet);
+                r.outer_send_hook = Some(Box::new(|_| panic!("ineligible ciphertext submitted")));
+                let result = r.service_output(
+                    2,
+                    if expired {
+                        now + Duration::from_secs(3)
+                    } else {
+                        now
+                    },
+                );
+                if expired {
+                    assert!(matches!(
+                        result,
+                        Err(OutputError::Transport(TransportError::Expired))
+                    ));
+                } else {
+                    result.unwrap();
+                    assert_eq!(
+                        r.connections[&2].transport.output.front().unwrap().bytes(),
+                        &[42]
+                    );
+                }
+                assert_eq!(r.snapshot.counters.outer_socket_sent, 0);
+            });
+        }
+    }
+
+    #[test]
+    fn available_output_credit_is_serviced_before_new_ingress_fills_a_session() {
+        session_tests::runtime().block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let mut p = Pair::new(true);
+            let (stream, _) = p.requests();
+            p.client.generation = crate::buffers::Generation(2);
+            // Replace the initial outbound handshake with this established peer.
+            r.connections.clear();
+            session_tests::install(&mut r, p.client);
+            r.primary = Some(2);
+            let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let local = r
+                .listener
+                .as_ref()
+                .unwrap()
+                .get_ref()
+                .0
+                .borrow()
+                .local_addr();
+            let id = r
+                .create_session(2, stream, Some((sender.local_addr().unwrap(), local)), now)
+                .unwrap();
+            r.sessions.get_mut(&id).unwrap().state = State::Active;
+            // Start packet residence after TLS/fixture setup has completed.
+            let now = Instant::now();
+            let payload = |n: u8| {
+                let mut bytes = [0; 128];
+                bytes[0] = n;
+                bytes
+            };
+            let mut scratch = [0; 1350];
+            for n in 0..64 {
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .enqueue(stream, &payload(n), now, now, &mut scratch)
+                    .unwrap();
+            }
+            for n in 64..96 {
+                r.queue_outgoing(id, &payload(n), now).unwrap();
+            }
+            assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 64);
+            assert_eq!(r.sessions[&id].queue.used().count, 32);
+            for n in 96..102 {
+                sender.send_to(&payload(n), local).unwrap();
+            }
+            let mut delivered = Vec::new();
+            for round in 0..3 {
+                let visits = r.owner_visits();
+                let (window, _, continuation) = service_window(visits.len(), 0);
+                assert!(!continuation, "fixture must use one bounded owner window");
+                for &(kind, key) in &visits[window] {
+                    let now = Instant::now();
+                    match kind {
+                        0 => {
+                            r.receive_outer(key as usize, now).unwrap();
+                        }
+                        1 => {
+                            r.client_input(now).unwrap();
+                        }
+                        2 => {
+                            r.h3_work(key, now).unwrap();
+                        }
+                        3 => {
+                            r.flush_relay(key, now).unwrap();
+                            r.relay_input(key, now).unwrap();
+                        }
+                        4 => {
+                            r.schedule_datagrams(key, now).unwrap();
+                        }
+                        5 => {
+                            r.connections
+                                .get_mut(&key)
+                                .unwrap()
+                                .generate_output(&r.pools.ciphertext, now)
+                                .unwrap();
+                            // Native protocol pump: pacing/native partial submissions
+                            // remain covered by the existing real-UDP output tests.
+                            while let Some(packet) = r
+                                .connections
+                                .get_mut(&key)
+                                .unwrap()
+                                .transport
+                                .output
+                                .pop_front()
+                            {
+                                let mut bytes = packet.bytes().to_vec();
+                                p.server
+                                    .quic
+                                    .recv(
+                                        &mut bytes,
+                                        quiche::RecvInfo {
+                                            from: packet.from(),
+                                            to: packet.to(),
+                                        },
+                                    )
+                                    .unwrap();
+                                while let Ok(n) = p.server.quic.dgram_recv(&mut scratch) {
+                                    let datagram =
+                                        masque::decode_datagram(&scratch[..n]).unwrap().unwrap();
+                                    delivered.push(datagram.payload[0]);
+                                }
+                                while let Ok((n, info)) = p.server.quic.send(&mut scratch) {
+                                    r.connections
+                                        .get_mut(&key)
+                                        .unwrap()
+                                        .transport
+                                        .receive(
+                                            &mut scratch[..n],
+                                            quiche::RecvInfo {
+                                                from: info.from,
+                                                to: info.to,
+                                            },
+                                            Instant::now(),
+                                        )
+                                        .unwrap();
+                                }
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                assert_eq!(
+                    r.snapshot.counters.local_drops.queue_full.to_target, 0,
+                    "new ingress was dropped before available native output/queue service"
+                );
+                assert_eq!(r.packet_continuation(), round < 2,
+                    "new staged work must survive the ring boundary, then stop requesting empty rounds");
+            }
+            assert_eq!(
+                delivered,
+                (0..102).collect::<Vec<u8>>(),
+                "accepted bytes remain FIFO without loss or duplication"
+            );
+            assert_eq!(r.sessions[&id].queue.used().count, 0);
+        });
+    }
+    #[test]
+    fn outer_read_quota_observes_native_datagram_density_and_retains_large_batches() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for size in [128, 1200] {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut p = Pair::new(true);
+                p.negotiate().unwrap();
+                session_tests::install(&mut r, p.server);
+                assert_eq!(r.outer_receive_quota(0), cfg.io().batch_max.min(32));
+                for _ in 0..8 {
+                    p.client.quic.dgram_send(&vec![7; size]).unwrap();
+                }
+                let mut bytes = [0; 1350];
+                let mut max_density = 0;
+                loop {
+                    let (length, info) = match p.client.quic.send(&mut bytes) {
+                        Ok(packet) => packet,
+                        Err(quiche::Error::Done) => break,
+                        Err(error) => panic!("native density fixture: {error:?}"),
+                    };
+                    let before = r.connections[&2].transport.quic.dgram_recv_queue_len();
+                    r.outer_packet(
+                        0,
+                        &mut bytes[..length],
+                        crate::udp::Received {
+                            index: 0,
+                            length,
+                            peer: info.from,
+                            local: info.to,
+                            overflow: None,
+                            fault: None,
+                        },
+                        Instant::now(),
+                    )
+                    .unwrap();
+                    let after = r.connections[&2].transport.quic.dgram_recv_queue_len();
+                    max_density = max_density.max(after - before);
+                }
+                assert_eq!(r.connections[&2].transport.quic.dgram_recv_queue_len(), 8);
+                assert_eq!(r.connections[&2].receive_density.estimate(), max_density);
+                // Unadmitted connections must not constrain a shared listener.
+                assert_eq!(r.outer_receive_quota(0), cfg.io().batch_max.min(32));
+                let id = r.create_session(2, 0, None, now).unwrap();
+                r.sessions.get_mut(&id).unwrap().state = State::Active;
+                if size == 128 {
+                    assert!(max_density > 1, "native coalescing must be exercised");
+                    assert!(r.outer_receive_quota(0) < cfg.io().batch_max.min(32));
+                } else {
+                    assert_eq!(max_density, 1);
+                    assert_eq!(r.outer_receive_quota(0), cfg.io().batch_max.min(32));
+                }
+                let quota = r.outer_receive_quota(0);
+                while r
+                    .connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .quic
+                    .dgram_recv(&mut bytes)
+                    .is_ok()
+                {}
+                // Draining the queue must not forget the observed coalescing.
+                assert_eq!(r.outer_receive_quota(0), quota);
+                // Other sockets do not inherit a connection's density.
+                assert_eq!(r.outer_receive_quota(1), cfg.io().batch_max.min(32));
+                r.sessions.get_mut(&id).unwrap().state = State::Closed;
+                assert_eq!(r.outer_receive_quota(0), cfg.io().batch_max.min(32));
+            }
+        });
+    }
     #[test]
     fn incoming_datagram_size_and_egress_pressure_keep_correlation() {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -3615,6 +4632,9 @@ mod tests {
                     id: connection_id,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             let id = r.create_session(2, 0, None, now).unwrap();
@@ -3741,6 +4761,9 @@ mod tests {
                     id: connection_id,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             let cases = [
@@ -3866,6 +4889,9 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             let token = std::fs::read_to_string(f.file("client.token")).unwrap();
@@ -3950,6 +4976,9 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             let id = r.create_session(2, stream, None, now).unwrap();
@@ -4064,6 +5093,9 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             let id = r.create_session(2, stream, None, Instant::now()).unwrap();
@@ -4160,6 +5192,9 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
                 },
             );
             let now = Instant::now();
@@ -4207,6 +5242,21 @@ mod tests {
                 r.snapshot.counters.app_ingress_bytes_by_direction.to_client,
                 5
             );
+            for _ in 0..32 {
+                r.queue_outgoing(id, b"bounded-round", Instant::now())
+                    .unwrap();
+            }
+            assert_eq!(r.sessions[&id].queue.used().count, 32);
+            assert!(!r.schedule_datagrams(2, Instant::now()).unwrap());
+            assert_eq!(
+                r.sessions[&id].queue.used().count,
+                0,
+                "one active flow uses exactly the 32-item packet quota"
+            );
+            assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 33);
+            assert!(!r.schedule_datagrams(2, Instant::now()).unwrap());
+            assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 33);
+
             struct Cancel(Rc<Cell<bool>>);
             impl Drop for Cancel {
                 fn drop(&mut self) {
@@ -4424,6 +5474,9 @@ mod tests {
                         id: r.diagnostics.next_id().unwrap(),
                         initial_cid: vec![],
                         cursors: [FairCursor::default(); 7],
+                        receive_density: ReceiveDensity::default(),
+                        enqueue_pending: false,
+                        output_pending: false,
                     },
                 );
                 let id = r.create_session(generation, stream, None, now).unwrap();
@@ -4538,6 +5591,70 @@ mod tests {
         });
     }
 
+    #[test]
+    fn production_flush_submits_a_bounded_sixteen_packet_prefix() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _rx) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let id = *r.connections.keys().next().unwrap();
+            let local = r.outer[r.connections[&id].socket]
+                .get_ref()
+                .0
+                .borrow()
+                .local_addr();
+            let sink = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            sink.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            for sequence in 0..20 {
+                let mut slab = r.pools.ciphertext.acquire().unwrap();
+                slab.bytes_mut()[0] = sequence as u8;
+                let packet = crate::buffers::Ciphertext::new(
+                    slab,
+                    1,
+                    local,
+                    sink.local_addr().unwrap(),
+                    now,
+                    r.connections[&id].transport.generation,
+                    sequence,
+                    now,
+                    now + Duration::from_secs(2),
+                )
+                .unwrap();
+                r.connections
+                    .get_mut(&id)
+                    .unwrap()
+                    .transport
+                    .output
+                    .push_back(packet);
+            }
+            assert!(r.flush(id, now).unwrap());
+            assert_eq!(
+                r.snapshot.counters.outer_socket_sent, 16,
+                "physical submission must keep pace with the generation visit"
+            );
+            assert_eq!(r.connections[&id].transport.output.len(), 4);
+            let mut bytes = [0; 16];
+            for sequence in 0..16 {
+                let (n, _) = sink.recv_from(&mut bytes).unwrap();
+                assert_eq!(&bytes[..n], &[sequence]);
+            }
+            sink.set_nonblocking(true).unwrap();
+            assert_eq!(
+                sink.recv_from(&mut bytes).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(r.flush(id, now).unwrap());
+            assert_eq!(r.snapshot.counters.outer_socket_sent, 20);
+            assert!(r.connections[&id].transport.output.is_empty());
+        });
+    }
     #[test]
     fn production_flush_keeps_mixed_ciphertext_prefix_metadata_and_unrelated_flow() {
         use crate::common::{IoStep, ScriptedIo};
@@ -4706,6 +5823,97 @@ mod tests {
         });
     }
     #[test]
+    fn read_continuation_stops_empty_probes_and_rearms_on_native_readiness() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            assert!(!r.client_input(now).unwrap());
+            let before = r
+                .listener
+                .as_ref()
+                .unwrap()
+                .get_ref()
+                .0
+                .borrow()
+                .stats()
+                .receive_syscalls;
+            assert_eq!(before, 1);
+            for _ in 0..16 {
+                assert!(!r.client_input(now).unwrap());
+            }
+            assert_eq!(
+                r.listener
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .0
+                    .borrow()
+                    .stats()
+                    .receive_syscalls,
+                before
+            );
+            let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let address = r
+                .listener
+                .as_ref()
+                .unwrap()
+                .get_ref()
+                .0
+                .borrow()
+                .local_addr();
+            for _ in 0..64 {
+                sender.send_to(&[7; 128], address).unwrap();
+            }
+            // Exercise the real readiness edge used by the owner wait phase.
+            let socket = r.listener.as_ref().unwrap();
+            let guard = tokio::time::timeout(Duration::from_secs(1), socket.readable())
+                .await
+                .unwrap()
+                .unwrap();
+            socket.get_ref().set_read_pending(true);
+            drop(guard);
+            assert!(r.client_input(Instant::now()).unwrap());
+            assert!(
+                r.client_input(Instant::now()).unwrap(),
+                "quota exhaustion must continue without another edge"
+            );
+            assert!(!r.client_input(Instant::now()).unwrap());
+            assert_eq!(r.snapshot.counters.app_ingress_datagrams, 64);
+            let after = r
+                .listener
+                .as_ref()
+                .unwrap()
+                .get_ref()
+                .0
+                .borrow()
+                .stats()
+                .receive_syscalls;
+            assert_eq!(after - before, 3);
+            assert!(!r.client_input(Instant::now()).unwrap());
+            assert_eq!(
+                r.listener
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .0
+                    .borrow()
+                    .stats()
+                    .receive_syscalls,
+                after
+            );
+        });
+    }
+
+    #[test]
     fn owner_expires_native_input_while_congestion_window_is_blocked() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4785,6 +5993,9 @@ mod tests {
                         id: r.diagnostics.next_id().unwrap(),
                         initial_cid: vec![],
                         cursors: [FairCursor::default(); 7],
+                        receive_density: ReceiveDensity::default(),
+                        enqueue_pending: false,
+                        output_pending: false,
                     },
                 );
                 let id = r.create_session(2, stream, None, now).unwrap();

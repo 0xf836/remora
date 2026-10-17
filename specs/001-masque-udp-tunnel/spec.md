@@ -421,10 +421,13 @@ and payload delivery does not waive required control handling or standards-defin
   feasibility prototype or pre-implementation measurements are required. Target changes MUST
   be explicit and reviewed prospectively; targets MUST NOT be relaxed retrospectively to fit
   results or failed runs relabelled as passes.
-- Linux x86_64 and ARM64 are initial release targets. Development and early baseline measurements
-  MAY begin on x86_64; ARM64 hardware, validation, and measurements MUST NOT block that work.
-  ARM64 native validation and applicable acceptance evidence remain required before claiming
-  ARM64 release support; cross-compilation alone is not runtime or performance proof.
+- The current release target is **Linux GNU x86_64** (Linux 6.1+). ARM64 is
+  deferred outside the current requirements and completion criteria by the owner
+  on 2026-10-17; no ARM64 build, runtime or benchmark evidence is required to
+  complete this scope. Prepared ARM64 tooling may remain experimental, without
+  a support claim. Reintroducing ARM64 requires an explicit scope decision and
+  target-native qualification; cross-compilation alone would not establish it.
+  See [ADR 0024](../../docs/adr/0024-defer-arm64-release-scope.md).
 - Opaque destination UDP replies contain no tunnel-session identity. Once an identical relay
   endpoint tuple is reused, a delayed reply from the authorized destination can be indistinguishable
   from a new reply, including after process restart. Likewise, an application restart reusing
@@ -444,12 +447,21 @@ and payload delivery does not waive required control handling or standards-defin
   injected loss for pass/fail performance measurements. The direct baseline is an unencrypted
   UDP relay across the same two-leg topology without the tunnel, not a shorter route.
 - Throughput baselines are established separately for 128-, 512-, and 1,200-byte payloads and
-  one/32 sessions. A baseline's sustainable rate is its highest delivered rate with at most
-  0.1% loss. Simultaneous runs use matching simultaneous baselines, recording each direction.
+  one/32 sessions. A baseline's sustainable estimate is its highest tested valid rate with at most
+  0.1% loss under the prospectively declared bounded search; reports retain the
+  tested bracket and do not claim exact capacity between tested points. Simultaneous runs use matching simultaneous baselines, recording each direction.
   Loss/latency tests offer 50% of the corresponding direct sustainable rate in each direction;
   if Remora cannot sustain this offered load, the loss/latency criteria still apply.
-- Performance comparisons use at least five paired runs, each with a 60-second warm-up and a
-  five-minute measured interval, stable routing, and identical diagnostic settings. Each run
+- Performance comparisons use the prospectively approved bounded-reference-v2 method:
+  three paired repetitions, each with a three-second loaded warm-up and a 15-second
+  measured interval; resource comparisons instead measure for 60 seconds. The complete
+  cycle has a 90-minute wall budget including cleanup; exhaustion leaves qualification
+  incomplete. Calibration uses at most six eight-second measurements per workload.
+  Generation uniformly schedules the exact declared count within measurement
+  duration minus an explicit 20ms completion reserve; collect over the original
+  interval. Record the slightly higher active rate; both members match this
+  waveform. Missing slots remain invalid, and no late catch-up is allowed.
+  Routing and diagnostic settings match each pair. Each run
   MUST meet the thresholds; reports include spread and sample counts. Probe traffic measures
   round-trip latency during load without materially changing it. The resource test records its
   own matching 500 Mbit/s-per-direction load; overload probes use 128-byte request/response

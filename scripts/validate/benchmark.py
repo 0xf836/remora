@@ -9,6 +9,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def install_termination_handler():
+    """Let existing finally blocks reap owned groups on timed/caller stops."""
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt(f"runner received signal {signum}")
+    for signum in [signal.SIGTERM, signal.SIGHUP]:
+        signal.signal(signum, interrupted)
+
+
 class Owned:
     def __init__(self, cmd, path, blocked_stdout=False, cpu=None):
         self.out = open(path.with_suffix(".stdout.ndjson"), "wb")
@@ -149,6 +157,7 @@ def resource(p):
 
 
 def main():
+    install_termination_handler()
     a = argparse.ArgumentParser()
     a.add_argument(
         "--profile", "--manifest", dest="profile", default="benchmarks/mvp-x86_64.toml"
@@ -268,9 +277,9 @@ def main():
         },
         "source_sha256": {
             str(p.relative_to(ROOT)): sha(p)
-            for base in ["src", "tools/traffic/src", "scripts/validate"]
+            for base in ["src", "tools/traffic/src", "scripts/validate", "vendor"]
             for p in sorted((ROOT / base).rglob("*"))
-            if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+            if p.is_file() and "__pycache__" not in p.parts and "target" not in p.parts and p.suffix != ".pyc"
         },
         "locks": {p: sha(ROOT / p) for p in ["Cargo.lock", "tools/traffic/Cargo.lock"]},
         "binaries": {

@@ -1,5 +1,7 @@
 # ADR-0004: Native independent qualification and frozen benchmark criteria
 
+**Scope update — 2026-10-17:** [ADR 0024](0024-defer-arm64-release-scope.md) supersedes the original ARM64 commitment below. Linux GNU x86_64 is the sole current required release target; ARM64 is deferred outside completion gates. The original research/decision text remains historical.
+
 Date: 2026-10-10. Revised: 2026-10-11. Status: design selected; revised A2 accepted, early measurements are normal implementation work.
 
 ## Context

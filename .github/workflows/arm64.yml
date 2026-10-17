@@ -1,0 +1,60 @@
+name: Experimental ARM64 checks (manual only)
+
+# ARM64 is deferred outside current requirements; retain only opt-in tooling.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Require a native ARM64 host
+        run: test "$(uname -m)" = aarch64
+      - name: Record native hardware
+        run: |
+          uname -a
+          lscpu
+          cat /proc/meminfo
+      - name: Build pinned tool image
+        run: docker build --pull -f tools/build/Dockerfile -t remora-build .
+      - name: Locked build, formatting, lint, and implemented tests
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --env CARGO_HOME=/tmp/cargo \
+            --mount "type=bind,source=$PWD,target=/work" remora-build \
+            bash -euc '
+              rustc --version --verbose
+              python3 --version
+              openssl version
+              cargo fetch --locked
+              python3 scripts/validate/quiche_inputs.py
+              cargo build --locked --release
+              cargo fmt --all -- --check
+              cargo clippy --locked --all-targets --all-features -- -D warnings
+              cargo test --locked --all-targets --all-features
+              python3 scripts/validate/quiche_tests.py --output target/quiche-source
+              cargo build --locked --release --manifest-path tools/traffic/Cargo.toml
+              cargo fmt --all --manifest-path tools/traffic/Cargo.toml -- --check
+              cargo clippy --locked --manifest-path tools/traffic/Cargo.toml --all-targets -- -D warnings
+              cargo test --locked --manifest-path tools/traffic/Cargo.toml
+              cargo fmt --all --manifest-path tools/safety/Cargo.toml -- --check
+              cargo clippy --locked --manifest-path tools/safety/Cargo.toml --all-targets -- -D warnings
+              cargo test --locked --manifest-path tools/safety/Cargo.toml
+              python3 -m unittest discover -s tests -p "test_*.py"
+            '
+      - name: Ordinary-user release process walkthrough
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" --env CARGO_HOME=/tmp/cargo \
+            --mount "type=bind,source=$PWD,target=/work" remora-build \
+            ./scripts/validate/operations.sh --output benchmarks/results/arm64-operations
+      - name: Report qualification scope
+        run: |
+          echo 'Implemented-contract tests only; empty entry points are not coverage.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Experimental manual ARM64 checks only; outside current x86_64 requirements. No ARM64 release qualification is asserted.' >> "$GITHUB_STEP_SUMMARY"

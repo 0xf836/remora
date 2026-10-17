@@ -142,6 +142,16 @@ pub struct Churn {
 #[serde(deny_unknown_fields)]
 pub struct Suite {
     pub schema_version: u32,
+    #[serde(default)]
+    pub methodology: Option<String>,
+    #[serde(default)]
+    pub completion_guard_ms: Option<u64>,
+    #[serde(default)]
+    pub capacity_32_simultaneous_seconds: Option<u64>,
+    #[serde(default)]
+    pub elapsed_seconds: Option<f64>,
+    #[serde(default)]
+    pub wall_budget_seconds: Option<u64>,
     pub topology: String,
     pub link_mbit_s: u64,
     pub reference_rtt_ms: u64,
@@ -204,14 +214,35 @@ impl Suite {
         use std::collections::HashSet;
         let mut invalid = Vec::new();
         let mut failed = Vec::new();
-        if self.schema_version != 2
+        let bounded = (self.schema_version == 3
+            && self.methodology.as_deref() == Some("bounded-reference-v1")
+            && self.completion_guard_ms.is_none())
+            || (self.schema_version == 4
+                && self.methodology.as_deref() == Some("bounded-reference-v2")
+                && self.completion_guard_ms == Some(20));
+        if !(bounded || self.schema_version == 2 && self.methodology.is_none())
+            || self.capacity_32_simultaneous_seconds.is_some()
+                && (self.schema_version != 4 || self.capacity_32_simultaneous_seconds != Some(60))
+            || bounded
+                && (self.wall_budget_seconds != Some(5400)
+                    || self
+                        .elapsed_seconds
+                        .is_none_or(|v| !nonnegative(v) || v > 5400.0))
+            || !bounded
+                && (self.wall_budget_seconds.is_some()
+                    || self.elapsed_seconds.is_some()
+                    || self.completion_guard_ms.is_some())
             || self.topology != "two-leg"
             || self.link_mbit_s != 1000
             || self.reference_rtt_ms != 20
-            || self.architecture != "x86_64"
+            || !matches!(self.architecture.as_str(), "x86_64" | "aarch64")
             || self.role_available_cores.iter().any(|n| *n < 4)
             || !self.network_settings_recorded
-            || !(5..=100).contains(&self.repetitions)
+            || if bounded {
+                self.repetitions != 3
+            } else {
+                !(5..=100).contains(&self.repetitions)
+            }
         {
             invalid.push("reference topology/platform/pairs/settings".into());
         }
@@ -233,29 +264,67 @@ impl Suite {
                 invalid.push("invalid/duplicate sustainable search".into());
                 continue;
             }
-            for (i, step) in search.steps.iter().enumerate() {
-                if !step.generator_valid
-                    || !nonnegative(step.payload_mbit_s)
-                    || (step.payload_mbit_s - (i + 1) as f64 * 10.0).abs() > 1e-6
-                    || step
-                        .loss_percent
-                        .iter()
-                        .any(|v| !nonnegative(*v) || *v > 100.0)
-                {
-                    invalid.push("invalid search step/generator/link mismatch".into());
+            if bounded {
+                let mut lower = 0.0;
+                let mut upper: Option<f64> = None;
+                let mut selected = None;
+                for (i, step) in search.steps.iter().enumerate() {
+                    let expected = if i == 0 {
+                        125.0
+                    } else {
+                        upper.map_or((lower * 2.0_f64).min(1000.0), |upper| (lower + upper) / 2.0)
+                    };
+                    if !step.generator_valid
+                        || !nonnegative(step.payload_mbit_s)
+                        || (step.payload_mbit_s - expected).abs() > 1e-6
+                        || step
+                            .loss_percent
+                            .iter()
+                            .any(|v| !nonnegative(*v) || *v > 100.0)
+                        || i > 0 && lower == 1000.0
+                    {
+                        invalid.push("invalid bounded search step/generator".into());
+                    }
+                    let sustainable = (0..2)
+                        .filter(|d| active(&search.direction, *d))
+                        .all(|d| step.loss_percent[d] <= 0.1);
+                    if sustainable {
+                        lower = step.payload_mbit_s;
+                        selected = Some(i);
+                    } else {
+                        upper = Some(step.payload_mbit_s);
+                    }
                 }
-                let sustainable = (0..2)
-                    .filter(|d| active(&search.direction, *d))
-                    .all(|d| step.loss_percent[d] <= 0.1);
-                if i <= search.selected_step && !sustainable
-                    || i > search.selected_step && sustainable
-                    || i > search.selected_step + 1
+                if selected != Some(search.selected_step)
+                    || !(search.steps.len() == 6 || search.steps.len() < 6 && lower == 1000.0)
                 {
-                    invalid.push("unmatched sustainable search stopping policy".into());
+                    invalid.push("unmatched bounded search stopping policy".into());
                 }
-            }
-            if search.selected_step + 1 == search.steps.len() && search.steps.len() != 100 {
-                invalid.push("missing rejected search bracket".into());
+            } else {
+                for (i, step) in search.steps.iter().enumerate() {
+                    if !step.generator_valid
+                        || !nonnegative(step.payload_mbit_s)
+                        || (step.payload_mbit_s - (i + 1) as f64 * 10.0).abs() > 1e-6
+                        || step
+                            .loss_percent
+                            .iter()
+                            .any(|v| !nonnegative(*v) || *v > 100.0)
+                    {
+                        invalid.push("invalid search step/generator/link mismatch".into());
+                    }
+                    let sustainable = (0..2)
+                        .filter(|d| active(&search.direction, *d))
+                        .all(|d| step.loss_percent[d] <= 0.1);
+                    if i <= search.selected_step && !sustainable
+                        || i > search.selected_step && sustainable
+                        || i > search.selected_step + 1
+                    {
+                        invalid.push("unmatched sustainable search stopping policy".into());
+                    }
+                }
+                if search.selected_step + 1 == search.steps.len() && search.steps.len() != 100 {
+                    invalid.push("missing rejected search bracket".into());
+                }
             }
         }
         if search_keys.len() != 18 {
@@ -284,8 +353,23 @@ impl Suite {
                     && (p.sessions != 32
                         || p.payload_bytes != 1200
                         || p.direction != "simultaneous")
-                || p.warmup_seconds != 60
-                || p.measurement_seconds != 300
+                || bounded && p.phase == "capacity" && p.payload_bytes != 1200
+                || p.warmup_seconds != if bounded { 3 } else { 60 }
+                || p.measurement_seconds
+                    != if bounded {
+                        if resource {
+                            60
+                        } else if p.phase == "capacity"
+                            && p.sessions == 32
+                            && p.direction == "simultaneous"
+                        {
+                            self.capacity_32_simultaneous_seconds.unwrap_or(15)
+                        } else {
+                            15
+                        }
+                    } else {
+                        300
+                    }
             {
                 invalid.push(format!(
                     "{label}: incomplete/duplicate workload or interval"
@@ -351,7 +435,9 @@ impl Suite {
                     || r.counter_overflow
                     || r.sample_count < p.measurement_seconds as usize * 10
                     || r.rtt_samples_per_session.len() != p.sessions
-                    || r.rtt_samples_per_session.iter().any(|n| *n < 1000)
+                    || r.rtt_samples_per_session
+                        .iter()
+                        .any(|n| *n < if bounded { 100 } else { 1000 })
                     || !nonnegative(r.rtt_p95_ms)
                     || r.resources.iter().any(|r| {
                         !nonnegative(r.average_cpu_cores)
@@ -440,6 +526,9 @@ impl Suite {
             for phase in ["capacity", "subcapacity"] {
                 for sessions in [1, 32] {
                     for bytes in [128, 512, 1200] {
+                        if bounded && phase == "capacity" && bytes != 1200 {
+                            continue;
+                        }
                         for dir in ["forward", "reverse", "simultaneous"] {
                             if !keys.contains(&(phase, sessions, bytes, dir, pair)) {
                                 invalid.push(format!(
@@ -454,7 +543,7 @@ impl Suite {
                 invalid.push(format!("missing resource/{pair}"));
             }
         }
-        if keys.len() != repetitions * 37 || orders.len() != 2 {
+        if keys.len() != repetitions * if bounded { 25 } else { 37 } || orders.len() != 2 {
             invalid.push("matrix or randomized order coverage".into());
         }
         if !self.churn.valid

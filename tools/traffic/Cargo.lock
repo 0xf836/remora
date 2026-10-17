@@ -477,8 +477,7 @@ dependencies = [
 [[package]]
 name = "quiche"
 version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b35a721a2a56797347929745fa783fc99e680d9484b80324ce40106b75493a"
+source = "git+https://github.com/0xf836/quiche?rev=154ce1995f23efa434e72dac269f707145be2015#154ce1995f23efa434e72dac269f707145be2015"
 dependencies = [
  "boring",
  "boring-sys",

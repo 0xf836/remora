@@ -14,6 +14,24 @@ fn invalid(f: &Fixtures, file: &str) -> remora::config::ConfigError {
         .expect("configuration must fail closed")
 }
 #[test]
+fn socket_buffer_defaults_and_explicit_legacy_values_are_preserved() {
+    let f = Fixtures::new();
+    for file in ["client.toml", "server.toml"] {
+        let cfg = ValidatedConfig::load(&f.file(file)).unwrap();
+        assert_eq!(cfg.io().relay_socket_buffer_bytes, 131072);
+        assert_eq!(cfg.io().outer_socket_buffer_bytes, 1048576);
+        let text = fs::read_to_string(f.file(file)).unwrap();
+        fs::write(
+            f.file(file),
+            text + "\n[io]\nrelay_socket_buffer_bytes = 65536\nouter_socket_buffer_bytes = 262144\n",
+        )
+        .unwrap();
+        let legacy = ValidatedConfig::load(&f.file(file)).unwrap();
+        assert_eq!(legacy.io().relay_socket_buffer_bytes, 65536);
+        assert_eq!(legacy.io().outer_socket_buffer_bytes, 262144);
+    }
+}
+#[test]
 fn generated_material_is_private_valid_and_hashes_canonical_ascii() {
     let f = Fixtures::new();
     assert_eq!(fs::metadata(f.path()).unwrap().mode() & 0o777, 0o700);

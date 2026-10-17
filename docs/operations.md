@@ -2,7 +2,8 @@
 
 Remora runs one client or server role per process, with immutable startup
 configuration. The current implementation is tested natively on Linux x86_64.
-Native ARM64 and final release qualification remain pending. See
+The selected CUBIC profile has [Phase 8 qualification](validation/release.md);
+[ARM64 is deferred outside current requirements](adr/0024-defer-arm64-release-scope.md). See
 [build prerequisites](build.md), [operations evidence](validation/operations.md),
 [configuration contract](../specs/001-masque-udp-tunnel/contracts/cli-config.md)
 and [troubleshooting](troubleshooting.md).
@@ -142,13 +143,30 @@ sender tuple can also be invisible. Application-level freshness/cryptographic
 protocols are the mitigation when this matters; there is no absolute provenance
 or fixed socket-quarantine promise.
 
+## Compatibility and supported profile
+
+| Path or capability | Verified scope / behavior |
+| --- | --- |
+| Generic UDP | Native x86_64 IPv4/IPv6 forwarding, empty and supported-size datagrams, separate sender/local-destination associations; applications must tolerate UDP loss and fit the payload ceiling. |
+| Independent CONNECT-UDP peer | masque-go v0.6.0 / quic-go v0.63.0 in both roles with normal CA/name validation; 29 current qualification cases cover positive traffic and monitored refusals. |
+| Payload carrier | HTTP Datagrams over QUIC DATAGRAM, Context ID 0. Valid reliable DATAGRAM Capsules are parsed/discarded as unsupported carriers; no HTTP/1.1, HTTP/2 or reliable payload fallback. |
+| WireGuard | Independently prepared IPv4 peers, fixture MTU 1120, 30-minute low-rate generic/WG traffic; see the [fixture and limits](wireguard.md). No VPN/TUN management. |
+| Recovery | Reconnect/re-authorize after connectivity or server interruption, preserve the client listener, never replay outage traffic. GOAWAY drains accepted lower streams and places new work on a replacement connection. |
+| Tracing / offloads | Filtered qlog is optional and bounded. GSO/GRO are effective off; deferred `auto` reports `not_implemented`. High-rate active tracing and enabled offloads are unqualified. |
+| Platform | Linux GNU x86_64 is the sole current required platform; ARM64 is deferred, experimental and unsupported. |
+
+The independent implementation is a pinned test peer, not a blanket guarantee
+for every MASQUE product or extension. See the [wire contract](../specs/001-masque-udp-tunnel/contracts/masque-wire.md)
+and [current qualification](validation/release.md) for exact evidence.
+
 ## Controlled update, revocation and rollback
 
 Configuration, credential digests, permissions and trust are loaded once.
 Prepare complete private candidate files beside their replacements with mode
 0600. Replace files with same-filesystem atomic rename, then validate the
-candidate config. A changed credentials file does **not** update a running
-process. Until the old process exits, its accepted policy generation remains
+candidate config with the candidate executable, including its relative private
+file paths, before stopping the old process. A changed credentials file does
+**not** update a running process. Until the old process exits, its accepted policy generation remains
 in effect. Pause application traffic if the application requires a clean cut.
 
 For processes started by the operator's shell:
@@ -177,6 +195,32 @@ There is no automatic permissive fallback. Keep the candidate/revocation policy
 when undoing only an executable change if the old executable supports that
 schema. Preserve diagnostic records for both process epochs; external log
 retention and access remain the operator's responsibility.
+
+## Migrating to the selected CUBIC build
+
+Configuration remains `schema_version = 1`; there is no database or mandatory
+file-format migration. The selected build pins the corrected quiche Git revision
+in the [build guide](build.md). Replace the executable through the same controlled
+stop/start procedure as policy changes, validate private files first, and record
+the executable hash for each process epoch. A rebuilt binary is not identified
+by an earlier result merely because its version string matches.
+
+CUBIC remains the default. `bbr2_gcongestion` and `reno` are explicit settings,
+but the selected full reference qualification is CUBIC. Do not select BBR2 as an
+inferred universal fix for loss; [performance evidence](performance.md) records
+both its comparative results and CUBIC's known loss amplification.
+
+The current socket buffer requests are **1048576 bytes for outer QUIC sockets**
+and **131072 bytes for application/relay sockets**, each requested for receive
+and send. Older implicit defaults were 262144/65536. Explicit overrides stay
+explicit; an omitted field adopts the new default after restart. Review memory
+and kernel limits when upgrading many processes. Linux effective values can be
+doubled/clamped; read `socket_buffers` diagnostics for the actual RX/TX values.
+On the selected reference host they were 2097152/262144 bytes per respective
+RX/TX buffer. Remora does not change host sysctls. Kernel queue charges are
+reported separately from process RSS, and larger buffers do not guarantee WAN
+loss tolerance or tail latency. Application/native/ciphertext count and residence
+limits are unchanged; kernel waiting precedes the application residence clock.
 
 ## Optional filtered qlog
 

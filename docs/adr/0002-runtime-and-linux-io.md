@@ -1,5 +1,7 @@
 # ADR-0002: Exclusive connection ownership, Linux batching and deadline pacing
 
+**Scope update — 2026-10-17:** [ADR 0024](0024-defer-arm64-release-scope.md) supersedes the original ARM64 commitment below. Linux GNU x86_64 is the sole current required release target; ARM64 is deferred outside completion gates. The original research/decision text remains historical.
+
 Date: 2026-10-10. Revised: 2026-10-11. Status: selected baseline; early MVP measurements guide normal incremental refinement, with no separate feasibility gate.
 
 ## Context

@@ -22,6 +22,9 @@ pub(super) fn install(r: &mut Runner<'_>, transport: Connection) {
             id,
             initial_cid: vec![],
             cursors: [FairCursor::default(); 7],
+            receive_density: ReceiveDensity::default(),
+            enqueue_pending: false,
+            output_pending: false,
         },
     );
 }
@@ -246,6 +249,7 @@ fn five_continuously_pending_bodies_and_datagram_queues_make_bounded_progress() 
         }
         for _ in 0..2 {
             r.h3_work(2, now).unwrap();
+            r.schedule_datagrams(2, now).unwrap();
             r.service_transport_timers(now).unwrap();
         }
         for id in &ids {
@@ -463,6 +467,9 @@ fn critical_stop_cancels_only_its_connection_and_preserves_close_generation() {
                 id,
                 initial_cid: vec![],
                 cursors: [FairCursor::default(); 7],
+                receive_density: ReceiveDensity::default(),
+                enqueue_pending: false,
+                output_pending: false,
             },
         );
         let unaffected = r.create_session(99, other_stream, None, now).unwrap();
@@ -663,6 +670,9 @@ fn rejected_mapping_survives_sender_churn_and_fresh_connection_generation() {
                 id,
                 initial_cid: vec![],
                 cursors: [FairCursor::default(); 7],
+                receive_density: ReceiveDensity::default(),
+                enqueue_pending: false,
+                output_pending: false,
             },
         );
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -673,3 +683,70 @@ fn rejected_mapping_survives_sender_churn_and_fresh_connection_generation() {
         assert_eq!(r.budgets.setup.used().count, 0);
     });
 }
+
+#[test]
+fn native_backpressure_commits_only_actual_fair_enqueue_progress() {
+    runtime().block_on(async {
+        let f = Fixtures::new();
+        let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+        let resolver = SystemResolver::new(1).unwrap();
+        let (diag, _rx) =
+            Diagnostics::new(Role::Server, Instant::now(), Duration::from_secs(1)).unwrap();
+        let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+        let mut pair = Pair::new(true);
+        let (a, b) = pair.requests();
+        install(&mut r, pair.server);
+        let now = Instant::now();
+        let mut ids = Vec::new();
+        for stream in [a, b] {
+            let id = r.create_session(2, stream, None, now).unwrap();
+            r.sessions.get_mut(&id).unwrap().state = State::Active;
+            for _ in 0..4 {
+                r.queue_outgoing(id, &[7; 1200], now).unwrap();
+            }
+            ids.push(id);
+        }
+        let mut scratch = [0; 1350];
+        for _ in 0..cfg.limits().quiche_dgram_packets - 1 {
+            r.connections
+                .get_mut(&2)
+                .unwrap()
+                .transport
+                .enqueue(a, &[1; 1200], now, now, &mut scratch)
+                .unwrap();
+        }
+        assert!(r.schedule_datagrams(2, now).unwrap());
+        assert_eq!(r.sessions[&ids[0]].queue.used().count, 3);
+        assert_eq!(r.sessions[&ids[1]].queue.used().count, 4);
+        let committed = r.connections[&2].cursors[3];
+        for _ in 0..8 {
+            assert!(r.schedule_datagrams(2, now).unwrap());
+        }
+        assert_eq!(r.connections[&2].cursors[3].last, committed.last);
+        assert_eq!(r.connections[&2].cursors[3].ceiling, committed.ceiling);
+        assert_eq!(r.sessions[&ids[0]].queue.used().count, 3);
+        assert_eq!(r.sessions[&ids[1]].queue.used().count, 4);
+        // One 1200-byte DATAGRAM occupies one actual QUIC packet. Free one
+        // native slot, leaving both producers continuously backlogged.
+        let transport = &mut r.connections.get_mut(&2).unwrap().transport;
+        assert_eq!(
+            transport.generate(&pair.pool, Instant::now(), 1).unwrap(),
+            1
+        );
+        assert_eq!(
+            transport.quic.dgram_send_queue_len(),
+            cfg.limits().quiche_dgram_packets - 1
+        );
+        assert!(r.schedule_datagrams(2, Instant::now()).unwrap());
+        assert_eq!(r.sessions[&ids[0]].queue.used().count, 3);
+        assert_eq!(
+            r.sessions[&ids[1]].queue.used().count,
+            3,
+            "the next native slot must serve the previously unserved flow"
+        );
+    });
+}
+
+// Shared with the separate ASan/libFuzzer package; production has no new API.
+#[path = "../../fuzz/support/lifecycle.rs"]
+mod lifecycle_harness;

@@ -1,5 +1,7 @@
 # Research: Remora MASQUE UDP Tunnel
 
+**Scope update — 2026-10-17:** [ADR 0024](../../docs/adr/0024-defer-arm64-release-scope.md) supersedes the original ARM64 commitment below. Linux GNU x86_64 is the sole current required release target; ARM64 is deferred outside completion gates. The original research/decision text remains historical.
+
 **Research date**: 2026-10-10. **Decision revision**: 2026-10-11. **Scope**: architecture and API research; no implementation, interoperability run, or performance result is claimed. Findings use official documentation and tagged source. Decisions are recorded in `docs/adr/0001-transport-profile.md` through `0004-verification-and-performance.md`.
 
 ## Decision 1: Rust and a pinned Cloudflare quiche transport

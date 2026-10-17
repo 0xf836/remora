@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from benchmark import install_termination_handler
 import platform
 import shutil
 import socket
@@ -183,6 +184,7 @@ def case(binary, output, name):
 
 
 def main():
+    install_termination_handler()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/release/remora")

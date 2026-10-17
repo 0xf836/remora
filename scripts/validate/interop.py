@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from benchmark import install_termination_handler
 import socket
 import subprocess
 import tempfile
@@ -422,6 +423,7 @@ def run_case(out, peer, family, direction, case):
 
 
 def main():
+    install_termination_handler()
     p = argparse.ArgumentParser()
     p.add_argument("--fixtures", required=True)
     p.add_argument("--peer-ref", default=PIN)

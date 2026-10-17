@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from benchmark import install_termination_handler
 import re
 import secrets
 import shlex
@@ -23,6 +24,7 @@ class QualificationFailure(Exception):
 
 
 def main():
+    install_termination_handler()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--fixture", required=True)
     p.add_argument("--output", required=True)

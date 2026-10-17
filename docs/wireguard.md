@@ -4,12 +4,13 @@ WireGuard is an opaque UDP application to Remora. The operator owns peers,
 keys, routes, TUN interfaces and firewall configuration. Remora does not
 create, update or inspect private keys, install routes, or change VPN state.
 
-For the T037 qualification runner, prepare two exclusively used peers
+For the WireGuard qualification runner, prepare two exclusively used peers
 and a permitted server-side WireGuard UDP endpoint. Configure the local
 WireGuard endpoint to the Remora client's application listener; its CONNECT-UDP
 target is the approved server endpoint. Provide a private fixture describing
 how to reach each test endpoint, read-only handshake/transfer observations,
-the two Remora status collectors and the independently managed traffic path.
+the Remora status collectors for both channel pairs and the independently
+managed traffic path.
 The runner must own only its traffic/processes/results, never peer state.
 No `wg show ... dump` output should be collected because it exposes private
 material; use the specific `latest-handshakes` and `transfer` views instead.
@@ -29,8 +30,11 @@ keys, routes and guest firewall, without changing existing host VPN peers.
 The qualification runner itself does not perform this provisioning.
 
 ```bash
+cargo build --locked --release --features qlog
+cargo build --locked --release --manifest-path tools/traffic/Cargo.toml
 ./scripts/validate/libvirt-lab.sh test \
-  --seconds 1800 --output /tmp/remora-wg-qualification-new
+  --binary target/release/remora \
+  --seconds 1800 --output /tmp/remora-wg-qualification-NEW
 ```
 
 This is an explicit opt-in qualification command. It reuses a verified shared
@@ -40,6 +44,14 @@ do not start VM. Persistent guests require the separate manual `create` mode.
 For externally prepared peers use `wireguard.sh --fixture ... --start-remora`
 directly; that runner owns only its test processes and does not remove guest
 or peer state.
+
+For already prepared dedicated peers, this is the controller command (the
+private fixture must already exist; it is not a public example credential):
+
+```bash
+./scripts/validate/wireguard.sh --fixture /absolute/private/fixture.json \
+  --start-remora --seconds 1800 --output /tmp/remora-wg-external-NEW
+```
 
 The private JSON fixture has `schema_version: 1`, an absolute `ssh_config`
 path, exactly `roles.a`/`roles.b`, and a sanitized `public_environment`.
@@ -69,9 +81,30 @@ directions in structured status. Specific WG observations exclude key material
 from output. Public artifacts record the profile and hashes. Failures remain
 invalid results. Only `--seconds 1800` can set `duration_qualified: true`.
 
-T037's local two-guest 30-minute qualification passed for the recorded x86_64
-profile, with exact delivery on both WG/generic channels in both directions
-and verified disposable-lab cleanup. See the
-[run record](validation/application-compatibility.md) and
-[application compatibility](validation/application-compatibility.md) for
-verified coverage and limitations.
+## Current duration evidence and limits
+
+The selected Phase 8 T076 run on 2026-10-16 repeated the 30-minute test with
+qlog-build executable
+`7f7a3c4de7341b8edf0860ff3c8457642ff423cf4658f9aa93076db678cfe3b1`.
+It received **72000/72000 measured datagrams** across the generic and WireGuard
+channels in both directions, with zero measured loss, corruption, duplicates,
+send errors or skipped intervals. The **73 pre-readiness warmup send errors**
+remain separate evidence. The guest firewall prevented a direct target bypass,
+and both guests were shut down after the run. The
+[selected T076 report](validation/release.md) records exact inputs and cleanup;
+the earlier [T037 record](validation/application-compatibility.md) remains
+historical evidence for its own binary.
+
+This is a functional duration workload: IPv4 inner/outer path, fixture WG MTU
+**1120**, 64/128/512/1000-byte traffic payloads and 10 packets/s per channel per
+direction. Fixture QUIC idle timeouts are 15000 ms for WG and 5000 ms for the
+generic path; offloads and runtime qlog tracing are disabled. These explicit
+fixture overrides are not a change to Remora's 1200-byte default application
+ceiling or the production session idle default of 120000 ms.
+
+The test does not establish high-rate WireGuard capacity, WAN reliability,
+IPv6 WireGuard qualification, a universal safe WG MTU or native ARM64 behavior.
+The generic [reference performance profile](performance.md) is a separate
+measurement and must not be presented as WireGuard throughput. If application
+or path MTU changes, verify actual bidirectional application traffic again;
+a fresh handshake and increasing counters alone are insufficient.

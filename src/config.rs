@@ -99,8 +99,8 @@ settings!(IoSettings {
     batch_max: usize = 32,
     gso: Offload = Offload::Off,
     gro: Offload = Offload::Off,
-    outer_socket_buffer_bytes: usize = 262144,
-    relay_socket_buffer_bytes: usize = 65536,
+    outer_socket_buffer_bytes: usize = 1048576,
+    relay_socket_buffer_bytes: usize = 131072,
 });
 settings!(TransportSettings {
     cc: CongestionControl = CongestionControl::Cubic,

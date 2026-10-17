@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+from benchmark import install_termination_handler
 import re
 import shutil
 import subprocess
@@ -550,6 +551,7 @@ def characterize(network, out, scenario, peer_binary):
 
 
 def main():
+    install_termination_handler()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--scenario", choices=["all", "shutdown", *SCENARIOS], default="all")
     p.add_argument("--output", type=Path, required=True)

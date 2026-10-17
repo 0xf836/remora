@@ -95,8 +95,8 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | limits.ciphertext_residence_ms | 100 | Stuck generated output fails its connection, not recreated |
 | io.mode | mmsg | mmsg or single; batch_max default 32, range 1..64 |
 | io.gso / io.gro | off / off | off or auto; outer sockets only; unimplemented auto uses ordinary I/O with reason not_implemented; implemented auto probes capability |
-| io.outer_socket_buffer_bytes | 262144 | Requested outer kernel buffers; report effective values/clamps |
-| io.relay_socket_buffer_bytes | 65536 | Requested relay kernel buffers; report effective values/clamps |
+| io.outer_socket_buffer_bytes | 1048576 | Requested outer RX/TX kernel buffers; report effective values/clamps; explicit 262144 retains the former default; include per-socket kernel ceilings/counts separately from process RSS |
+| io.relay_socket_buffer_bytes | 131072 | Requested RX/TX buffers for client application listener and server relay sockets; report effective values/clamps; explicit 65536 retains the former default |
 | transport.cc | cubic | cubic, bbr2_gcongestion, reno; no generic bbr alias exposed |
 | transport.pacing | timerfd | Mandatory user-space deadlines; no off mode in v1 |
 | transport.outer_udp_max_bytes | 1350 | >=1200; PMTU probes and peer/path limits still apply |

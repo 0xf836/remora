@@ -107,5 +107,6 @@ in-capacity injected workload. External disk/log retention remains your policy.
 
 Use [the reproducible operations walkthrough](operations.md#reproduce-the-walkthrough)
 and [its measured functional evidence](validation/operations.md). T071 now records [scoped diagnostic overhead](performance.md#phase-7-t071-diagnostics-measurement-method--2026-10-13);
-full performance, independent final-revision interop, native ARM64 and release
-claims require their own qualification.
+performance, independent interop and release claims require their matching
+qualification. Linux GNU x86_64 is the sole current required platform;
+[ARM64 is deferred](adr/0024-defer-arm64-release-scope.md) outside this scope.

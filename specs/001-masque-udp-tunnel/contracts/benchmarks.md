@@ -17,7 +17,7 @@ As soon as the basic tunnel works, record reproducible baseline/tunnel runs in e
 
 Use observed bottlenecks to guide subsequent work: improve correctness/observability before optimizing uncertain paths, then evaluate batching/offloads/CC/buffer choices where evidence warrants it. There is no development stop merely because an initial numeric target is unmet. Fix or prospectively review target/architecture changes before claiming acceptance; never relabel failures or remove security checks for speed.
 
-The full workload, >=five paired runs, 32-session/resource/recovery/security/interop matrix and all unchanged numerical thresholds below apply to release acceptance. ARM64 native validation and applicable acceptance evidence are required before claiming ARM64 support, but do not block initial x86_64 implementation or early measurements. After the checked MVP/first-measurement checkpoint, independent-peer and prepared-WireGuard qualification may remain explicitly pending while dependency-ready product work continues; their absence cannot be recorded as a pass or bypass checks for implemented behavior.
+The full workload, three bounded-reference-v2 paired runs, 32-session/resource/recovery/security/interop matrix and all unchanged numerical thresholds below apply to release acceptance. Linux GNU x86_64 is the sole current required platform. ARM64 is deferred outside release/completion criteria by [ADR 0024](../../../docs/adr/0024-defer-arm64-release-scope.md); prepared ARM64 profiles are experimental and do not imply support. After the checked MVP/first-measurement checkpoint, independent-peer and prepared-WireGuard qualification may remain explicitly pending while dependency-ready product work continues; their absence cannot be recorded as a pass or bypass checks for implemented behavior.
 
 ## Prospective regression comparisons
 
@@ -48,7 +48,7 @@ Actual Linux adapter tests cover zero-length UDP, truncation/ancillary truncatio
 
 Process E2E uses generated local CA/secret files and unprivileged ports. Matrix includes payload equality, 32 sessions with shared/distinct targets/clients/identities, invalid/revoked credentials, forbidden/mixed/changed DNS, untrusted/expired/mismatched certs, early-data rejection, malformed protocol, size limits, overload, restart/recovery, five-second shutdown and diagnostics sentinels. A1 tests require zero cross-client delivery for distinct active associations and identifiable retained/stale-generation data, including closure/recreation and delayed callbacks. Separately characterize indistinguishable external replies after tuple reuse/restart under the documented architectural strategy; no fixed quarantine window or impossible unconditional provenance pass is asserted. Raw external captures used only by controlled tests are distinct from Remora privacy-safe diagnostics.
 
-Start native x86_64 CI with locked build, rustfmt, Clippy -D warnings and tests for implemented contracts. Add native ARM64 build/property/component/syscall/process checks as development progresses; ARM64 runner availability or results must not block initial x86_64 development. Qualify both architectures before claiming their release support. Scheduled fuzz/network jobs and release qualification run privileges only in the harness. Build-only cross checks supplement, never replace target-native execution. Refresh Rust/Go advisory checks for resolved graphs, explicit security review, and keep reports/artifacts tied to revisions.
+Start native x86_64 CI with locked build, rustfmt, Clippy -D warnings and tests for implemented contracts. Native x86_64 build/property/component/syscall/process checks and applicable full qualification are required. ARM64 checks are optional experiments outside current acceptance; any later support claim needs explicitly reintroduced scope and native evidence. Scheduled fuzz/network jobs and release qualification run privileges only in the harness. Build-only cross checks supplement, never replace target-native execution. Refresh Rust/Go advisory checks for resolved graphs, explicit security review, and keep reports/artifacts tied to revisions.
 
 ## Independent interoperability
 
@@ -68,9 +68,16 @@ Application sender -> client role -> full-duplex 1 Gbit/s bottleneck with 20 ms 
 
 Baseline is an unencrypted UDP relay at both role locations across the same two-leg route, with identical endpoint/session mapping, I/O mode, limits/buffers, route and diagnostic settings. It is not direct traffic on a shorter route or an echo-only proxy baseline. Independent open-loop senders at both ends provide directional and simultaneous streams; sparse echo probes measure RTT. Harness payload embeds test-only session id/sequence/integrity marker; Remora remains opaque to it.
 
-Establish sustainable delivered baseline rate at <=0.1% loss for each 128/512/1200-byte payload, one/32 sessions, each direction separately and simultaneous traffic separately. Search offered rates with declared step/search stopping policy (initial 1% bottleneck steps); record rejected rates, actual load, generator headroom and receiver loss. Keep simultaneous directional values, never only a sum.
+The test-only baseline CLI accepts `--outer-socket-buffer-bytes` with the same
+default as Remora `io.outer_socket_buffer_bytes`; zero and values above i32::MAX
+are invalid. An explicit old request of 262144 preserves the prior outer limit.
+Comparisons changing this value must set matching baseline/tunnel requests,
+record actual effective/clamped RX/TX limits and count owned outer sockets.
+Kernel ceilings and observed queued memory are separate from process RSS.
 
-At least five paired baseline/tunnel repetitions, each 60-second warmup and five-minute measurement. Randomize pair order, use stable routing/identical settings, record seeds and sample counts/spread. Every run passes the relevant criterion; averaging cannot hide failed runs. Offered rate excludes IP/UDP/QUIC overhead; wire occupancy is reported separately.
+Establish sustainable delivered baseline rate at <=0.1% loss for each 128/512/1200-byte payload, one/32 sessions, each direction separately and simultaneous traffic separately. Search offered rates with the bounded-reference-v1 stopping policy below; record rejected rates, actual load, generator headroom and receiver loss. Keep simultaneous directional values, never only a sum.
+
+Three paired baseline/tunnel repetitions, each three-second loaded warmup and 15-second measurement; resource pairs and the explicitly declared 32-session simultaneous capacity pairs measure 60 seconds. The complete cycle has a 90-minute wall budget with 30 seconds reserved for cleanup. Budget exhaustion is invalid/incomplete, never a pass. Randomize pair order, use stable routing/identical settings, record seeds and sample counts/spread. Every run passes the relevant criterion; averaging cannot hide failed runs. Offered rate excludes IP/UDP/QUIC overhead; wire occupancy is reported separately.
 
 | Criterion | Measurement and threshold |
 |-----------|---------------------------|
@@ -105,17 +112,31 @@ Each run directory contains manifest.json, counters.ndjson, latency histogram, s
 
 Diagnostic robustness separately saturates ordinary event/qlog output, terminal ring and blocked/failed sinks. Status reservation and acknowledgement must preserve correlation under ordinary suppression; intentional retention/output overflow must expose coverage gaps without unbounded memory or packet-loop blocking. It is not an SC-010 success case.
 
+The native resource collector uses the tools CPU mask, disjoint from both role
+masks, throughout each run. Record requested/effective collector affinity and
+verify it at each sample; restore caller affinity on success or failure. A change
+to collector placement requires matching fresh reference evidence before a
+regression comparison; preserve earlier runs with their original method.
+
 Planning packet-rate budget: 500e6/(1200*8) = 52,083 payload datagrams/s/direction, about 104,167 handled application datagrams/s/role. Two CPU cores permit ~19.2 microseconds aggregate CPU/datagram before controls. This is necessary capacity arithmetic, not proof; native profiles determine whether single-owner design is adequate. The two-core process budget does not give a single packet owner two cores: record owner-thread CPU/headroom separately from auxiliary workers. Include SC-009 probes when measuring shared-queue purge/fairness and control-timer progress; do not infer adequacy from aggregate CPU arithmetic.
 
 ## Optimization and impairment experiments
 
 After correctness/security pass, paired A/B: single vs mmsg; batch ceilings 1/8/16/32/64; GSO/GRO off vs auto; CUBIC vs BBRv2 (Reno diagnostic); pool/queue sizes; timerfd lateness versus coarse timer baseline. Evaluate tokio-quiche/custom-handler reuse against the same resource/pacing contract when relevant API constraints or measured bottlenecks justify it; this is not a mandatory pre-implementation experiment. Measure syscalls, wakeups, copies/allocations, CPU profiles, queue age, bursts, RSS and all delivery/latency criteria. Do not trade correctness/privacy/pacing for isolated throughput.
 
+ADR 0022's output visit may submit an already eligible committed prefix before
+native generation and the remaining eligible output afterwards. The shared
+visit bounds remain 16 generated packets and 16 submission descriptors total,
+counting descriptors offered even on partial progress or errors. Expiry/PMTU
+preparation precedes the initial submission; FIFO commitment and pacing apply
+to both calls. Comparisons record the two call opportunities without treating
+them as two independent submission quotas.
+
 Characterize 50/100 ms RTT, 0.1%/1% loss, asymmetry, bursts, reduced PMTU and changed network addresses. Report behavior/results, without imposing reference throughput promises on every impaired path. Privileged namespace/WireGuard procedures are reproducible optional test jobs; Remora does not configure VPNs or production hosts.
 
-## Implemented Phase 5 reference method
+## Historical Phase 5 reference method (schema 2)
 
-`benchmarks/reference-x86_64.toml` and `scripts/validate/bench.sh` select schema-2
+Before the user-approved Phase 8 revision, the reference profiles and runner selected schema-2
 full methodology; `--plan-only` emits the exact 18 sustainable searches and
 185 baseline/tunnel pairs. The seed randomizes mode order and pair scheduling.
 The owned namespace runner supplies a full-duplex 1Gbit/s veth with 10ms egress
@@ -174,3 +195,104 @@ summary hashes, matching profiles/tool binaries, complete workload coverage and
 per-metric units/bounds; release thresholds cannot be altered by that policy.
 The `--traffic-binary` option preserves the exact retained test-only fixture in
 prospective comparisons after harness source changes.
+
+
+## Phase 8 reference generator pacing
+
+Prospective reference cycles use `generator_pacing_quantum_us = 100` on both
+native profiles, passed as `--pacing-quantum-us 100` to every generator/endpoint.
+Raw endpoint JSON includes `pacing_quantum_us`; the controller rejects a missing
+or mismatched value. Schema-1 endpoint output gains this additive field.
+Existing functional commands default to zero quantum. Reference profiles from
+before this change must be regenerated with the explicit field; their archived
+results remain historical evidence and cannot be mixed into a new cycle.
+
+Slot offsets are grouped down to 100us boundaries, preserving exact declared
+counts across whole-second warmup/measurement boundaries. Service visits are
+bounded to 32 slots, overdue visits do not idle-sleep, and the final 2ms guard
+is finite. The cutoff is checked before each slot. All intended slots that
+remain unscheduled still invalidate the run; no late catch-up or error waiver
+is allowed. Baseline and tunnel use the same arrival pattern, source and
+executable, recorded in immutable manifests. ADR 0012 records the observed
+invalid cycles and rationale. This methodological change requires fresh full
+calibration and pairs; it does not alter SC acceptance thresholds.
+
+
+## Bounded reference method (schema 3, superseded prospectively by schema 4)
+
+The user approved a prospective 60–90 minute budget on 2026-10-14. Profiles
+select `methodology = "bounded-reference-v1"`, schema 3, three repetitions and
+75 pairs: 18 subcapacity workloads × three repetitions, six 1200-byte capacity
+workloads × three repetitions, and three simultaneous 32-session resource pairs.
+The same 18 separate/simultaneous baseline searches cover all payload/session
+combinations. Capacity at 128/512 bytes is not an SC-003 requirement and is
+removed from paired capacity coverage, while its loss/RTT coverage remains.
+
+Each search starts at 125 Mbit/s, doubles after valid loss-passing points until
+1000 Mbit/s or a rejected loss point, then bisects the accepted/rejected bracket.
+Stop after six points, or earlier on a valid 1000 Mbit/s point. Each point uses
+2 seconds loaded warmup, 8 seconds measurement and 500ms drain. Retain every
+point; any generator/integrity/clock/coverage failure invalidates calibration.
+Select the highest tested loss-passing point, not an interpolated or exact
+physical capacity. Each paired baseline independently confirms <=0.1% loss.
+Brackets can remain coarse; reported rates are confirmed tested estimates.
+
+Pairs use 3 seconds loaded warmup, 15 seconds measurement and 500ms drain;
+resource measurements use 60 seconds. Pair order/seed, per-run thresholds,
+generator CPU/clock validity, >=10 resource samples per measured second, RTT
+probe counts, spread, owner-thread headroom and kernel memory remain recorded.
+Three repetitions give limited variance evidence; 15-second intervals do not
+establish long-term line-rate stability or the sensitivity of five-minute
+measurements. No averaging hides a failed run. SC numerical thresholds and
+1000-cycle churn are unchanged. T076 long functional tests remain distinct.
+
+Nominal maximum intervals including common 2-second traffic startup are
+18×6×12.5 + 72×2×20.5 + 3×2×65.5 = 4695 seconds (78.25 minutes).
+This excludes parsing/process teardown/churn; the 5400-second budget reserves
+30 seconds for cleanup. Check the budget during traffic and churn and terminate
+owned process groups on exhaustion. Preserve incomplete evidence. Use fresh
+profiles/sources/binaries; schema-2 historical suites retain their strict
+original validator, and neither old invalid nor interrupted cycles can be
+relabelled as schema-3 acceptance. See ADR 0013.
+
+Schema-3 paired runs require at least 100 RTT probes per session (10Hz probes
+nominally provide 150 during 15 seconds), versus 1000 for historical schema 2.
+The smaller p95 tail sample is explicitly weaker evidence; insufficient probes
+invalidate a run. Resource sampling still requires >=10 samples/second.
+
+
+## Current completion-reserve method (schema 4)
+
+Current profiles select bounded-reference-v2 / schema 4 and require
+`generator_completion_guard_ms = 20`, passed as `--completion-guard-ms 20`.
+Retain schema-3 matrix, search policy, repeat count, measured intervals, sample
+requirements, 90-minute budget and all numerical thresholds. Retain exact
+packet counts but uniformly compress generation into the measurement interval
+minus 20ms; keep collection/resources over the full declared interval.
+This explicitly changes the arrival waveform: active rate factor S/(S-.020),
+while full-interval average load stays unchanged. Both members match. Raw
+endpoint JSON records the reserve; reject missing/mismatched values. The first
+slot outside the declared count is at the original cutoff, not inside reserve.
+No late catch-up or waiver of missing slots is allowed. Defaults for functional
+commands remain guard=0. See ADR 0014 for observed scheduling delays and risks.
+
+Keep schemas 2/3 as strict historical validators. Schema 4 requires explicit
+method/guard identity; regenerate all paired evidence for the changed waveform.
+Source/binary/profile hashes must match. Diagnostic tail service-gap and last
+submission-before-cutoff values expose scheduler/cutoff sensitivity. The reserve
+does not guarantee success under arbitrary host load. Targeted 32-session
+8/15/60-second verification precedes a fresh complete cycle.
+
+## Prospective capacity interval extension (2026-10-16)
+
+Before new T077 measurements, both native profiles explicitly select
+`capacity_32_simultaneous_seconds = 60`. Schema-4 suites carry the same field;
+both members of each of those three pairs measure 60 seconds. Other intervals,
+probe requirements, numerical thresholds, calibration and repeat counts remain
+unchanged. Without the extension, historical schema-4 suites still require
+15 seconds for this row. Schema 2/3 cannot opt into the extension.
+
+The nominal plan becomes 4965 seconds (82m45s), adding 270 seconds to 4695;
+the total deadline remains 5400 seconds with 30 seconds reserved for cleanup.
+Insufficient RTT samples still invalidate a run. Historical failures cannot
+be relabelled. See [ADR 0020](../../../docs/adr/0020-capacity-rtt-measurement-window.md).

@@ -116,7 +116,12 @@ fn suite() -> Suite {
         runs.push(p);
     }
     Suite {
+        capacity_32_simultaneous_seconds: None,
         schema_version: 2,
+        methodology: None,
+        completion_guard_ms: None,
+        elapsed_seconds: None,
+        wall_budget_seconds: None,
         topology: "two-leg".into(),
         link_mbit_s: 1000,
         reference_rtt_ms: 20,
@@ -333,4 +338,226 @@ fn release_collection_crosses_old_million_sequence_limit_without_unbounded_hashs
     c.observe(&packet(128, 1, 0, 1_000_100, 0).unwrap(), 1, 0);
     assert_eq!(c.overflow, 1);
     assert!(Collection::with_limit(400_000_001).is_err());
+}
+
+#[test]
+fn both_declared_native_architectures_preserve_the_same_release_thresholds() {
+    for architecture in ["x86_64", "aarch64"] {
+        let mut s = suite();
+        s.architecture = architecture.into();
+        assert_eq!(s.evaluate().status, "passed");
+    }
+    let mut s = suite();
+    s.architecture = "emulated-arm64".into();
+    assert_eq!(s.evaluate().status, "invalid");
+}
+
+fn bounded_suite() -> Suite {
+    let mut s = suite();
+    s.schema_version = 3;
+    s.methodology = Some("bounded-reference-v1".into());
+    s.repetitions = 3;
+    s.elapsed_seconds = Some(4700.0);
+    s.wall_budget_seconds = Some(5400);
+    for search in &mut s.searches {
+        search.steps = [125., 250., 500., 1000., 750., 625.]
+            .into_iter()
+            .map(|rate| SearchStep {
+                payload_mbit_s: rate,
+                loss_percent: if rate <= 500. { [0.; 2] } else { [1.; 2] },
+                generator_valid: true,
+            })
+            .collect();
+        search.selected_step = 2;
+    }
+    s.runs
+        .retain(|r| r.pair < 3 && (r.phase != "capacity" || r.payload_bytes == 1200));
+    for p in &mut s.runs {
+        let seconds = if p.phase == "resource" { 60 } else { 15 };
+        p.warmup_seconds = 3;
+        p.measurement_seconds = seconds;
+        for r in [&mut p.baseline, &mut p.tunnel] {
+            r.offered = p.offered_pps_per_direction.map(|rate| rate * seconds);
+            r.submitted = r.offered;
+            r.unique = r.offered;
+            r.unique_per_session = vec![r.offered.map(|n| n / p.sessions as u64); p.sessions];
+        }
+    }
+    s
+}
+#[test]
+fn bounded_method_keeps_thresholds_and_rejects_partial_or_mixed_evidence() {
+    let good = bounded_suite();
+    assert_eq!(good.runs.len(), 75);
+    assert_eq!(good.evaluate().status, "passed");
+    let bytes = serde_json::to_vec(&good).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Suite>(&bytes)
+            .unwrap()
+            .evaluate()
+            .status,
+        "passed"
+    );
+    let mut bad = good.clone();
+    bad.runs[0].tunnel.rtt_samples_per_session[0] = 99;
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    bad.elapsed_seconds = Some(5400.001);
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    bad.methodology = None;
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    bad.runs.pop();
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    bad.runs[0].measurement_seconds = 3;
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    bad.searches[0].steps[2].payload_mbit_s = 700.;
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    bad.searches[0].selected_step = 3;
+    assert_eq!(bad.evaluate().status, "invalid");
+    let mut bad = good.clone();
+    subcapacity(&mut bad).tunnel.rtt_p95_ms += 5.001;
+    assert_eq!(bad.evaluate().status, "failed");
+    let mut bad = good.clone();
+    capacity(&mut bad).tunnel.unique = capacity(&mut bad).tunnel.unique.map(|n| n * 79 / 100);
+    let c = capacity(&mut bad);
+    c.tunnel.unique_per_session = vec![c.tunnel.unique.map(|n| n / c.sessions as u64); c.sessions];
+    assert_eq!(bad.evaluate().status, "failed");
+}
+
+#[test]
+fn bounded_search_accepts_early_ceiling_and_rejects_other_early_stops() {
+    let mut good = bounded_suite();
+    let search = &mut good.searches[0];
+    search.steps.truncate(4);
+    search.steps[3].loss_percent = [0.; 2];
+    search.selected_step = 3;
+    // Keep the paired evidence consistent with the newly selected 1000 Mbit/s.
+    for p in &mut good.runs {
+        if p.sessions != search.sessions
+            || p.payload_bytes != search.payload_bytes
+            || p.direction != search.direction
+        {
+            continue;
+        }
+        let sustainable =
+            1_000_000_000 / (p.payload_bytes as u64 * 8) / p.sessions as u64 * p.sessions as u64;
+        p.sustainable_pps_per_direction = p
+            .sustainable_pps_per_direction
+            .map(|rate| if rate == 0 { 0 } else { sustainable });
+        p.offered_pps_per_direction = p.offered_pps_per_direction.map(|rate| {
+            if rate == 0 {
+                0
+            } else {
+                sustainable / 2 / p.sessions as u64 * p.sessions as u64
+            }
+        });
+        for r in [&mut p.baseline, &mut p.tunnel] {
+            r.offered = p
+                .offered_pps_per_direction
+                .map(|rate| rate * p.measurement_seconds);
+            r.submitted = r.offered;
+            r.unique = r.offered;
+            r.unique_per_session = vec![r.offered.map(|n| n / p.sessions as u64); p.sessions];
+        }
+    }
+    assert_eq!(good.evaluate().status, "passed", "{:?}", good.evaluate());
+    let mut v2 = good.clone();
+    v2.schema_version = 4;
+    v2.methodology = Some("bounded-reference-v2".into());
+    v2.completion_guard_ms = Some(20);
+    assert_eq!(v2.evaluate().status, "passed");
+    let stopping = "unmatched bounded search stopping policy";
+    for length in 1..4 {
+        let mut bad = good.clone();
+        bad.searches[0].steps.truncate(length);
+        bad.searches[0].selected_step = length - 1;
+        assert!(bad.evaluate().invalid.iter().any(|s| s == stopping));
+    }
+    let mut bad = good.clone();
+    bad.searches[0].steps[3].loss_percent = [1.; 2];
+    bad.searches[0].selected_step = 2;
+    assert!(bad.evaluate().invalid.iter().any(|s| s == stopping));
+    for length in [5, 6, 7] {
+        let mut bad = good.clone();
+        while bad.searches[0].steps.len() < length {
+            let extra = bad.searches[0].steps[3].clone();
+            bad.searches[0].steps.push(extra);
+        }
+        bad.searches[0].selected_step = length - 1;
+        assert!(
+            bad.evaluate()
+                .invalid
+                .iter()
+                .any(|s| s == "invalid bounded search step/generator")
+        );
+    }
+}
+
+#[test]
+fn completion_reserve_method_requires_explicit_identity_and_preserves_older_suites() {
+    let mut s = bounded_suite();
+    assert_eq!(s.evaluate().status, "passed");
+    s.schema_version = 4;
+    s.methodology = Some("bounded-reference-v2".into());
+    s.completion_guard_ms = Some(20);
+    assert_eq!(s.evaluate().status, "passed");
+    s.completion_guard_ms = Some(21);
+    assert_eq!(s.evaluate().status, "invalid");
+    s.completion_guard_ms = None;
+    assert_eq!(s.evaluate().status, "invalid");
+}
+
+#[test]
+fn extended_capacity_requires_declared_matched_intervals_and_unchanged_thresholds() {
+    let mut s = bounded_suite();
+    s.schema_version = 4;
+    s.methodology = Some("bounded-reference-v2".into());
+    s.completion_guard_ms = Some(20);
+    s.capacity_32_simultaneous_seconds = Some(60);
+    // A declaration alone cannot qualify the old 15-second rows.
+    assert_eq!(s.evaluate().status, "invalid");
+    for p in &mut s.runs {
+        if p.phase == "capacity" && p.sessions == 32 && p.direction == "simultaneous" {
+            p.measurement_seconds = 60;
+            for run in [&mut p.baseline, &mut p.tunnel] {
+                run.offered = run.offered.map(|n| n * 4);
+                run.submitted = run.submitted.map(|n| n * 4);
+                run.unique = run.unique.map(|n| n * 4);
+                for session in &mut run.unique_per_session {
+                    *session = session.map(|n| n * 4);
+                }
+                run.sample_count = 600;
+            }
+        }
+    }
+    assert_eq!(s.evaluate().status, "passed");
+    let mut undeclared = s.clone();
+    undeclared.capacity_32_simultaneous_seconds = None;
+    assert_eq!(undeclared.evaluate().status, "invalid");
+    let mut wrong_method = s.clone();
+    wrong_method.schema_version = 3;
+    wrong_method.methodology = Some("bounded-reference-v1".into());
+    wrong_method.completion_guard_ms = None;
+    assert_eq!(wrong_method.evaluate().status, "invalid");
+    let mut missing_probes = s.clone();
+    missing_probes
+        .runs
+        .iter_mut()
+        .find(|p| p.phase == "capacity" && p.sessions == 32 && p.direction == "simultaneous")
+        .unwrap()
+        .tunnel
+        .rtt_samples_per_session[0] = 99;
+    assert_eq!(missing_probes.evaluate().status, "invalid");
+    let row = s
+        .runs
+        .iter_mut()
+        .find(|p| p.phase == "capacity" && p.sessions == 32 && p.direction == "simultaneous")
+        .unwrap();
+    delivery(&mut row.tunnel, 0, row.baseline.unique[0] * 79 / 100);
+    assert_eq!(s.evaluate().status, "failed");
 }
