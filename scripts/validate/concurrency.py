@@ -41,6 +41,7 @@ class Lab:
         self.samples = []
         self.sockets = []
         self.scenario = scenario
+        self.packet_failure = None
         subprocess.run(
             [str(ROOT / "scripts/validate/fixtures.sh"), "--output", str(root)],
             check=True,
@@ -140,6 +141,35 @@ class Lab:
         except (BlockingIOError, OSError):
             self.generator_errors += 1
 
+    def fail_packet(self, reason, sock, data, peer):
+        """Keep one bounded attribution record, never arbitrary payload contents."""
+        if self.packet_failure is None:
+            target = sock in self.targets
+            sockets = self.targets if target else self.senders
+            self.packet_failure = dict(
+                schema_version=1,
+                reason=reason,
+                scenario=self.scenario,
+                monotonic_ns=time.monotonic_ns(),
+                receiver_kind="target" if target else "sender",
+                receiver_index=sockets.index(sock),
+                receiver_fd=sock.fileno(),
+                local_address=list(sock.getsockname()),
+                peer_address=list(peer),
+                datagram_bytes=len(data),
+                datagram_sha256=hashlib.sha256(data).hexdigest(),
+                expected_bytes=128,
+                recognized_kind=data[:1].decode("ascii")
+                if data[:1] in (b"P", b"R", b"L")
+                else None,
+            )
+            # The enclosing output is private; use create-only mode 0600 even
+            # under a permissive umask. No config, credential or raw bytes.
+            with open(self.logs / "failure.json", "x", opener=lambda p, flags: os.open(p, flags, 0o600)) as f:
+                json.dump(self.packet_failure, f, indent=2, sort_keys=True)
+                f.write("\n")
+        raise AssertionError(reason)
+
     def exchange(self, deadline):
         while time.monotonic() < deadline:
             ready, _, _ = select.select(
@@ -156,7 +186,7 @@ class Lab:
                         break
                     if len(data) != 128 or data[:1] not in (b"P", b"R", b"L"):
                         self.corrupt += 1
-                        raise AssertionError("unexpected application payload")
+                        self.fail_packet("unexpected application payload", s, data, peer)
                     kind, idx, seq = (
                         data[:1],
                         int.from_bytes(data[1:3], "big"),
@@ -164,11 +194,11 @@ class Lab:
                     )
                     if data != packet(kind, idx, seq) or idx >= 32:
                         self.corrupt += 1
-                        raise AssertionError("payload integrity failed")
+                        self.fail_packet("payload integrity failed", s, data, peer)
                     if s in self.targets:
                         if s is not self.targets[idx // 16]:
                             self.cross += 1
-                            raise AssertionError("cross-destination delivery")
+                            self.fail_packet("cross-destination delivery", s, data, peer)
                         if kind == b"L":
                             self.forward += 1
                             self.send(s, data, peer)
@@ -180,13 +210,13 @@ class Lab:
                         self.relays[idx] = peer
                         if len(set(self.relays.values())) != len(self.relays):
                             self.cross += 1
-                            raise AssertionError("shared active relay tuple")
+                            self.fail_packet("shared active relay tuple", s, data, peer)
                         self.forward += 1
                         self.send(s, data, peer)
                     else:
                         if s is not self.senders[idx] or peer != self.listens[idx // 8]:
                             self.cross += 1
-                            raise AssertionError("cross-client/listener delivery")
+                            self.fail_packet("cross-client/listener delivery", s, data, peer)
                         self.reverse += 1
                         key = kind, idx, seq
                         if key in self.pending:
@@ -482,7 +512,7 @@ def main():
     )
     if seconds < 1 or not 1 <= a.cycles <= 1000:
         p.error("invalid interval/cycles")
-    a.output.mkdir(parents=True, exist_ok=False)
+    a.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     manifest = dict(
         schema_version=1,
         scenario=a.scenario,

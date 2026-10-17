@@ -45,6 +45,18 @@ three short distinguishing experiments are retained as a
 [future research backlog](phase8-decision-review-followup.md), not additional
 work started by this report.
 
+**Phase 9 working-source follow-up — 2026-10-17:** T080 improves failure
+evidence/cleanup and documents a bounded unsuccessful reproduction attempt for
+the isolated churn integrity error. T081 changes connection-local enqueue
+backpressure to satisfy reactor plan step 6. See the
+[affected verification record](phase9-convergence.md) and
+[ADR 0025](../adr/0025-connection-local-output-backpressure.md). Both tasks are
+complete: 187 native/100 Python tests, both independent-peer checks, four ASan
+smoke campaigns and the 36-member/12-check frozen CUBIC comparison pass. The new
+executable is `2e2b923c…b3cca231`. The selected full qualification below remains
+attached to its original executable; the changed executable has the separate
+affected-check/focused-comparison evidence, without a new full VM/reference run.
+
 The review also finds stale requested-buffer numbers in the T077 manifest.
 [The metadata erratum](phase8-benchmark-metadata-erratum.md) corrects this
 transparently: all 300 baseline/tunnel role diagnostics match actual effective

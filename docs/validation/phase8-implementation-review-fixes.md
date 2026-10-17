@@ -100,3 +100,35 @@ executable and its measured profile. No new VM or long performance run was
 needed or claimed. Native ARM64 remains unqualified; T079 remains excluded.
 This is the author's correction/verification record, not a second independent
 review of the fixes. Nothing was committed, pushed, published or deployed.
+
+## T080 follow-up — 2026-10-17
+
+Phase 9 closes the missing failure-evidence path without asserting a production
+fix for the original isolated churn error. `concurrency.py` now records the first
+unexpected/integrity/cross-delivery datagram's length, SHA-256 and receiver/local/
+sender socket identities in a bounded mode-0600 `failure.json`. No raw payload is
+retained. Test result directories are mode 0700. During assertion unwinding the
+Rust fixture copies only bounded JSON `manifest.json`, `summary.json` and
+`failure.json` to a unique mode-0700 `target/test-failures/remora-test-…/` directory,
+then still removes the credentials/trust/config fixture and raw logs. The panic
+prints that artifact path. The case mutex remains exclusive after a panic but
+does not turn later independent cases into poisoned-lock failures.
+
+An injected real UDP datagram regression verifies rejection, artifact retention
+after actual unwinding/cleanup, exact socket identities, private permissions and
+absence of payload/token sentinels. A second process regression poisons the real
+case lock and then successfully runs a churn scenario. Python regressions cover
+large unexpected payloads, same-sized corruption and first-failure retention.
+
+Evidence: `benchmarks/results/phase9-convergence-20261017/`. The first campaign
+retains three successful native runs, but its fuzz stage did not start because
+`cargo-fuzz` was missing from PATH; this attempt is failed infrastructure evidence.
+The corrected `investigation-retry/` campaign uses the already prepared nightly
+and cargo-fuzz environment. It completes in 144.2 seconds under a 240-second
+deadline: three full native runs, concurrent four-target 30-second ASan smoke
+campaigns, and two Python evidence tests pass. Frozen source hashes match at the
+end. The original `unexpected application payload` is not reproduced. Its cause
+remains unknown; passing retries are not a causal fix or proof that it was
+harness interference. Isolation/integrity assertions and Phase 8 results remain
+unchanged. Failure artifacts must be reviewed for privacy before publication;
+generated credentials/configs and raw logs must not be attached.

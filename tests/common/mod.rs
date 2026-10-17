@@ -218,9 +218,51 @@ impl Fixtures {
         assert!(text.contains(from), "fixture rewrite must match");
         fs::write(path, text.replace(from, to)).unwrap();
     }
+    /// Retain only the concurrency runner's bounded, non-secret JSON evidence.
+    /// Configs, raw logs and all credential/trust fixtures are always deleted.
+    #[allow(dead_code)] // This shared support is also compiled by other suites.
+    pub fn retain_concurrency_failure(&self) -> io::Result<PathBuf> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-failures");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&parent)?;
+        let retained = parent.join(self.owned_root.file_name().unwrap());
+        fs::DirBuilder::new().mode(0o700).create(&retained)?;
+        for name in ["manifest.json", "summary.json", "failure.json"] {
+            let source = self.file("concurrency-result").join(name);
+            let mut file = match fs::File::open(source) {
+                Ok(f) => f,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            // Bound reads too, including a file that grows after metadata().
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            (&mut file).take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+            if bytes.len() > 1024 * 1024 {
+                return Err(io::Error::other("failure artifact exceeds limit"));
+            }
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let target = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(retained.join(name))?;
+            serde_json::to_writer_pretty(target, &value)?;
+        }
+        Ok(retained)
+    }
 }
 impl Drop for Fixtures {
     fn drop(&mut self) {
+        if std::thread::panicking() && self.file("concurrency-result").is_dir() {
+            match self.retain_concurrency_failure() {
+                Ok(path) => eprintln!("concurrency failure artifacts: {}", path.display()),
+                Err(_) => eprintln!("could not retain bounded concurrency failure artifacts"),
+            }
+        }
         fs::remove_dir_all(&self.owned_root).expect("owned fixture cleanup");
     }
 }

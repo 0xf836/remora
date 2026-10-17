@@ -1036,3 +1036,40 @@ additive `manifest.socket-buffers-erratum.json` and
 No production behavior or numerical criterion changes, no full test rerun,
 reviewer-owned checklist edit, commit or publication. T076/T077/T078 retain their
 recorded native x86_64 scope, T072 remains unqualified, T079 remains excluded.
+
+
+## Phase 9: Convergence
+
+Present-state assessment (2026-10-17): two remaining partial obligations in the
+current native Linux GNU x86_64 scope. These tasks do not reinstate deferred
+ARM64 qualification or the superseded long benchmark methodology. The recorded
+churn integrity failure has no established attribution; it is not evidence of a
+confirmed production forwarding or authorization defect. Preserve existing
+qualification results and their executable identities.
+
+- [X] T080 HIGH — Complete the churn integrity-failure investigation and failure-evidence path in `scripts/validate/concurrency.py`, `tests/e2e/concurrency.rs`, `tests/common/mod.rs` and `docs/validation/phase8-implementation-review-fixes.md` per T047/T078 and SC-001/SC-009 (partial). The preserved `benchmarks/results/phase8-implementation-review-fixes-20261017/native-tests-final.log` reports `unexpected application payload` with `integrity_errors=1`; successful repeats do not establish its cause. Before rejecting an unexpected test datagram, capture bounded packet length/integrity information and the receiving/local/sender socket identities in a private failure artifact; preserve sanitized result/manifest information outside fixture cleanup without retaining or publishing generated credentials, keys or raw secret-bearing logs. Add a regression proving that an injected unexpected datagram fails the test and leaves usable evidence after cleanup, and prevent a poisoned case lock from obscuring subsequent case outcomes. Use a short, explicitly bounded reproduction campaign covering the original concurrent-run conditions; distinguish harness interference from a production defect using evidence, fix any established cause with an appropriate regression, and record unsuccessful reproduction attempts and residual uncertainty if attribution remains unavailable. Keep isolation/integrity assertions unchanged and repeat only the affected checks; do not claim a causal fix from passing retries or relabel prior qualification.
+- [X] T081 MEDIUM — Complete connection-local enqueue backpressure in `src/transport.rs` and `src/reactor.rs`, with regression coverage in `tests/lifecycle/reactor.rs` or the existing reactor native-test module, per plan: Reactor turn step 6 and T022 (partial). A full 32-record ciphertext FIFO currently blocks `generate()` but does not block application DATAGRAM admission into quiche when native capacity remains. Stop further application-to-native enqueue for that connection while its ciphertext queue is full, retain queued application descriptors with their original generations and expiry deadlines, and resume fair enqueue after actual output progress creates space. Keep timer/control servicing and unrelated connections progressing; do not introduce global producer backpressure or change queue/residence limits. Cover full ciphertext output with spare native capacity, EAGAIN/future pacing, accepted-prefix drain and resumption, expiry/cancellation, and unrelated-connection progress. Run applicable lifecycle/scheduling checks and the affected frozen performance comparison; bind any new performance claim to the changed executable rather than inheriting the existing T076/T077 binary qualification.
+
+
+**Phase 9 completed (2026-10-17):** T080 preserves bounded private packet/socket
+metadata and sanitized JSON across fixture cleanup, and prevents poisoned-lock
+cascades. The corrected 144.2-second concurrent native/ASan investigation does
+not reproduce the original isolated churn integrity failure; its cause remains
+unknown, with no causal-fix claim. T081 implements connection-local enqueue
+backpressure behind full committed output, retaining original generation/expiry
+and fairness while control/timers and unrelated connections progress. Both new
+native regressions fail before and pass after the gate. Format, Clippy, locked
+default/qlog release builds, 187 native tests, 100 Python tests, both separately
+executed independent-peer tests (29 protocol cases plus held-response shutdown)
+and four candidate ASan smoke campaigns pass. The prospectively frozen CUBIC
+comparison completes all 36 members/12 per-repeat checks in 32m46s under a
+45-minute budget; every resource repeat delivers 500.736 Mbit/s each way with
+zero measured endpoint loss. No thresholds are relaxed or CPU exceptions added.
+See [the Phase 9 record](../../docs/validation/phase9-convergence.md),
+[ADR 0025](../../docs/adr/0025-connection-local-output-backpressure.md),
+`benchmarks/policies/phase9-backpressure.json` and local
+`benchmarks/results/phase9-convergence-20261017/summary.json`. New qlog executable
+SHA-256: `2e2b923c0ae7e56f842f215fbe44801facadf637249cbb7cc3abd719b3cca231`.
+Existing T076/T077 results remain bound to their previous executable; no full
+VM/reference rerun, ARM64 qualification, independent Phase 9 audit, commit or
+publication is claimed by this increment.

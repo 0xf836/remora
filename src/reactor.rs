@@ -1937,11 +1937,15 @@ impl<'a> Runner<'a> {
                     Err(TransportError::Capacity) => {
                         // No packet was consumed: retry this producer first
                         // when a native slot next becomes available.
-                        self.connections
+                        let c = self
+                            .connections
                             .get_mut(&connection)
-                            .ok_or(RuntimeError::Transport)?
-                            .cursors[3] = previous;
-                        return Ok(true);
+                            .ok_or(RuntimeError::Transport)?;
+                        c.cursors[3] = previous;
+                        // A full committed FIFO needs physical/pacing progress,
+                        // not an immediate application-enqueue continuation.
+                        // Original queue expiries remain owner deadlines.
+                        return Ok(!c.transport.output_full());
                     }
                     Err(error) => {
                         s.queue.pop(direction);

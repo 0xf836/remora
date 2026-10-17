@@ -683,6 +683,12 @@ impl Connection {
         if payload.len() > self.payload_ceiling(stream) {
             return Err(TransportError::Pmtu);
         }
+        // Keep application work cancellable in its session queue while the
+        // committed FIFO cannot accept another packet. Expiry above still
+        // retires stale work instead of indefinitely returning capacity.
+        if self.output_full() {
+            return Err(TransportError::Capacity);
+        }
         let len = masque::encode_datagram(stream, payload, scratch)
             .map_err(|_| TransportError::Protocol)?;
         count_factory(|s| &mut s.encoded_payload_bytes, payload.len());
@@ -700,6 +706,11 @@ impl Connection {
         });
         self.native_expiry = Some(self.native_expiry.map_or(expiry, |old| old.min(expiry)));
         Ok(())
+    }
+    /// Full committed output blocks both generation and native application
+    /// admission on this connection, without blocking control/timer service.
+    pub(crate) fn output_full(&self) -> bool {
+        self.output.len() >= 32
     }
     pub fn purge_stream_datagrams(&mut self, stream: u64) {
         self.quic.dgram_purge_outgoing(|bytes| {
@@ -814,7 +825,7 @@ impl Connection {
             return Err(TransportError::Expired);
         }
         let mut produced = 0;
-        while produced < quota && self.output.len() < 32 && !self.stopped {
+        while produced < quota && !self.output_full() && !self.stopped {
             let mut slab = match pool.acquire() {
                 Ok(s) => s,
                 Err(_) => break,

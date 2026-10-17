@@ -28,6 +28,211 @@ pub(super) fn install(r: &mut Runner<'_>, transport: Connection) {
         },
     );
 }
+
+#[test]
+fn full_ciphertext_backpressure_preserves_packets_and_resumes_after_prefix_drain() {
+    for future in [false, true] {
+        runtime().block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let (diag, _rx) =
+                Diagnostics::new(Role::Server, Instant::now(), Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let mut blocked = Pair::new(true);
+            let (a, b) = blocked.requests();
+            install(&mut r, blocked.server);
+            let held = r.connections.remove(&2).unwrap();
+            let mut independent = Pair::new(true);
+            let (other_stream, _) = independent.requests();
+            independent.server.generation = crate::buffers::Generation(3);
+            install(&mut r, independent.server);
+            let other = r.connections.remove(&2).unwrap();
+            r.connections.insert(3, other);
+            r.connections.insert(2, held);
+            let now = Instant::now();
+            let mut ids = Vec::new();
+            for stream in [a, b] {
+                let id = r.create_session(2, stream, None, now).unwrap();
+                r.sessions.get_mut(&id).unwrap().state = State::Active;
+                for _ in 0..2 {
+                    r.queue_outgoing(id, &[7; 128], now).unwrap();
+                }
+                ids.push(id);
+            }
+            for sequence in 0..32 {
+                let mut slab = r.pools.ciphertext.acquire().unwrap();
+                slab.bytes_mut()[0] = sequence as u8;
+                r.connections
+                    .get_mut(&2)
+                    .unwrap()
+                    .transport
+                    .output
+                    .push_back(
+                        crate::buffers::Ciphertext::new(
+                            slab,
+                            1,
+                            "127.0.0.1:40001".parse().unwrap(),
+                            "127.0.0.1:40000".parse().unwrap(),
+                            now + Duration::from_millis(if future { 10 } else { 0 }),
+                            crate::buffers::Generation(2),
+                            sequence,
+                            now,
+                            now + Duration::from_millis(100),
+                        )
+                        .unwrap(),
+                    );
+            }
+            let original: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    let p = r.sessions[id].queue.front(Direction::ToClient).unwrap();
+                    (
+                        p.session(),
+                        p.connection(),
+                        p.received_at(),
+                        p.expires_at(),
+                        p.bytes().to_vec(),
+                    )
+                })
+                .collect();
+            let cursor = r.connections[&2].cursors[3];
+            assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
+            let mut scratch = [0; 1350];
+            assert_eq!(
+                r.connections.get_mut(&2).unwrap().transport.enqueue(
+                    a,
+                    &[7; 128],
+                    now,
+                    now,
+                    &mut scratch
+                ),
+                Err(TransportError::Capacity)
+            );
+            assert!(
+                !r.schedule_datagrams(2, now).unwrap(),
+                "blocked enqueue must not request a busy continuation"
+            );
+            assert_eq!(r.connections[&2].cursors[3].last, cursor.last);
+            assert_eq!(r.connections[&2].cursors[3].ceiling, cursor.ceiling);
+            assert!(!r.connections[&2].enqueue_pending);
+            let offered = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = offered.clone();
+            r.outer_send_hook = Some(Box::new(move |_| {
+                observed.set(observed.get() + 1);
+                Err(std::io::Error::from_raw_os_error(libc::EAGAIN))
+            }));
+            r.service_output(2, now).unwrap();
+            assert_eq!(offered.get(), if future { 0 } else { 1 });
+            assert_eq!(r.connections[&2].transport.output.len(), 32);
+            assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
+            for (&id, expected) in ids.iter().zip(&original) {
+                let p = r.sessions[&id].queue.front(Direction::ToClient).unwrap();
+                assert_eq!(
+                    (
+                        p.session(),
+                        p.connection(),
+                        p.received_at(),
+                        p.expires_at(),
+                        p.bytes().to_vec()
+                    ),
+                    *expected
+                );
+                assert_eq!(r.sessions[&id].queue.used().count, 2);
+            }
+            // The blocked connection does not stop another one's application work.
+            let other = r.create_session(3, other_stream, None, now).unwrap();
+            r.sessions.get_mut(&other).unwrap().state = State::Active;
+            r.queue_outgoing(other, &[8; 128], now).unwrap();
+            r.schedule_datagrams(3, now).unwrap();
+            assert_eq!(r.connections[&3].transport.quic.dgram_send_queue_len(), 1);
+            // Accept exactly one committed descriptor. Nothing is regenerated,
+            // and application work can use the newly available output credit.
+            let accepted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let observed = accepted.clone();
+            r.outer_send_hook = Some(Box::new(move |packets| {
+                observed.borrow_mut().push(packets[0].bytes.to_vec());
+                Ok(1)
+            }));
+            let due = now + Duration::from_millis(11);
+            r.flush_limit(2, due, 1).unwrap();
+            assert_eq!(*accepted.borrow(), vec![vec![0]]);
+            assert_eq!(r.connections[&2].transport.output.len(), 31);
+            assert_eq!(
+                r.connections[&2].transport.output.front().unwrap().bytes(),
+                &[1]
+            );
+            r.schedule_datagrams(2, due).unwrap();
+            assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 4);
+            for id in ids {
+                assert_eq!(r.sessions[&id].queue.used().count, 0);
+            }
+            assert!(r.connections[&2].transport.deadline(due).unwrap() <= original[0].3);
+        });
+    }
+}
+
+#[test]
+fn full_ciphertext_backpressure_does_not_prevent_expiry_or_control_cancellation() {
+    runtime().block_on(async {
+        let f = Fixtures::new();
+        let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+        let resolver = SystemResolver::new(1).unwrap();
+        let (diag, _rx) =
+            Diagnostics::new(Role::Server, Instant::now(), Duration::from_secs(1)).unwrap();
+        let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+        let mut peer = Pair::new(true);
+        let (a, b) = peer.requests();
+        install(&mut r, peer.server);
+        let now = Instant::now();
+        let mut ids = Vec::new();
+        for stream in [a, b] {
+            let id = r.create_session(2, stream, None, now).unwrap();
+            r.sessions.get_mut(&id).unwrap().state = State::Active;
+            r.queue_outgoing(id, &[7; 128], now).unwrap();
+            ids.push(id);
+        }
+        for sequence in 0..32 {
+            let mut slab = r.pools.ciphertext.acquire().unwrap();
+            slab.bytes_mut()[0] = sequence as u8;
+            r.connections
+                .get_mut(&2)
+                .unwrap()
+                .transport
+                .output
+                .push_back(
+                    crate::buffers::Ciphertext::new(
+                        slab,
+                        1,
+                        "127.0.0.1:40001".parse().unwrap(),
+                        "127.0.0.1:40000".parse().unwrap(),
+                        now + Duration::from_millis(50),
+                        crate::buffers::Generation(2),
+                        sequence,
+                        now,
+                        now + Duration::from_millis(100),
+                    )
+                    .unwrap(),
+                );
+        }
+        assert!(!r.schedule_datagrams(2, now).unwrap());
+        assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
+        r.close_session(ids[1], 0x100);
+        assert!(!r.sessions.contains_key(&ids[1]));
+        r.service_transport_timers(now + Duration::from_millis(21))
+            .unwrap();
+        r.schedule_datagrams(2, now + Duration::from_millis(21))
+            .unwrap();
+        assert_eq!(r.sessions[&ids[0]].queue.used().count, 0);
+        assert_eq!(r.snapshot.counters.local_drops.queue_expired.to_client, 1);
+        assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
+        assert_eq!(
+            r.connections[&2].transport.output.len(),
+            32,
+            "session cancellation cannot rewrite committed output"
+        );
+    });
+}
 #[test]
 fn pending_identity_quota_duplicate_completion_cancellation_and_joint_idle_close() {
     runtime().block_on(async {
