@@ -19,6 +19,16 @@ The original traffic executable SHA-256 is
 The subsequent validator-only correction revalidates the saved suite as passed;
 its new tool build is not relabelled as the original measurement executable.
 
+**T082 working-source follow-up — 2026-10-17:** The current source corrects an
+extra H3 continuation that kept the owner runnable behind full ciphertext
+output. Its qlog executable is
+`a4b10cf925fea1739595c6b30d2d46a4535ebf9dce0d5398431cca9c77da557f`.
+[The affected-check/focused-comparison record](validation/phase10-t082.md)
+passes 36 members/12 per-repeat checks against the preceding Phase 9 build
+under a newly frozen policy, with resource delivery 500.73152–500.736 Mbit/s
+per direction. These results are separate from the selected full qualification
+below and do not transfer that qualification to the changed executable.
+
 Raw artifacts remain local under
 `benchmarks/results/release/phase8-x86-cubic-20261016/reference/benchmark/`;
 the input-bound coordinator is

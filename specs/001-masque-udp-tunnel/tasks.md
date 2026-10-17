@@ -1073,3 +1073,30 @@ SHA-256: `2e2b923c0ae7e56f842f215fbe44801facadf637249cbb7cc3abd719b3cca231`.
 Existing T076/T077 results remain bound to their previous executable; no full
 VM/reference rerun, ARM64 qualification, independent Phase 9 audit, commit or
 publication is claimed by this increment.
+
+
+## Phase 10: Convergence
+
+- [X] T082 MEDIUM — Complete progress-aware owner continuation under ciphertext backpressure in `src/reactor.rs`, with native owner-loop regression coverage in `tests/lifecycle/sessions.rs` or the existing reactor test module, per T021/T081 and plan: Reactor turn step 6 (partial). `schedule_datagrams()` correctly returns no immediate enqueue continuation behind a full 32-record ciphertext FIFO, but `h3_work()` still returns true solely because the same outgoing application queue is nonempty (`src/reactor.rs:2344–2347`); `Runner::run()` ORs that result into `more` and immediately starts another owner turn even when EAGAIN or future pacing prevents output progress. The existing T081 regression asserts only the enqueue-stage result and does not cover this other continuation source. Make continuation reflect actionable work across the complete owner cycle, so retained application work behind full committed output waits for actual socket/transport progress, pacing or its original expiry instead of driving a busy loop. Preserve packet generations/deadlines, fair resumption after accepted-prefix drain, reserved control/timer/cancellation service and unrelated-connection progress; do not suppress real H3/native receive work, refresh expiry, enlarge queues or add global backpressure. Add a deterministic failing-before/passing-after regression that includes H3/control, enqueue, output and final continuation/readiness decisions with full output, spare native capacity, EAGAIN and future pacing, then verifies expiry and resumption. Run applicable lifecycle/scheduling checks and the affected prospectively frozen performance comparison, retaining exact executable provenance and the existing separation from full T076/T077 qualification.
+
+
+**Phase 10 completed (2026-10-17):** T082 removes the outgoing application-queue
+continuation from H3 and preserves progress-driven enqueue/output stage flags.
+The complete-owner-window regression fails before and passes after the fix,
+covering final physical readiness, EAGAIN/future pacing, original expiry,
+accepted-prefix resumption and cancellation. Existing multi-connection checks
+remain passing. Format, Clippy, locked default/qlog builds, 188 native tests,
+100 Python tests, both explicit independent-peer checks (29 protocol cases plus
+held-response shutdown) and four ASan smoke campaigns pass. The prospectively
+frozen comparison passes all 36 members/12 per-repeat checks in 32m46s under
+its 45-minute budget, with unchanged thresholds and production inputs. Resource
+delivery is 500.73152–500.736 Mbit/s per direction; one forward repeat loses
+28/3,129,600 messages, with zero measured endpoint loss in the other five
+resource directions. See [the T082 record](../../docs/validation/phase10-t082.md),
+[ADR 0025](../../docs/adr/0025-connection-local-output-backpressure.md),
+`benchmarks/policies/phase10-owner-continuation.json` and local
+`benchmarks/results/phase10-t082-20261017/summary.json`. New qlog executable
+SHA-256: `a4b10cf925fea1739595c6b30d2d46a4535ebf9dce0d5398431cca9c77da557f`.
+Prior full T076/T077 evidence remains bound to its original executable; no new
+full VM/reference qualification, ARM64, independent review, commit or publication
+is claimed by this increment.

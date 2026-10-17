@@ -56,3 +56,28 @@ its 45-minute budget. No retrospective tolerance change or CPU exception is
 needed. The new qlog executable is
 `2e2b923c0ae7e56f842f215fbe44801facadf637249cbb7cc3abd719b3cca231`;
 the earlier full release evidence remains bound to the previous executable.
+
+## T082 owner continuation follow-up — 2026-10-17
+
+The enqueue gate alone did not allow the owner to sleep: `h3_work()` also
+requested an immediate turn whenever the same outgoing application queue was
+nonempty. That independent continuation kept the owner runnable during EAGAIN
+or future pacing despite full ciphertext output. The new complete-window
+regression fails before removing this H3 continuation.
+
+Outgoing application queues now rely on their enqueue/output stage flags and
+physical readiness/deadlines. H3 continuation still covers unread native
+DATAGRAMs, pending body/Capsule work and bounded setup/control progress. The
+physical readiness poll is extracted unchanged into `Runner::poll_io()` so the
+regression can exercise the same final readiness decision as the running owner.
+This avoids adding another capacity predicate that could drift from the enqueue
+stage, and preserves staged work across partial owner windows. Queue budgets,
+wire behavior, original expiry and per-connection scheduling remain unchanged.
+
+The regression visits timers, outer input, H3/control, output, enqueue and relay
+stages before the final continuation/readiness checks. It covers EAGAIN with
+cached writability cleared, future pacing, preserved packet metadata, original
+expiry while still blocked, accepted-prefix resumption and cancellation.
+Existing multi-connection regressions remain the unrelated-progress check.
+Validation and exact executable identities are recorded in
+[the T082 validation record](../validation/phase10-t082.md).

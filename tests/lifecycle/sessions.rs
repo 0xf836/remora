@@ -30,6 +30,166 @@ pub(super) fn install(r: &mut Runner<'_>, transport: Connection) {
 }
 
 #[test]
+fn full_ciphertext_owner_parks_until_readiness_pacing_or_original_expiry() {
+    for future in [false, true] {
+        for expire_first in [false, true] {
+            runtime().block_on(async {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let (diag, _rx) =
+                    Diagnostics::new(Role::Server, Instant::now(), Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut peer = Pair::new(true);
+                let (a, b) = peer.requests();
+                install(&mut r, peer.server);
+                // Prime genuine cached writability. The EAGAIN output path must
+                // clear it before the final physical-readiness poll below.
+                drop(r.outer[0].writable().await.unwrap());
+                let now = Instant::now();
+                let mut ids = Vec::new();
+                for stream in [a, b] {
+                    let id = r.create_session(2, stream, None, now).unwrap();
+                    r.sessions.get_mut(&id).unwrap().state = State::Active;
+                    for _ in 0..2 {
+                        r.queue_outgoing(id, &[7; 128], now).unwrap();
+                    }
+                    ids.push(id);
+                }
+                for sequence in 0..32 {
+                    let mut slab = r.pools.ciphertext.acquire().unwrap();
+                    slab.bytes_mut()[0] = sequence as u8;
+                    r.connections
+                        .get_mut(&2)
+                        .unwrap()
+                        .transport
+                        .output
+                        .push_back(
+                            crate::buffers::Ciphertext::new(
+                                slab,
+                                1,
+                                "127.0.0.1:40001".parse().unwrap(),
+                                "127.0.0.1:40000".parse().unwrap(),
+                                now + Duration::from_millis(if future { 10 } else { 0 }),
+                                crate::buffers::Generation(2),
+                                sequence,
+                                now,
+                                now + Duration::from_millis(100),
+                            )
+                            .unwrap(),
+                        );
+                }
+                let original: Vec<_> = ids
+                    .iter()
+                    .map(|id| {
+                        let p = r.sessions[id].queue.front(Direction::ToClient).unwrap();
+                        (p.session(), p.connection(), p.received_at(), p.expires_at())
+                    })
+                    .collect();
+                r.outer_send_hook = Some(Box::new(|_| {
+                    Err(std::io::Error::from_raw_os_error(libc::EAGAIN))
+                }));
+                // Exercise every stage of an actual complete owner window,
+                // including H3's independent continuation result, not only enqueue.
+                let mut more = r.service_transport_timers(now).unwrap();
+                let visits = r.owner_visits();
+                let (window, _, continuation) = service_window(visits.len(), 0);
+                assert!(!continuation, "fixture must fit one full owner window");
+                for &(kind, key) in &visits[window] {
+                    match kind {
+                        0 => more |= r.receive_outer(key as usize, now).unwrap(),
+                        2 => {
+                            more |= r.reclaim_control(key);
+                            more |= r.h3_work(key, now).unwrap();
+                        }
+                        3 => {
+                            r.flush_relay(key, now).unwrap();
+                            more |= r.relay_input(key, now).unwrap();
+                        }
+                        4 => more |= r.schedule_datagrams(key, now).unwrap(),
+                        5 => more |= r.service_output(key, now).unwrap(),
+                        _ => unreachable!(),
+                    }
+                }
+                r.expire_sessions(now);
+                more |= continuation || r.packet_continuation();
+                assert!(
+                    !more,
+                    "blocked application work must not keep the owner running"
+                );
+                let deadline = original[0]
+                    .3
+                    .min(r.connections[&2].transport.deadline(now).unwrap());
+                r.timer.get_ref().arm(Some(deadline)).unwrap();
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                // No runtime I/O-driver tick occurs between clearing EAGAIN and
+                // polling: cached writable state must not defeat parking. Real
+                // subsequent writable notifications are deliberately eligible.
+                assert!(
+                    !r.poll_io(&mut cx),
+                    "owner must await physical readiness or its timer"
+                );
+                assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
+                for (&id, expected) in ids.iter().zip(&original) {
+                    let p = r.sessions[&id].queue.front(Direction::ToClient).unwrap();
+                    assert_eq!(
+                        (p.session(), p.connection(), p.received_at(), p.expires_at()),
+                        *expected
+                    );
+                    assert_eq!(r.sessions[&id].queue.used().count, 2);
+                }
+                if expire_first {
+                    // The original application timer retires cancellable work
+                    // even though every committed output slot remains occupied.
+                    r.schedule_datagrams(2, original[0].3).unwrap();
+                    assert_eq!(r.snapshot.counters.local_drops.queue_expired.to_client, 4);
+                    assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
+                    assert!(!r.h3_work(2, now).unwrap());
+                } else {
+                    // An accepted prefix reopens credit without touching the
+                    // original expiry or replaying the committed FIFO front.
+                    r.outer_send_hook = Some(Box::new(|packets| {
+                        assert_eq!(packets[0].bytes, &[0]);
+                        Ok(1)
+                    }));
+                    let due = now + Duration::from_millis(11);
+                    r.flush_limit(2, due, 1).unwrap();
+                    assert_eq!(r.connections[&2].transport.output.len(), 31);
+                    r.schedule_datagrams(2, due).unwrap();
+                    assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 4);
+                    assert!(
+                        r.packet_continuation(),
+                        "new native work must request output service"
+                    );
+                    assert_eq!(
+                        r.connections
+                            .get_mut(&2)
+                            .unwrap()
+                            .transport
+                            .expire_native(original[0].3),
+                        4
+                    );
+                }
+                assert!(ids.iter().all(|id| r.sessions[id].queue.used().count == 0));
+                // Cancellation/control still retires the sessions while keeping
+                // the immutable output on its original connection association.
+                for id in ids {
+                    r.close_session(id, 0x100);
+                }
+                assert!(r.sessions.is_empty());
+                assert!(
+                    r.connections[&2]
+                        .transport
+                        .output
+                        .iter()
+                        .all(|p| p.connection() == crate::buffers::Generation(2))
+                );
+            });
+        }
+    }
+}
+
+#[test]
 fn full_ciphertext_backpressure_preserves_packets_and_resumes_after_prefix_drain() {
     for future in [false, true] {
         runtime().block_on(async {

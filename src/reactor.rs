@@ -2336,19 +2336,13 @@ impl<'a> Runner<'a> {
                 Err(_) => return Err(RuntimeError::Transport),
             }
         }
-        let direction = if self.server {
-            Direction::ToClient
-        } else {
-            Direction::ToTarget
-        };
+        // Outgoing application queues belong to the enqueue stage. Its staged
+        // flags carry real progress across owner windows; merely retaining a
+        // packet behind full ciphertext output must not force another turn.
         Ok(self
-            .sessions
-            .values()
-            .any(|s| s.connection.0 == connection && s.queue.front(direction).is_some())
-            || self
-                .connections
-                .get(&connection)
-                .is_some_and(|c| c.transport.quic.dgram_recv_queue_len() > 0)
+            .connections
+            .get(&connection)
+            .is_some_and(|c| c.transport.quic.dgram_recv_queue_len() > 0)
             || self
                 .sessions
                 .values()
@@ -3418,6 +3412,60 @@ impl<'a> Runner<'a> {
             .values()
             .any(|c| c.enqueue_pending || c.output_pending)
     }
+    /// Poll physical readiness independently of staged continuation. A retained
+    /// application queue alone cannot wake an owner blocked on ciphertext output.
+    fn poll_io(&self, cx: &mut std::task::Context<'_>) -> bool {
+        let mut ready = false;
+        if poll_timer(&self.timer, cx).is_ready() {
+            ready = true;
+        }
+        for socket in &self.outer {
+            if socket.poll_read_ready(cx).is_ready() {
+                socket.get_ref().set_read_pending(true);
+                ready = true;
+            }
+        }
+        if let Some(socket) = &self.listener {
+            if socket.poll_read_ready(cx).is_ready() {
+                socket.get_ref().set_read_pending(true);
+                ready = true;
+            }
+            if self
+                .sessions
+                .values()
+                .any(|s| s.queue.front(Direction::ToClient).is_some())
+                && socket.poll_write_ready(cx).is_ready()
+            {
+                ready = true;
+            }
+        }
+        for s in self.sessions.values() {
+            if s.state == State::Active
+                && let Some(socket) = &s.relay
+            {
+                if socket.poll_read_ready(cx).is_ready() {
+                    socket.get_ref().set_read_pending(true);
+                    ready = true;
+                }
+                if s.queue.front(Direction::ToTarget).is_some()
+                    && socket.poll_write_ready(cx).is_ready()
+                {
+                    ready = true;
+                }
+            }
+        }
+        for c in self.connections.values() {
+            if c.transport
+                .output
+                .front()
+                .is_some_and(|p| p.at() <= Instant::now())
+                && self.outer[c.socket].poll_write_ready(cx).is_ready()
+            {
+                ready = true;
+            }
+        }
+        ready
+    }
     async fn run(
         &mut self,
         mut term: tokio::signal::unix::Signal,
@@ -3690,54 +3738,7 @@ impl<'a> Runner<'a> {
                 } else {
                     0
                 };
-                if poll_timer(&self.timer, cx).is_ready() {
-                    ready = true;
-                }
-                for socket in &self.outer {
-                    if socket.poll_read_ready(cx).is_ready() {
-                        socket.get_ref().set_read_pending(true);
-                        ready = true;
-                    }
-                }
-                if let Some(socket) = &self.listener {
-                    if socket.poll_read_ready(cx).is_ready() {
-                        socket.get_ref().set_read_pending(true);
-                        ready = true;
-                    }
-                    if self
-                        .sessions
-                        .values()
-                        .any(|s| s.queue.front(Direction::ToClient).is_some())
-                        && socket.poll_write_ready(cx).is_ready()
-                    {
-                        ready = true;
-                    }
-                }
-                for s in self.sessions.values() {
-                    if s.state == State::Active
-                        && let Some(socket) = &s.relay
-                    {
-                        if socket.poll_read_ready(cx).is_ready() {
-                            socket.get_ref().set_read_pending(true);
-                            ready = true;
-                        }
-                        if s.queue.front(Direction::ToTarget).is_some()
-                            && socket.poll_write_ready(cx).is_ready()
-                        {
-                            ready = true;
-                        }
-                    }
-                }
-                for c in self.connections.values() {
-                    if c.transport
-                        .output
-                        .front()
-                        .is_some_and(|p| p.at() <= Instant::now())
-                        && self.outer[c.socket].poll_write_ready(cx).is_ready()
-                    {
-                        ready = true;
-                    }
-                }
+                ready |= self.poll_io(cx);
                 if ready {
                     Poll::Ready(false)
                 } else {

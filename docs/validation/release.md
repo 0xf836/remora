@@ -45,6 +45,14 @@ three short distinguishing experiments are retained as a
 [future research backlog](phase8-decision-review-followup.md), not additional
 work started by this report.
 
+**T082 working-source follow-up — 2026-10-17:** The subsequent owner-continuation
+fix is complete with 188 native/100 Python tests, both independent-peer checks,
+four ASan smoke campaigns and the 36-member/12-check prospective comparison.
+[The T082 record](phase10-t082.md) identifies executable `a4b10cf9…7da557f`,
+the exact control and all bounds/results. This increment has no new full
+VM/reference qualification; the full acceptance below stays bound to its
+original executable.
+
 **Phase 9 working-source follow-up — 2026-10-17:** T080 improves failure
 evidence/cleanup and documents a bounded unsuccessful reproduction attempt for
 the isolated churn integrity error. T081 changes connection-local enqueue

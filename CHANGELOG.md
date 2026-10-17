@@ -39,6 +39,10 @@
 
 ### Fixed
 
+- Stop requesting immediate H3 owner turns solely for queued application data
+  behind full ciphertext output; wait for real readiness/pacing/expiry while
+  retaining staged enqueue/output progress and original packet deadlines.
+
 - Preserve accepted-prefix/pacing/cancellation invariants under send pressure
   and prevent fresh producers from consuming service ahead of eligible output.
 - Derive benchmark manifest socket-buffer requests from shared configuration
