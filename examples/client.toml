@@ -1,0 +1,10 @@
+# Forward the local UDP listener to a destination reached from the server.
+# Provision ca.pem and client.token alongside this file; see docs/operations.md.
+schema_version = 1
+
+[client]
+listen = "127.0.0.1:51821"
+proxy = "https://remora.example.com"
+target = "127.0.0.1:51820"
+ca_file = "ca.pem"
+token_file = "client.token"

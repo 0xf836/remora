@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "frozen": true,
+  "scope": "fresh five-repeat15s comparisons with tools-only collector, after this freeze; unchanged candidate12/config/platform; not final qualification",
+  "reference_manifest_sha256": "4ef22589187b33e268606f10298f7ceb71fd050db982f4ccfb7c212796fec1e8",
+  "reference_summary_sha256": "923ed79cd9190a0314242500ce659040a7c56228886117ca9eb881420f4a8b7a",
+  "baseline_binary_sha256": "b548cada020465f3399da6244e770b48dafd26d6ea8d432e0313f3152c6bef32",
+  "method": "each matched candidate run against reference extrema plus two observed spreads or floors; five adjacent old/new/direct repeats; never average away failed runs",
+  "floors": {
+    "CPU": "two 10ms ticks / 15 seconds rounded to 0.002 core",
+    "RSS": "256KiB allocator floor",
+    "RTT": "0.25ms clock/scheduling resolution",
+    "loss_delivery": "two messages per interval"
+  },
+  "workloads": {
+    "small-forward": {
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          77.19683413333334,
+          77.3793792,
+          77.36572586666666,
+          77.4356992,
+          77.51345493333334
+        ],
+        "candidate_min": 76.56359253333335
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          1.1868279746066699,
+          0.9531673941252802,
+          0.9706438773325644,
+          0.8810769008952328,
+          0.7815483290297494
+        ],
+        "candidate_max": 1.997387265760511
+      },
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          20.265,
+          20.264,
+          20.26,
+          20.254,
+          20.255
+        ],
+        "candidate_max": 20.515
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.7326865172298428,
+          0.7299611936304028,
+          0.7272848922788706,
+          0.7238031469702042,
+          0.7202197507704676
+        ],
+        "candidate_max": 0.7576200501485931
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.7313482770157242,
+          0.7286230429546368,
+          0.7252776662652215,
+          0.721794442584533,
+          0.718879807048104
+        ],
+        "candidate_max": 0.7562852169509648
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          9924608,
+          9781248,
+          9830400,
+          9986048,
+          9900032
+        ],
+        "candidate_max": 10395648
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.5654064904650384,
+          0.5593469824702262,
+          0.5560016057808108,
+          0.5570806829594911,
+          0.5533967573361919
+        ],
+        "candidate_max": 0.5894259567227316
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.56406825025092,
+          0.5573397564565771,
+          0.5539943797671618,
+          0.5557415467023769,
+          0.5507168698914646
+        ],
+        "candidate_max": 0.5907710109698308
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          9760768,
+          9773056,
+          9924608,
+          9732096,
+          9748480
+        ],
+        "candidate_max": 10309632
+      }
+    },
+    "resource-simultaneous": {
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          491.11296,
+          499.74528,
+          500.19584,
+          499.42976,
+          498.86592
+        ],
+        "candidate_min": 472.9472
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          1.9217791411042944,
+          0.19785276073619631,
+          0.10787321063394684,
+          0.2608640081799591,
+          0.37346625766871167
+        ],
+        "candidate_max": 5.5495910020449895
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          500.736,
+          500.736,
+          500.7328,
+          500.736,
+          500.736
+        ],
+        "candidate_min": 500.7264
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0006390593047034765,
+          0.0,
+          0.0
+        ],
+        "candidate_max": 0.0019171779141104297
+      },
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          21.899,
+          21.795,
+          21.31,
+          21.316,
+          21.305
+        ],
+        "candidate_max": 23.087000000000003
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8912679826028772,
+          0.9013162290372153,
+          0.900461260779464,
+          0.8986884368308351,
+          0.9044722240791495
+        ],
+        "candidate_max": 0.9308807070316941
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8899297423887587,
+          0.8999799559029865,
+          0.8984557791296209,
+          0.8986884368308352,
+          0.9031352363125879
+        ],
+        "candidate_max": 0.9295462241602462
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          11358208,
+          11632640,
+          11591680,
+          11493376,
+          11640832
+        ],
+        "candidate_max": 12689408
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.9407828705252592,
+          0.9400681499298458,
+          0.9439133631927268,
+          0.9441916488222697,
+          0.9452503509592887
+        ],
+        "candidate_max": 0.9556147530181744
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.9394446303111408,
+          0.9400681499298456,
+          0.9432448693094458,
+          0.9441916488222698,
+          0.9445818570760078
+        ],
+        "candidate_max": 0.9548563106057419
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12382208,
+          12197888,
+          12316672,
+          12279808,
+          12316672
+        ],
+        "candidate_max": 13430784
+      }
+    }
+  },
+  "absolute_criteria": "SC loss+RTT relative to contemporary two-leg direct UDP, delivered resource >=500Mbit/s each way, process RSS<=128MiB and CPU<=2 per role; unchanged full matrix criteria still required",
+  "initial_policy_sha256": "27c93dfb58f5a248521d7966a5f7a172db9a5b527d6fe17cafa6500a192065a3",
+  "prospective_tradeoff": {
+    "review": "ADR0015; same predeclared1MiB per-role resource RSS cost, freshly matched pinned-collector reference; no failed run reclassification",
+    "initial_checks_remain_failed": true,
+    "applies_to": "new comparison-pinned12 only; resource-pinned12 is absolute-criteria diagnostic, not regression evidence",
+    "affected_metric": "resource peak RSS per role only",
+    "allowed_increase_from_reference_max_bytes": 1048576,
+    "rationale": "explicit <=1MiB RSS cost per role for balanced32-item service; observed native mapping step roughly528KiB plus original256KiB RSS floor and code/allocator headroom; both roles retain native QUIC history; allocation-site attribution unproven",
+    "security_correctness_and_SC_thresholds_unchanged": true,
+    "absolute_SC007_RSS_bytes": 134217728,
+    "acceptance": "all unchanged metrics and absolute targets in every fresh candidate run; full final T076/T077 still required"
+  },
+  "unmeasured_policy_predecessor_sha256": "b6a2e9f335b46cf31ceb907fdcfcc70840cbb4c2a14e2b7a97336c1edd39c8a4",
+  "predecessor_policy_sha256": "bd6d188b394abe6f43dff3b3f83fa38a34f3d2eb293afa25a069d29f903289d9",
+  "collector_policy": "tools-only, verified each sample",
+  "previous_unpinned_policy_sha256": "29a72c36307240083d9d2d8e99dbb69a6f1bfae998d0dc2d02520925b7dc4334"
+}

@@ -1,0 +1,4 @@
+title = "Remora secret scanning"
+
+[extend]
+useDefault = true

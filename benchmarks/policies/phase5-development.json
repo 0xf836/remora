@@ -1,0 +1,290 @@
+{
+  "authority": "ADR-0007, project-owner authorization dated 2026-10-11 for this one-session 128-byte/1000pps loopback development profile",
+  "frozen": true,
+  "limitations": [
+    "five short pairs are a noise observation, not a capacity or statistical confidence claim",
+    "new workloads require new prospective references; SC criteria unchanged",
+    "Original strict policy and both failed comparisons are unchanged and retained",
+    "This later assessment cannot relabel the strict failures or qualify release performance",
+    "Only the previously authorized CPU development ceiling is applied; no other bound changes"
+  ],
+  "method": "retrospective development assessment under the previously authorized ADR-0007 0.5-core process/owner ceiling; all original non-CPU Phase 5 bounds retained; not prospective no-regression proof",
+  "schema_version": 1,
+  "scope": "early-mvp-low-rate-development-exception-phase5",
+  "tolerance_basis": {
+    "cpu": "pre-existing owner-authorized 0.5 cores per role, process and owner; provisional smoke ceiling, not a calibrated regression tolerance",
+    "delivery": "two messages per 3 seconds",
+    "rss": "2x reference spread or 256KiB allocation floor",
+    "rtt": "2x reference spread or 0.25ms scheduling floor"
+  },
+  "workloads": [
+    {
+      "direction": "forward",
+      "metrics": {
+        "client_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_peak_rss_bytes": {
+          "candidate_max": 5513216,
+          "unit": "bytes"
+        },
+        "forward_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "forward_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "rtt_p95_ms": {
+          "candidate_max": 1.061,
+          "unit": "ms"
+        },
+        "server_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_peak_rss_bytes": {
+          "candidate_max": 5500928,
+          "unit": "bytes"
+        }
+      },
+      "mode": "baseline"
+    },
+    {
+      "direction": "reverse",
+      "metrics": {
+        "client_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_peak_rss_bytes": {
+          "candidate_max": 5476352,
+          "unit": "bytes"
+        },
+        "reverse_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "reverse_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "rtt_p95_ms": {
+          "candidate_max": 1.2919999999999998,
+          "unit": "ms"
+        },
+        "server_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_peak_rss_bytes": {
+          "candidate_max": 5365760,
+          "unit": "bytes"
+        }
+      },
+      "mode": "baseline"
+    },
+    {
+      "direction": "simultaneous",
+      "metrics": {
+        "client_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_peak_rss_bytes": {
+          "candidate_max": 5455872,
+          "unit": "bytes"
+        },
+        "forward_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "forward_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "reverse_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "reverse_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "rtt_p95_ms": {
+          "candidate_max": 1.0350000000000001,
+          "unit": "ms"
+        },
+        "server_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_peak_rss_bytes": {
+          "candidate_max": 5468160,
+          "unit": "bytes"
+        }
+      },
+      "mode": "baseline"
+    },
+    {
+      "direction": "forward",
+      "metrics": {
+        "client_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_peak_rss_bytes": {
+          "candidate_max": 8945664,
+          "unit": "bytes"
+        },
+        "forward_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "forward_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "rtt_p95_ms": {
+          "candidate_max": 1.439,
+          "unit": "ms"
+        },
+        "server_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_peak_rss_bytes": {
+          "candidate_max": 8949760,
+          "unit": "bytes"
+        }
+      },
+      "mode": "tunnel"
+    },
+    {
+      "direction": "reverse",
+      "metrics": {
+        "client_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_peak_rss_bytes": {
+          "candidate_max": 8945664,
+          "unit": "bytes"
+        },
+        "reverse_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "reverse_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "rtt_p95_ms": {
+          "candidate_max": 1.6480000000000001,
+          "unit": "ms"
+        },
+        "server_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_peak_rss_bytes": {
+          "candidate_max": 8949760,
+          "unit": "bytes"
+        }
+      },
+      "mode": "tunnel"
+    },
+    {
+      "direction": "simultaneous",
+      "metrics": {
+        "client_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "client_peak_rss_bytes": {
+          "candidate_max": 8933376,
+          "unit": "bytes"
+        },
+        "forward_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "forward_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "reverse_delivered_mbit_s": {
+          "candidate_min": 1.0233173333333334,
+          "unit": "Mbit/s"
+        },
+        "reverse_loss_percent": {
+          "candidate_max": 0.06666666666666667,
+          "unit": "percentage points"
+        },
+        "rtt_p95_ms": {
+          "candidate_max": 1.2200000000000002,
+          "unit": "ms"
+        },
+        "server_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_owner_average_cpu_cores": {
+          "candidate_max": 0.5,
+          "unit": "cores"
+        },
+        "server_peak_rss_bytes": {
+          "candidate_max": 8966144,
+          "unit": "bytes"
+        }
+      },
+      "mode": "tunnel"
+    }
+  ]
+}

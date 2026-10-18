@@ -1,0 +1,54 @@
+{
+  "baseline_revision": "34d4a8fa13aa67436e057773d1a3199b69aba233",
+  "blocked_collection": "Exact DiagnosticCollectionIncomplete failure, writer pipe_write observed per role, stop within 5 s, full delivery; never SC-010 success.",
+  "candidate_modes": [
+    "off",
+    "default",
+    "verbose",
+    "filtered-qlog"
+  ],
+  "delivery": "Every active flow must deliver exactly the declared offered messages with zero loss/corruption/generator errors. No delivery noise allowance.",
+  "floors": {
+    "cpu_ticks": 2,
+    "rss_bytes": 262144,
+    "rtt_ms": 0.25
+  },
+  "increments": {
+    "default": {
+      "owner_cpu_cores": 0.02,
+      "process_cpu_cores": 0.02,
+      "rss_bytes": 2097152,
+      "rtt_ms": 0.5
+    },
+    "filtered-qlog": {
+      "owner_cpu_cores": 0.05,
+      "process_cpu_cores": 0.05,
+      "rss_bytes": 3145728,
+      "rtt_ms": 0.5
+    },
+    "off": {
+      "owner_cpu_cores": 0.02,
+      "process_cpu_cores": 0.02,
+      "rss_bytes": 2097152,
+      "rtt_ms": 0.5
+    },
+    "verbose": {
+      "owner_cpu_cores": 0.02,
+      "process_cpu_cores": 0.02,
+      "rss_bytes": 2097152,
+      "rtt_ms": 0.5
+    }
+  },
+  "noise_method": "twice pre-change reference repeat spread or declared resolution floor; fixed before candidate construction and measurements",
+  "normal_collection": "No event/status/coverage loss or numeric overflow; qlog must remain active within published caps.",
+  "pair_order": "Reference interleaves modes/directions/blocked cases across five rounds; four distinct physical cores, one per role. Candidate pairs alternate first executable by repeat index. Every run/delta and baseline stationarity gate must pass.",
+  "qlog_reference_mode": "default",
+  "rationale": "The mandatory telemetry allowance is an absolute 0.02 of one CPU core per role at 100 pps, retaining 0.98 core of the single reactor for other work; optional filtered tracing is explicitly allowed 0.05 core. These are workload-specific cost budgets, not universal percentages. RSS budgets cover the bounded 2 MiB diagnostic storage and, for active qlog, an additional 1 MiB allocator/native tracing margin. Added p95 RTT is limited to 0.5 ms, one tenth of the separate release added-RTT ceiling. Clock-tick, 256 KiB RSS and 0.25 ms timing floors account for measurement granularity. No release criterion is waived.",
+  "reference_modes": [
+    "off",
+    "default",
+    "verbose"
+  ],
+  "schema_version": 1,
+  "scope": "New pinned/interleaved acceptance cycle after preserved unpinned baseline-drift failure; same cost budgets; native one-session low-rate loopback only."
+}

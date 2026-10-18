@@ -1,0 +1,396 @@
+{
+  "schema_version": 1,
+  "frozen": true,
+  "scope": "prospective three-repeat history32 focused comparison, not full qualification",
+  "baseline_binary_sha256": "3912e2574812ae86af4d3da580511409ed972f1eeef8c3ef9e52c295a24cccba",
+  "reference_manifest_sha256": "feb6b27f8fefe93a98e7fe25be5da94dfc44f08a1c9e68482b45aa3cbdb9b12b",
+  "reference_summary_sha256": "ecaeb9b8d0c09ee6f3c0274130328af8fee8aeded28ef45d3e0fd97ebdf608a7",
+  "capacity_reference_manifest_sha256": "fbe820ae07f16bcb5d47bc1b7943ff54a94a50c021f3b22d0ed9613b99a3c806",
+  "capacity_reference_summary_sha256": "592fddd63013c01d756877c20a4c4d8cf200fad9b8bb06520e51f340598e75f7",
+  "method_sha256": "1155ef521b95a944104aa90d55af6a33a01671742a446fcbee6b28bee36824bf",
+  "reference_validity": [
+    {
+      "repeat": 0,
+      "workload": "small-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 1,
+      "workload": "small-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 2,
+      "workload": "small-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 0,
+      "workload": "capacity-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 1,
+      "workload": "capacity-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 2,
+      "workload": "capacity-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 0,
+      "workload": "resource-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 1,
+      "workload": "resource-simultaneous",
+      "invalid_reasons": []
+    },
+    {
+      "repeat": 2,
+      "workload": "resource-simultaneous",
+      "invalid_reasons": []
+    }
+  ],
+  "workloads": {
+    "small-simultaneous": {
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          20.257,
+          20.271,
+          20.274
+        ],
+        "margin": 0.25,
+        "candidate_max": 20.524
+      },
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          66.405376,
+          66.405376,
+          66.405376
+        ],
+        "margin": 0.00013653333333333334,
+        "candidate_min": 66.40523946666667
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "margin": 0.0002056058433180671,
+        "candidate_max": 0.0002056058433180671
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          66.405376,
+          66.405376,
+          66.405376
+        ],
+        "margin": 0.00013653333333333334,
+        "candidate_min": 66.40523946666667
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "margin": 0.0002056058433180671,
+        "candidate_max": 0.0002056058433180671
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.38674401546976067,
+          0.3873168773831025,
+          0.38849882982280176
+        ],
+        "margin": 0.0035096287060821796,
+        "candidate_max": 0.39200845852888394
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.3867440154697606,
+          0.38531005418422637,
+          0.38716148445336007
+        ],
+        "margin": 0.003702860538267405,
+        "candidate_max": 0.3908643449916275
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          9785344,
+          9760768,
+          9883648
+        ],
+        "margin": 262144,
+        "candidate_max": 10145792
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.39674601586984065,
+          0.39868887551006754,
+          0.3978602474088933
+        ],
+        "margin": 0.003885719280453781,
+        "candidate_max": 0.4025745947905213
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.3954124158164966,
+          0.39668205231119136,
+          0.39518555667001004
+        ],
+        "margin": 0.0029929912823626337,
+        "candidate_max": 0.399675043593554
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          9822208,
+          9822208,
+          9756672
+        ],
+        "margin": 262144,
+        "candidate_max": 10084352
+      }
+    },
+    "capacity-simultaneous": {
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          38.799,
+          38.046,
+          20.83
+        ],
+        "margin": 35.938,
+        "candidate_max": 74.737
+      },
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          527.71104,
+          602.65712,
+          873.85968
+        ],
+        "margin": 692.29728,
+        "candidate_min": 0
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          39.68365958567416,
+          31.117469130383896,
+          0.11954661165730338
+        ],
+        "margin": 79.1282259480337,
+        "candidate_max": 118.81188553370785
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          874.9056,
+          874.9056,
+          874.89488
+        ],
+        "margin": 0.021440000000211512,
+        "candidate_min": 874.8734399999997
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0012252750468164794
+        ],
+        "margin": 0.0024505500936329587,
+        "candidate_max": 0.0036758251404494383
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8988463914255663,
+          0.8948422633950927,
+          0.8843503362199864
+        ],
+        "margin": 0.0289921104111599,
+        "candidate_max": 0.9278385018367262
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8970099667774087,
+          0.8928392588883325,
+          0.8830154677879563
+        ],
+        "margin": 0.027988997978904973,
+        "candidate_max": 0.9249989647563137
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          13320192,
+          13262848,
+          13299712
+        ],
+        "margin": 262144,
+        "candidate_max": 13582336
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.900682816073724,
+          0.899849774661993,
+          0.8943618494602126
+        ],
+        "margin": 0.012641933227022895,
+        "candidate_max": 0.9133247493007469
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8991802868161405,
+          0.8983475212819229,
+          0.8931938395821862
+        ],
+        "margin": 0.011972894467908501,
+        "candidate_max": 0.911153181284049
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12754944,
+          12734464,
+          13905920
+        ],
+        "margin": 2342912,
+        "candidate_max": 16248832
+      }
+    },
+    "resource-simultaneous": {
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          20.581,
+          20.591,
+          20.592
+        ],
+        "margin": 0.25,
+        "candidate_max": 20.842
+      },
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          500.73392,
+          500.73296,
+          500.71584
+        ],
+        "margin": 0.03615999999999531,
+        "candidate_min": 500.67968
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0004153885480572597,
+          0.0006071063394683027,
+          0.004026073619631902
+        ],
+        "margin": 0.0072213701431492845,
+        "candidate_max": 0.011247443762781187
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          500.736,
+          500.736,
+          500.736
+        ],
+        "margin": 0.00032,
+        "candidate_min": 500.73568
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "margin": 6.390593047034765e-05,
+        "candidate_max": 6.390593047034765e-05
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8996147367367701,
+          0.8865886588658866,
+          0.8717640578839319
+        ],
+        "margin": 0.05570135770567641,
+        "candidate_max": 0.9553160944424465
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.898614052936173,
+          0.8855885588558856,
+          0.8704287884098612
+        ],
+        "margin": 0.05637052905262374,
+        "candidate_max": 0.9549845819887968
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12021760,
+          12021760,
+          12083200
+        ],
+        "margin": 262144,
+        "candidate_max": 12345344
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.9087876715755766,
+          0.8460846084608462,
+          0.8412197686645637
+        ],
+        "margin": 0.13513580582202578,
+        "candidate_max": 1.0439234773976023
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.9074534265081139,
+          0.8445844584458446,
+          0.8398844991904929
+        ],
+        "margin": 0.13513785463524197,
+        "candidate_max": 1.042591281143356
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12767232,
+          12795904,
+          12771328
+        ],
+        "margin": 262144,
+        "candidate_max": 13058048
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Public UDP/443 listener. Requires CAP_NET_BIND_SERVICE or UDP port forwarding.
+# Provision TLS and credentials alongside this file; see docs/operations.md.
+schema_version = 1
+
+[server]
+listen = ["0.0.0.0:443"]
+proxy = "https://remora.example.com"
+certificate_file = "server.pem"
+private_key_file = "server-key.pem"
+credentials_file = "credentials.toml"

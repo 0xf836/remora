@@ -1,0 +1,509 @@
+{
+  "schema_version": 1,
+  "frozen": true,
+  "scope": "focused outer-buffer regression and separate BBR2 diagnostics; no full qualification",
+  "control_binary_sha256": "1229d87f5fe1fbfbf5c0ccf231d033af2e96f1645184d05cd7f826c94e78cdee",
+  "candidate_binary_sha256": "a766bdb78cb54910ee1a7246b0077936b23430a9cf27627f541558f825633add",
+  "traffic_binary_sha256": "4cd340f922253f4f6996eaf5af05c9a4443514a4e0dbff50d2dc83fff9b8a11c",
+  "driver_sha256": "92f42665853b04903b791e6f8b62e8b5e23ea1a215c5285bce0163f3e36f7ef4",
+  "retained_bound_policy_sha256": "e16362935def466725f5862fe23a9803a92b36abc9201ecadea0c696a1709dd6",
+  "retained_bounds": {
+    "small-simultaneous": {
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          20.257,
+          20.271,
+          20.274
+        ],
+        "margin": 0.25,
+        "candidate_max": 20.524
+      },
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          66.405376,
+          66.405376,
+          66.405376
+        ],
+        "margin": 0.00013653333333333334,
+        "candidate_min": 66.40523946666667
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "margin": 0.0002056058433180671,
+        "candidate_max": 0.0002056058433180671
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          66.405376,
+          66.405376,
+          66.405376
+        ],
+        "margin": 0.00013653333333333334,
+        "candidate_min": 66.40523946666667
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "margin": 0.0002056058433180671,
+        "candidate_max": 0.0002056058433180671
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.38674401546976067,
+          0.3873168773831025,
+          0.38849882982280176
+        ],
+        "margin": 0.0035096287060821796,
+        "candidate_max": 0.39200845852888394
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.3867440154697606,
+          0.38531005418422637,
+          0.38716148445336007
+        ],
+        "margin": 0.003702860538267405,
+        "candidate_max": 0.3908643449916275
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          9785344,
+          9760768,
+          9883648
+        ],
+        "margin": 262144,
+        "candidate_max": 10145792
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.39674601586984065,
+          0.39868887551006754,
+          0.3978602474088933
+        ],
+        "margin": 0.003885719280453781,
+        "candidate_max": 0.4025745947905213
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.3954124158164966,
+          0.39668205231119136,
+          0.39518555667001004
+        ],
+        "margin": 0.0029929912823626337,
+        "candidate_max": 0.399675043593554
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          9822208,
+          9822208,
+          9756672
+        ],
+        "margin": 262144,
+        "candidate_max": 10084352
+      }
+    },
+    "capacity-simultaneous": {
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          38.799,
+          38.046,
+          20.83
+        ],
+        "margin": 35.938,
+        "candidate_max": 74.737
+      },
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          527.71104,
+          602.65712,
+          873.85968
+        ],
+        "margin": 692.29728,
+        "candidate_min": 0
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          39.68365958567416,
+          31.117469130383896,
+          0.11954661165730338
+        ],
+        "margin": 79.1282259480337,
+        "candidate_max": 118.81188553370785
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          874.9056,
+          874.9056,
+          874.89488
+        ],
+        "margin": 0.021440000000211512,
+        "candidate_min": 874.8734399999997
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0012252750468164794
+        ],
+        "margin": 0.0024505500936329587,
+        "candidate_max": 0.0036758251404494383
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8988463914255663,
+          0.8948422633950927,
+          0.8843503362199864
+        ],
+        "margin": 0.0289921104111599,
+        "candidate_max": 0.9278385018367262
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8970099667774087,
+          0.8928392588883325,
+          0.8830154677879563
+        ],
+        "margin": 0.027988997978904973,
+        "candidate_max": 0.9249989647563137
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          13320192,
+          13262848,
+          13299712
+        ],
+        "margin": 262144,
+        "candidate_max": 13582336
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.900682816073724,
+          0.899849774661993,
+          0.8943618494602126
+        ],
+        "margin": 0.012641933227022895,
+        "candidate_max": 0.9133247493007469
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8991802868161405,
+          0.8983475212819229,
+          0.8931938395821862
+        ],
+        "margin": 0.011972894467908501,
+        "candidate_max": 0.911153181284049
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12754944,
+          12734464,
+          13905920
+        ],
+        "margin": 2342912,
+        "candidate_max": 16248832
+      }
+    },
+    "resource-simultaneous": {
+      "rtt_p95_ms": {
+        "unit": "ms",
+        "reference_values": [
+          20.581,
+          20.591,
+          20.592
+        ],
+        "margin": 0.25,
+        "candidate_max": 20.842
+      },
+      "delivered_mbit_s_0": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          500.73392,
+          500.73296,
+          500.71584
+        ],
+        "margin": 0.03615999999999531,
+        "candidate_min": 500.67968
+      },
+      "loss_percent_0": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0004153885480572597,
+          0.0006071063394683027,
+          0.004026073619631902
+        ],
+        "margin": 0.0072213701431492845,
+        "candidate_max": 0.011247443762781187
+      },
+      "delivered_mbit_s_1": {
+        "unit": "Mbit/s",
+        "reference_values": [
+          500.736,
+          500.736,
+          500.736
+        ],
+        "margin": 0.00032,
+        "candidate_min": 500.73568
+      },
+      "loss_percent_1": {
+        "unit": "percentage points",
+        "reference_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "margin": 6.390593047034765e-05,
+        "candidate_max": 6.390593047034765e-05
+      },
+      "client_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.8996147367367701,
+          0.8865886588658866,
+          0.8717640578839319
+        ],
+        "margin": 0.05570135770567641,
+        "candidate_max": 0.9553160944424465
+      },
+      "client_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.898614052936173,
+          0.8855885588558856,
+          0.8704287884098612
+        ],
+        "margin": 0.05637052905262374,
+        "candidate_max": 0.9549845819887968
+      },
+      "client_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12021760,
+          12021760,
+          12083200
+        ],
+        "margin": 262144,
+        "candidate_max": 12345344
+      },
+      "server_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.9087876715755766,
+          0.8460846084608462,
+          0.8412197686645637
+        ],
+        "margin": 0.13513580582202578,
+        "candidate_max": 1.0439234773976023
+      },
+      "server_owner_average_cpu_cores": {
+        "unit": "cores",
+        "reference_values": [
+          0.9074534265081139,
+          0.8445844584458446,
+          0.8398844991904929
+        ],
+        "margin": 0.13513785463524197,
+        "candidate_max": 1.042591281143356
+      },
+      "server_peak_rss_bytes": {
+        "unit": "bytes",
+        "reference_values": [
+          12767232,
+          12795904,
+          12771328
+        ],
+        "margin": 262144,
+        "candidate_max": 13058048
+      }
+    }
+  },
+  "workloads": [
+    [
+      "small-simultaneous",
+      1,
+      128,
+      64849,
+      15
+    ],
+    [
+      "medium-simultaneous",
+      1,
+      512,
+      91552,
+      15
+    ],
+    [
+      "capacity-simultaneous",
+      32,
+      1200,
+      91136,
+      60
+    ],
+    [
+      "resource-simultaneous",
+      32,
+      1200,
+      52160,
+      60
+    ]
+  ],
+  "repetitions": 3,
+  "mode_order": "direct then control/candidate/bbr2; reverse latter order on odd repetitions",
+  "candidate_cc": "cubic",
+  "diagnostic_cc": "bbr2_gcongestion",
+  "new_capacity_loss_max_percent": 0.1,
+  "kernel_budget": {
+    "candidate_outer_requested_bytes": 1048576,
+    "control_outer_requested_bytes": 262144,
+    "candidate_outer_effective_rx_tx_each_bytes": 2097152,
+    "application_effective_rx_tx_each_bytes": 262144,
+    "max_outer_sockets_per_role": 1,
+    "max_application_sockets_client": 1,
+    "max_application_sockets_server": "sessions",
+    "additional_combined_outer_ceiling_per_socket_bytes": 3145728
+  },
+  "production_inputs": {
+    "Cargo.lock": "f2d20689f58f2d1e5aacbd66c44f2d501c020578a20d286d95311b83f83493a9",
+    "Cargo.toml": "78780693624ffdadaaa0153096310d8044344c38c7bd9eec6ce6ed3711ef3853",
+    "build.rs": "d1ade70447708df4b5e4a52ef44b48be28f92a65703fdc99cf519e5540c2367b",
+    "rust-toolchain.toml": "864c9f021bb8f62abbb50cda5565d1ee7f1e3fc62a2e8b943b9adf74cbd90172",
+    "src/buffers.rs": "21781cd6436544d6d44b0ee16a238ecefb1f7e31bcea41805c806a3090b19e23",
+    "src/config/properties.rs": "2b6ea70eec2c26de25a94794a9dde40508ca0ded899446112a09934fb26e8f1b",
+    "src/config.rs": "d6a9b14ae4bc10ae450b54e78b5aae163bf9aeefba7d4967d7b4f4a44e9d87f0",
+    "src/diagnostics/qlog.rs": "3134bf905b3a28ea8faa497bcbfe3d864ee69d3a0d556039df7db5e4ef6d32f7",
+    "src/diagnostics.rs": "784031c6fc78a65d9e444307c49faa9d5e1d737c76680ebbc94b4343bbe6253b",
+    "src/lib.rs": "5857734d6d36b9943bddb2803a04f0ac0c0ed414bf4b6f43004dd3dccf871121",
+    "src/main.rs": "eef5b0f1db57f66d01dd0c38a2a543d9b565f6037d457df72bab8e8aed2b9c41",
+    "src/masque.rs": "cf8eab107a56ca262c6de3b497f505a8e10859e7b4ab30f83a5466f92bd019cf",
+    "src/policy.rs": "db41d02a8c8aca6fd8b487ce7821a570c5e26bb6c7eacfe6425800d39520ea40",
+    "src/reactor.rs": "abf1f00ef60bcd389f39daeda225e5b6c178e67aa4520cfbacd77d242c773079",
+    "src/session.rs": "5e6835a8458c1a18f33cddce3cce27aee8520f1068e888a6d98c7f5a9e746020",
+    "src/transport.rs": "ad65f421a2de8f8a26057587f976ebf7d2c88db7fe25cf63f261bd3966a73e88",
+    "src/udp.rs": "57e039ff069a57a7b37bc845aba0335fe29482c1c3b5cbb5a3c0a4dec3c4f3b6",
+    "tools/build/Dockerfile": "160bf731fce42867e205e2b294e28a129abf42b48eb6a68d95b0ebfb06602d4a",
+    "tools/interop/go.mod": "79af28629c70fe18c3c575eea89a610cc10fe2f7a0e1496b8cd64db6fc740d73",
+    "tools/interop/go.sum": "36fb91e49e6f0cfafb52ec1bc8cbeaf596fb1045ae97eeddd8735610ee9fd109",
+    "tools/traffic/Cargo.lock": "17f081714d5b68d58bed3ba175838a225d282e29c705b887196e5a38c301e338",
+    "git:quiche/Cargo.toml": "0d7c09ca74231964364f9981e3631d314f6b40dad146629aff4882cb386ba534",
+    "git:quiche/quiche/AGENTS.md": "3570f11efb1e9f771ada8b4881d2aaa79836fc70bc2d92beed44b8729a3187b6",
+    "git:quiche/quiche/COPYING": "2ef4b5abfce387a83933bda738e72467a79d15c1c17679143ec55011dae66b84",
+    "git:quiche/quiche/Cargo.toml": "dfabc05305b70b87db86dffed30b0f317b9a44ab418b5ae0677ab2a6725d1393",
+    "git:quiche/quiche/README.md": "b508071b040d926dbd06ef71535cb9d06e649dcbb317390bade2013449152b86",
+    "git:quiche/quiche/examples/Makefile": "d19505895eb89e5231d40ee58ad76ef1371ef12b87d1fe6e90faea33bcf43b8a",
+    "git:quiche/quiche/examples/README.md": "b0111e292d64bc87b62003adb604372f898069419972c9e33b745d5e0724ba03",
+    "git:quiche/quiche/examples/cert-big.crt": "4c3d67b3c463bff6ad02a0ed2b844d666430ef71476fd4af115264b533bf32ef",
+    "git:quiche/quiche/examples/cert.crt": "04b20e562f9f601d49d5b3708c5c7c051ac9716197b3f8caf0a701fd6ec27eb9",
+    "git:quiche/quiche/examples/cert.key": "e60fc77960951b1f3f86fb255f71f4a844174e0d1f7be32e1e53bc0d1f213e00",
+    "git:quiche/quiche/examples/client.c": "d6e8b95410fd6a24bad624ed93ddab3abda3886416e043b6df614320fda593e9",
+    "git:quiche/quiche/examples/client.rs": "b4f4e9b8a7964575615f4603e7d62b549843ca43b67fee3cc9690d1ba9f62771",
+    "git:quiche/quiche/examples/gen-certs.sh": "bba6be98c3a2d4a7d0b6e9cdf967cdd67297f0baabfa786b1bf3be6c83333da2",
+    "git:quiche/quiche/examples/http3-client.c": "1684ab9ba81101555c8b80f9effd4c15bb1fa8932f537c556a3e04db095c90de",
+    "git:quiche/quiche/examples/http3-client.rs": "e47f2b3a9029344b6f2f10a5952718da47f47efa47a72039d9a9166f502c48b1",
+    "git:quiche/quiche/examples/http3-server.c": "6eb6e1ac85b5114ec2e24fef28a87397e7bedca710a497dda3240f32600d120c",
+    "git:quiche/quiche/examples/http3-server.rs": "5c1430cd9a2e4d797506562ef0a598f46e9658a28683da9fb25322e0ab2074db",
+    "git:quiche/quiche/examples/qpack-decode.rs": "b13f5a3ae366de296a662f59054d312a68ccb979798b25220eb6a4b53303effb",
+    "git:quiche/quiche/examples/qpack-encode.rs": "6577236ce44ec8f76ba7b42a69257fa14b6a9275326db6ddbee3e5cb34248ec5",
+    "git:quiche/quiche/examples/rootca.crt": "31e0ca6e04dec70c30fabc2701587cbff0a8be01786d27426bcc4d4909eff50d",
+    "git:quiche/quiche/examples/server.c": "e3a0baf889a976ba3d443b442eb3a71ca1e0a0adf1730a23fe4fdf6c4d63625b",
+    "git:quiche/quiche/examples/server.rs": "a4e473e661909a7384f6964744e50c6143dd960960e6d873b174c97f27ed1ec6",
+    "git:quiche/quiche/include/quiche.h": "7ea33344e053a9f17cfe738b59680465bc6b8e35e82b381d348a53eb16ae23b8",
+    "git:quiche/quiche/quiche.svg": "f6db38887c22f1c6ea36f53dd6b47c2d0e6d1bbe5909e0fc82d338b5ad5b488f",
+    "git:quiche/quiche/src/buffers.rs": "e6caed60410e2344883b4cae420bd1cc56a32ff5bcba2177cdeb0a54c4457b9b",
+    "git:quiche/quiche/src/build.rs": "e41aac77f4cf5918ff2f572e28a9f3bf28c4350a15dc5a65d62992fe51b8af46",
+    "git:quiche/quiche/src/cid.rs": "8e27251ef24fe051629e65e35a972b61d1c76a5c0bc9e56f4924ed1eb19b09ad",
+    "git:quiche/quiche/src/crypto/boringssl.rs": "3703d56be13c000aea2479c12be3987851496dfd3ac705dc2df1c96e10bca1bb",
+    "git:quiche/quiche/src/crypto/mod.rs": "27c370aaff560ffb6941d708ef4dea614c2b20aca1d7a8eaa6670bce6c43bedf",
+    "git:quiche/quiche/src/dgram.rs": "b2b3f5378a6231ad6f92d87ba5ff2da2d36da36c60d77c3a44ea3a10be567ab6",
+    "git:quiche/quiche/src/error.rs": "414812b6415d2fe06b90c2193c52807f8e2858d69acb3761dfc021ac8795bff2",
+    "git:quiche/quiche/src/ffi.rs": "bcd1fb6632361a50fcf19bd3ee63d719810993dc56f21f555f591de6b199f0cf",
+    "git:quiche/quiche/src/flowcontrol.rs": "ec1f8d02cbef312d8e6e70e300e49dfb2a07b9e14daa3932a525857c024a2dcd",
+    "git:quiche/quiche/src/frame.rs": "32a51c9dc01c7d6887488a147c761a7101bd60e8290526ca278d7f84c37c3273",
+    "git:quiche/quiche/src/h3/AGENTS.md": "2f878850dea62fa4e7ee62b1057d83c9aadfdb15a9d50f7969471ff8dbb53204",
+    "git:quiche/quiche/src/h3/ffi.rs": "d9e96d7a133b985d345f74671e75abe543b63014e45da7ea18c6f183aaae10c1",
+    "git:quiche/quiche/src/h3/frame.rs": "434fe454f96fe1d3f7f4475b9008c9035907e8de9766b61b04ddebc04c2d8dcb",
+    "git:quiche/quiche/src/h3/mod.rs": "83cf26c3033cc2220ad09520c75d2126058d21cb99288ade20296e82b9649819",
+    "git:quiche/quiche/src/h3/qpack/decoder.rs": "bb43f47d5458e6d718358aed048327a653aecf7e93e505eb40a8b9911343aed5",
+    "git:quiche/quiche/src/h3/qpack/encoder.rs": "068f9d63efc7732887e9123feeb9f1d93471be50b53f1ae656f562f4f681161f",
+    "git:quiche/quiche/src/h3/qpack/mod.rs": "b2037b5485b510d6d1954e41b9ae9312ddae47120f4582b4e9630350bf9ff3a3",
+    "git:quiche/quiche/src/h3/qpack/static_table.rs": "c907b067cb1b41f68c5f15f777afcf2149ffa0a00b869a5eeabb5baf4c64e9ce",
+    "git:quiche/quiche/src/h3/stream.rs": "ec992ebe411261b2eb51717fc8e0a92bee928328ff830b5d7be40b86faa9b19e",
+    "git:quiche/quiche/src/lib.rs": "0439d37f787a65cdb66d83e27d4acc4f7c5d560e3007d372195309c5eeb40b4f",
+    "git:quiche/quiche/src/minmax.rs": "dfe3ca5a9499cba2cca49ff253ac92abebd27e828c7502d7213472a0fcb9ff70",
+    "git:quiche/quiche/src/packet.rs": "f1a3272710f294a730dd090c943a199fab48db0d65ef906abbea2479009e6eec",
+    "git:quiche/quiche/src/path.rs": "d0f9d6c5b62b1b922de6b46cc6c1aa36f10834d3d75a2094073b47f462700704",
+    "git:quiche/quiche/src/pmtud.rs": "fd49eca804d725cefca6dee454b0515f1bac76faa146ad4b9f975ddc23c02047",
+    "git:quiche/quiche/src/rand.rs": "4ebf2bccc0183c782dbfdc65e3c7b30998b75d837a9522ca793b8fb50c265cad",
+    "git:quiche/quiche/src/range_buf.rs": "f53c7acd577fb6de2d712a433daa51d15f7ee3eed0ec784d2397eae81de86ae6",
+    "git:quiche/quiche/src/ranges.rs": "6d593912d7dbd50f2ec4b1c6e6323bfeebc1af157539af050ec553b7999eefc9",
+    "git:quiche/quiche/src/recovery/AGENTS.md": "35a9e6d72e0225f8e47a073844005b133e5ac279ea4e006fc034e565c8bbb704",
+    "git:quiche/quiche/src/recovery/bandwidth.rs": "c3fb22558183d7b40e4c7c7f8f3934c816addf80563db0680f9846fcf4f0674e",
+    "git:quiche/quiche/src/recovery/bytes_in_flight.rs": "18b8969ed1ec5a8210c74e9a05123a2cc938ae83f1cdc0d29d38dce615879873",
+    "git:quiche/quiche/src/recovery/congestion/cubic.rs": "5a38a23f4f76c38d5be82a612de7524b87a56b0e3bbe5c7372b9b8fc5bbdd72d",
+    "git:quiche/quiche/src/recovery/congestion/delivery_rate.rs": "5e49966eb0cdb9f6d5c5181d14227a04d5a3bb65a37d41e8c7edb71c7ccfad2b",
+    "git:quiche/quiche/src/recovery/congestion/hystart.rs": "4df656efd80b4a675331a215bd62f12e3c9299ccb19f65abdbd5fb3066a45da0",
+    "git:quiche/quiche/src/recovery/congestion/mod.rs": "739dc321fb016b789d581bde930b2b73c2ae47467f6ccc3b09cbaa9643e0e99e",
+    "git:quiche/quiche/src/recovery/congestion/prr.rs": "8930cc52799f6b948215d13c5d156ec83e3eb1c92e013ac57bae9df995651486",
+    "git:quiche/quiche/src/recovery/congestion/recovery.rs": "8574077a38fbb70eb0e546e4173d6c2a458ee9332382194ca2a7b960e62c7cb3",
+    "git:quiche/quiche/src/recovery/congestion/reno.rs": "9578b5c4d560e644ac92aaf40b9896a4e75cdb97b42b9c002f57323e26e44c44",
+    "git:quiche/quiche/src/recovery/congestion/test_sender.rs": "596981fa49a8e6a8a35f487bd73eba005ff4c5b53d979c6ab78a0416903ac263",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr.rs": "1ab519081a7cfb7e8b103783bc32745a948d513b1a64a8012b5a000f2a055827",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr/bandwidth_sampler.rs": "db36f2428bce9022cb2c97199d1349adebb6021bdb38844b7486adceeab5b30a",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr/windowed_filter.rs": "0921a5b8ddea2b6caa7df99f5254839e03a37f8ffd2538bef372d36622134a12",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2.rs": "317b330b5de25c727e2e155b588b8f65ba95f6bf3f08a6596b84cb7834fa6e10",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/drain.rs": "ed9d16dbe0ec89b608b1dbb44494428bf15619556cfa14e4f8bc272a0f41a88e",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/mode.rs": "40eedd7a6a6669ca96d98cdffbc59d6b3b652b3909302d0579c4e399504b942b",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/network_model.rs": "b9e3d975d8701fbae9436cb2d0955a9aad426dc09c957ee2442c6cd34f577318",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/probe_bw.rs": "1a1a87cc5ed69530b9a61b94af53ae7d9e53229471ef595e449368be048f7399",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/probe_rtt.rs": "d6f4efa3f2c4fb4eccff3d394935a99edda59a19f35eed26b0f1ddafe2fa7a76",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/rtt_jump_detector/global_min.rs": "5f033e4797eeefa0d80a07990bcba6ace91f605c3c0f4da22e0ab8d0f326d731",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/rtt_jump_detector/global_min_tests.rs": "c5aa5398a8f10a034d98ab4c889c1142dc9e12973f315ec3af3159780dbf0be4",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/rtt_jump_detector/hmm.rs": "f2b15f898fb6da48f4518ff69616141d93552b1c64a27a7bf689298547329e4b",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/rtt_jump_detector/hmm_tests.rs": "67cb6df3c56a0f4cda2571d72f85f989115d472b104dfdaefd7ea3afff58a417",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/rtt_jump_detector/mod.rs": "a53572c6ad5c214c773a0c95e6340db896d3f0f7ba4aec31f7e300e157f5d011",
+    "git:quiche/quiche/src/recovery/gcongestion/bbr2/startup.rs": "d22a6db33e37124b8fe2edabe109ed51d2dc3e218cdbaafc8f259ff0d3b88969",
+    "git:quiche/quiche/src/recovery/gcongestion/mod.rs": "818233ddc3e514c2924b575a84f773eaafbebc8b57e66e2e44c4e2232e7d27ba",
+    "git:quiche/quiche/src/recovery/gcongestion/pacer.rs": "ad35e18573cc09b261b80e5a93cd16686077b17d4271fc6ca418e22d0d792d53",
+    "git:quiche/quiche/src/recovery/gcongestion/recovery.rs": "82881e1c8d4600954da48f67cd147bdbd8849f5979bb6ad080bd34f4709439ac",
+    "git:quiche/quiche/src/recovery/mod.rs": "649bc3c1d42f62a8717b2d8316bc04e40668717b223ecd30ef4d8882cf155555",
+    "git:quiche/quiche/src/recovery/rtt.rs": "d1293396bf612e9b2e19cfe9c434bcac1892f490abe47ce7b66ee9577fc108b9",
+    "git:quiche/quiche/src/stream/mod.rs": "97e1027dd4b76d790923e9a768259f67f5bb1a2bab1f9cc0eb7d99684ecc39ef",
+    "git:quiche/quiche/src/stream/recv_buf.rs": "a57d8ebb4d0012e307ed1758d896d28d847b036acb2e424654df2e03f20681e3",
+    "git:quiche/quiche/src/stream/send_buf.rs": "3c4f33953da2d651dad58731f804d6e0e25398506965733713ef42fbf0cb6cc4",
+    "git:quiche/quiche/src/test_utils.rs": "125ee3042d07a4d4999752f71f9cdd66422e80421551a1768e29c69fe5c51dd3",
+    "git:quiche/quiche/src/tests.rs": "b42fbcb4fd591ac43fd03be837d59b8b8e4b4e125a2ace0ea0e3ab07b44dffa7",
+    "git:quiche/quiche/src/tls/boringssl.rs": "4338604280a51aad9318dc2b642bc78d194cc968407020e7e19e3a2e3278167b",
+    "git:quiche/quiche/src/tls/mod.rs": "134466c3af44732cd8a8794f885bb6db61701884fb57a775041c6534f185e505",
+    "git:quiche/quiche/src/transport_params.rs": "ccba665c9e668227d7cc09860a02aad98205b11b2a9f987a1893c040214468a0",
+    "dependencies/quiche.json": "ca8234b3ce7df7ce29d1025d5704a78144663cc63aad702242aa4f7d3099de4e",
+    "dependencies/quiche-tests/Cargo.toml": "5233c1c47f3353e3323e90ef126b347c74ccb1168f6ce61aa1e9d347a7df61c6",
+    "dependencies/quiche-tests/Cargo.lock": "71ffad66c882218cb9f112e08001ed59fb23c6bf9e164e28ae7f6892cbdc3548"
+  }
+}

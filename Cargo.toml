@@ -1,0 +1,54 @@
+[package]
+name = "remora"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+description = "A standards-based MASQUE CONNECT-UDP tunnel"
+publish = false
+
+[features]
+default = []
+# Optional bounded metadata filtering; runtime activation requires a private empty directory.
+qlog = ["quiche/qlog"]
+
+[dependencies]
+quiche = "=0.30.0"
+# Reuse quiche's TLS backend to validate in-memory PEM without reopening paths.
+boring = "=5.2.0"
+# Safe startup-only openat/UID/rlimit access; packet syscalls remain in udp.rs.
+rustix = { version = "1.1", features = ["fs", "process"] }
+time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["rt", "net", "time", "signal", "sync"] }
+socket2 = { version = "0.6", features = ["all"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2.6"
+getrandom = "0.4"
+
+[dev-dependencies]
+proptest = "1"
+
+[package.metadata.remora]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+minimum-linux-version = "6.1"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+
+# Pinned packet-padding correction; see docs/adr/0016-quiche-minimum-payload.md.
+[patch.crates-io]
+quiche = { git = "https://github.com/0xf836/quiche", rev = "154ce1995f23efa434e72dac269f707145be2015" }
+
+# Keep the other upstream workspace crates on their existing registry pins.
+[patch."https://github.com/0xf836/quiche"]
+octets = { version = "=0.3.7" }
+qlog = { version = "=0.18.1" }
