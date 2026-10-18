@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0 (2026-10-18)
+
+
+### Features
+
+* add authenticated MASQUE CONNECT-UDP tunnel ([99817de](https://github.com/0xf836/remora/commit/99817de565636e40ca0833b2fa7ca575cf6f92d3))
+* **config:** simplify HTTPS proxy setup and add DNS recovery ([0b4c62c](https://github.com/0xf836/remora/commit/0b4c62c9c8d2510cce6aa522533355ae4a0d5df5))
+* **core:** implement Phase 2 foundation primitives ([503a83c](https://github.com/0xf836/remora/commit/503a83c374ac8b885f4d5e16bb26dff7c26b5a9e))
+* **datapath:** complete Phase 5 PMTU and benchmark validation ([bb4db2a](https://github.com/0xf836/remora/commit/bb4db2ac96e42b8955fda502a84f44086f3fab52))
+* **operations:** complete Phase 7 diagnostics and validation ([ff5e629](https://github.com/0xf836/remora/commit/ff5e629750fd73d967f8154c227e1bd9b777901e))
+* **recovery:** complete Phase 6 recovery and bounded shutdown ([34d4a8f](https://github.com/0xf836/remora/commit/34d4a8fa13aa67436e057773d1a3199b69aba233))
+* **sessions:** complete concurrent isolation and bounded fair service ([0301c92](https://github.com/0xf836/remora/commit/0301c9239e0bfcf2cf0238da69393dfd3bb60262))
+* **tunnel:** implement Phase 3 CONNECT-UDP MVP ([00d1dbe](https://github.com/0xf836/remora/commit/00d1dbe06fd0c67eb9053101a20f1e3eed158509))
+* **validation:** complete Phase 8 x86_64 qualification ([66fa997](https://github.com/0xf836/remora/commit/66fa997a7060494cb4aa07dd95a8a466ac6be297))
+
+
+### Bug Fixes
+
+* **ci:** create missing fuzz output parents ([5b242b5](https://github.com/0xf836/remora/commit/5b242b5fda5db7fe0eff44c66af5c74ee8201480))
+* **reactor:** avoid idle owner turns under output backpressure ([59263c4](https://github.com/0xf836/remora/commit/59263c40c71992d12bc591873efac99335f50293))
+* **reactor:** enforce output backpressure and preserve test evidence ([e89d83a](https://github.com/0xf836/remora/commit/e89d83adfae73ae9ba18631948c5393fba9b99fb))
+* **reactor:** finish control sweeps and bound interrupted syscalls ([38b5025](https://github.com/0xf836/remora/commit/38b5025525ee2d4ddf22c614839992f6371efad9))
+* **validation:** support source archives on Python 3.11 ([6a927d5](https://github.com/0xf836/remora/commit/6a927d5b78f9abf2efb01849cf84768a37427d46))
+
 ## [Initial development notes](docs/releasing.md#first-release)
 
 These notes describe development before the first release. Release Please adds
