@@ -22,6 +22,7 @@ pub(super) fn install(r: &mut Runner<'_>, transport: Connection) {
             id,
             initial_cid: vec![],
             cursors: [FairCursor::default(); 7],
+            commitment_remaining: None,
             receive_density: ReceiveDensity::default(),
             enqueue_pending: false,
             output_pending: false,
@@ -832,6 +833,7 @@ fn critical_stop_cancels_only_its_connection_and_preserves_close_generation() {
                 id,
                 initial_cid: vec![],
                 cursors: [FairCursor::default(); 7],
+                commitment_remaining: None,
                 receive_density: ReceiveDensity::default(),
                 enqueue_pending: false,
                 output_pending: false,
@@ -1035,6 +1037,7 @@ fn rejected_mapping_survives_sender_churn_and_fresh_connection_generation() {
                 id,
                 initial_cid: vec![],
                 cursors: [FairCursor::default(); 7],
+                commitment_remaining: None,
                 receive_density: ReceiveDensity::default(),
                 enqueue_pending: false,
                 output_pending: false,
@@ -1115,3 +1118,237 @@ fn native_backpressure_commits_only_actual_fair_enqueue_progress() {
 // Shared with the separate ASan/libFuzzer package; production has no new API.
 #[path = "../../fuzz/support/lifecycle.rs"]
 mod lifecycle_harness;
+
+#[test]
+fn finite_commitment_sweep_activates_late_acked_response_before_parking() {
+    runtime().block_on(async {
+        let f = Fixtures::new();
+        let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+        let resolver = SystemResolver::new(1).unwrap();
+        let (diag, _rx) =
+            Diagnostics::new(Role::Server, Instant::now(), Duration::from_secs(1)).unwrap();
+        let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+        let mut pair = Pair::new(true);
+        let (a, b) = pair.requests();
+        let headers = masque::request_headers(
+            "remora.test",
+            "/.well-known/masque/udp/127.0.0.1/53/",
+            std::fs::read_to_string(pair.fixture.file("client.token"))
+                .unwrap()
+                .trim()
+                .as_bytes()
+                .try_into()
+                .unwrap(),
+        );
+        let mut streams = vec![a, b];
+        for _ in 2..13 {
+            streams.push(
+                pair.client
+                    .h3
+                    .as_mut()
+                    .unwrap()
+                    .send_request(&mut pair.client.quic, &headers, false)
+                    .unwrap(),
+            );
+        }
+        for _ in 0..20 {
+            pair.pump();
+            while pair
+                .server
+                .h3
+                .as_mut()
+                .unwrap()
+                .poll(&mut pair.server.quic)
+                .is_ok()
+            {}
+        }
+        let mut receipts = Vec::new();
+        let mut delayed = Vec::new();
+        let mut buffer = [0u8; 1350];
+        for (index, &stream) in streams.iter().enumerate() {
+            let (result, receipt) = transport::track_response(|| {
+                pair.server.h3.as_mut().unwrap().send_response(
+                    &mut pair.server.quic,
+                    stream,
+                    &masque::response_headers(200),
+                    false,
+                )
+            });
+            result.unwrap();
+            receipts.push(receipt);
+            while let Ok((n, info)) = pair.server.quic.send(&mut buffer) {
+                if index == 12 {
+                    pair.client
+                        .receive(
+                            &mut buffer[..n],
+                            quiche::RecvInfo {
+                                from: info.from,
+                                to: info.to,
+                            },
+                            Instant::now(),
+                        )
+                        .unwrap();
+                } else if index == 0 {
+                    delayed.push((buffer[..n].to_vec(), info));
+                }
+            }
+        }
+        for _ in 0..20 {
+            if pair
+                .client
+                .quic
+                .timeout_instant()
+                .is_some_and(|at| at <= Instant::now())
+            {
+                pair.client.quic.on_timeout();
+            }
+            while let Ok((n, info)) = pair.client.quic.send(&mut buffer) {
+                pair.server
+                    .receive(
+                        &mut buffer[..n],
+                        quiche::RecvInfo {
+                            from: info.from,
+                            to: info.to,
+                        },
+                        Instant::now(),
+                    )
+                    .unwrap();
+            }
+            if receipts[12].strong_count() == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            receipts[12].strong_count(),
+            0,
+            "last response must really be ACKed"
+        );
+        assert!(
+            receipts[..12]
+                .iter()
+                .all(|receipt| receipt.strong_count() > 0),
+            "dropped earlier responses must remain unacknowledged"
+        );
+        install(&mut r, pair.server);
+        let now = Instant::now();
+        for (&stream, receipt) in streams.iter().zip(receipts) {
+            let id = r.create_session(2, stream, None, now).unwrap();
+            let s = r.sessions.get_mut(&id).unwrap();
+            s.state = State::AwaitingCommitment;
+            s.receipt = Some(receipt);
+        }
+        let last = r.lookup(2, streams[12]).unwrap();
+        let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let capture = submitted.clone();
+        r.outer_send_hook = Some(Box::new(move |packets| {
+            capture.borrow_mut().extend(
+                packets
+                    .iter()
+                    .map(|packet| (packet.bytes.to_vec(), packet.from, packet.to)),
+            );
+            Ok(packets.len())
+        }));
+        let mut turns = 0;
+        loop {
+            turns += 1;
+            assert!(
+                turns <= 16,
+                "ACK-pending receipts must finish a finite sweep"
+            );
+            let mut more = r.reclaim_control(2);
+            more |= r.h3_work(2, now).unwrap();
+            more |= r.service_output(2, Instant::now()).map_err(|_| ()).unwrap();
+            more |= r.schedule_datagrams(2, now).unwrap();
+            more |= r.packet_continuation();
+            if !more {
+                break;
+            }
+        }
+        assert_eq!(
+            r.sessions[&last].state,
+            State::Active,
+            "finite owner continuation must inspect already-ACKed session before parking"
+        );
+        assert_eq!(r.snapshot.lifecycle.accepted_total, 1);
+        assert_eq!(
+            r.sessions
+                .values()
+                .filter(|s| s.state == State::AwaitingCommitment)
+                .count(),
+            12
+        );
+        // A completed sweep cannot restart itself, including when another
+        // control class needs additional owner turns of its own.
+        assert!(!r.h3_work(2, now).unwrap());
+        assert!(!r.h3_work(2, now).unwrap());
+        assert_eq!(r.snapshot.lifecycle.accepted_total, 1);
+
+        // Deliver held data and any retransmissions from the owner turns.
+        // Route genuine ACKs through the production packet boundary: a fresh
+        // input must rearm the sweep even after it previously finished.
+        for (packet, from, to) in submitted.borrow_mut().drain(..) {
+            delayed.push((packet, quiche::SendInfo { from, to, at: now }));
+        }
+        for (mut packet, info) in delayed {
+            pair.client
+                .receive(
+                    &mut packet,
+                    quiche::RecvInfo {
+                        from: info.from,
+                        to: info.to,
+                    },
+                    Instant::now(),
+                )
+                .unwrap();
+        }
+        let first = r.lookup(2, streams[0]).unwrap();
+        for _ in 0..20 {
+            if pair
+                .client
+                .quic
+                .timeout_instant()
+                .is_some_and(|at| at <= Instant::now())
+            {
+                pair.client.quic.on_timeout();
+            }
+            while let Ok((n, info)) = pair.client.quic.send(&mut buffer) {
+                r.outer_packet(
+                    0,
+                    &mut buffer[..n],
+                    crate::udp::Received {
+                        index: 0,
+                        length: n,
+                        peer: info.from,
+                        local: info.to,
+                        overflow: None,
+                        fault: None,
+                    },
+                    Instant::now(),
+                )
+                .unwrap();
+            }
+            if r.sessions[&first]
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| receipt.strong_count() == 0)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            r.sessions[&first].receipt.as_ref().unwrap().strong_count(),
+            0
+        );
+        for turn in 1..=4 {
+            if !r.h3_work(2, now).unwrap() {
+                break;
+            }
+            assert!(turn < 4, "rearmed sweep must remain finite");
+        }
+        assert_eq!(r.sessions[&first].state, State::Active);
+        assert!(r.snapshot.lifecycle.accepted_total >= 2);
+        assert!(!r.h3_work(2, now).unwrap());
+    });
+}

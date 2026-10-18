@@ -148,8 +148,11 @@ failed sends additionally count their unaccepted application packet under
 errno records. These are observations, not unique ICMP/lost-packet estimates.
 EMSGSIZE errno alone cannot identify the affected QUIC path; revalidate only
 with checked error-queue destination metadata matching an active path.
-Bounded interrupted receive retries
-consume nothing and continue without cancellation starvation. Complete outer
+Receive/send/timerfd reads make at most four syscall attempts per adapter visit
+(the initial call and three EINTR retries). Exhaustion returns Interrupted to
+the owner, consumes nothing and continues without cancellation starvation.
+Successful partial sends return their accepted prefix immediately; retry never
+replays that prefix. Complete outer
 oversize/truncation/ancillary drops use the role's receive direction.
 
 The established trust failure code remains `trust/0` (including TLS certificate

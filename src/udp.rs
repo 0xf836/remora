@@ -15,6 +15,20 @@ use std::{
 const BATCH: usize = 64;
 const CONTROL_WORDS: usize = 16;
 const CONTROL_BYTES: usize = CONTROL_WORDS * size_of::<usize>();
+const SYSCALL_ATTEMPTS: usize = 4;
+
+/// Retry only calls which consumed nothing. The owner must regain control to
+/// poll cancellation and other sockets, even under persistent interruption.
+fn retry_interrupted<T>(mut call: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut remaining = SYSCALL_ATTEMPTS;
+    loop {
+        remaining -= 1;
+        match call() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted && remaining > 0 => {}
+            result => return result,
+        }
+    }
+}
 #[derive(Default, Clone, Copy, serde::Serialize)]
 pub struct IoStats {
     pub receive_syscalls: u64,
@@ -392,6 +406,8 @@ impl Udp {
     pub fn local_addr(&self) -> SocketAddr {
         self.local
     }
+    /// Receive one nonblocking batch. After four interrupted attempts return
+    /// Interrupted with no consumed datagrams, so the owner can service cancel.
     pub fn recv_batch(
         &mut self,
         buffers: &mut [Slab],
@@ -422,7 +438,7 @@ impl Udp {
             header.msg_control = memory.control[i].as_mut_ptr().cast();
             header.msg_controllen = CONTROL_BYTES;
         }
-        let n = loop {
+        let n = retry_interrupted(|| {
             self.count(|s| &mut s.receive_syscalls, 1);
             // SAFETY: memory is boxed and is neither moved nor resized while the
             // kernel uses its header/iovec/address/control pointers. Slabs are
@@ -453,7 +469,7 @@ impl Udp {
                 }
             };
             if result >= 0 {
-                break result as usize;
+                return Ok(result as usize);
             }
             let error = io::Error::last_os_error();
             if error.kind() != io::ErrorKind::Interrupted {
@@ -463,7 +479,8 @@ impl Udp {
                 return Err(error);
             }
             self.count(|s| &mut s.receive_eintr, 1);
-        };
+            Err(error)
+        })?;
         self.count(|s| &mut s.received_datagrams, n);
         for i in 0..n {
             let h = &self.memory.headers[i];
@@ -494,6 +511,8 @@ impl Udp {
         }
         Ok(n)
     }
+    /// Return the accepted prefix immediately. Four interrupted attempts return
+    /// Interrupted without accepting any prefix; the caller retains the suffix.
     pub fn send_batch(&mut self, packets: &[SendPacket<'_>]) -> io::Result<usize> {
         let count = packets.len().min(self.max);
         if count == 0 {
@@ -548,7 +567,7 @@ impl Udp {
                 header.msg_controllen = len;
             }
         }
-        loop {
+        retry_interrupted(|| {
             self.count(|s| &mut s.send_syscalls, 1);
             // SAFETY: Every header points into stable owned memory or a live
             // immutable packet slice. sendmsg never mutates payload bytes and
@@ -593,7 +612,8 @@ impl Udp {
                 return Err(error);
             }
             self.count(|s| &mut s.send_eintr, 1);
-        }
+            Err(error)
+        })
     }
 }
 fn address(storage: &libc::sockaddr_storage, len: libc::socklen_t) -> Option<SocketAddr> {
@@ -943,9 +963,11 @@ impl MonotonicTimer {
             Ok(())
         }
     }
+    /// Consume an expiration, returning Interrupted after four failed attempts
+    /// without clearing the caller's readiness or waiting for another tick.
     pub fn consume(&self) -> io::Result<u64> {
         let mut count = 0u64;
-        loop {
+        retry_interrupted(|| {
             // SAFETY: writable aligned u64 of exact eight-byte timerfd ABI length.
             let result = unsafe {
                 libc::read(
@@ -961,10 +983,8 @@ impl MonotonicTimer {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
+            Err(error)
+        })
     }
 }
 
@@ -984,3 +1004,7 @@ pub fn receive_fault(
         None
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/io/interrupted.rs"]
+mod interrupted_tests;

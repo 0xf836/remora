@@ -20,6 +20,7 @@ fn install(r: &mut Runner<'_>, transport: Connection) {
             id,
             initial_cid: vec![],
             cursors: [FairCursor::default(); 7],
+            commitment_remaining: None,
             receive_density: ReceiveDensity::default(),
             enqueue_pending: false,
             output_pending: false,

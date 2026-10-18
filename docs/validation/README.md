@@ -28,3 +28,7 @@ The [configuration record](phase11-configuration.md) covers endpoint
 settings, bounded proxy DNS, DNS/IP SAN identity, CLI/operator guides and the
 focused paired reactor regression. It keeps its executable provenance separate
 from the earlier full qualification.
+
+The [final review corrections](final-review-p2.md) cover finite commitment
+sweeps and bounded interrupted syscall retries, their regression and shutdown
+checks, and the separately bound focused performance comparison.

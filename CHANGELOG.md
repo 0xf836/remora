@@ -50,6 +50,11 @@
 
 ### Fixed
 
+- Finish a bounded response-commitment sweep before parking, including ready
+  sessions behind ACK-pending responses, without restarting idle sweeps.
+- Limit interrupted UDP receive/send and timerfd reads to four attempts per
+  adapter visit so persistent EINTR cannot starve owner cancellation checks.
+
 - Report prohibited target addresses as `client.target` with a privacy-safe
   explanation of the address restrictions.
 

@@ -72,6 +72,9 @@ struct OwnedConnection {
     id: crate::diagnostics::OpaqueId,
     initial_cid: Vec<u8>,
     cursors: [FairCursor; 7],
+    // None requests a fresh finite sweep; Some(0) has finished it. Only native
+    // input/timer or response setup changes can make inspected receipts ready.
+    commitment_remaining: Option<usize>,
     receive_density: ReceiveDensity,
     enqueue_pending: bool,
     output_pending: bool,
@@ -577,6 +580,7 @@ impl<'a> Runner<'a> {
                 id,
                 initial_cid: cid.to_vec(),
                 cursors: [FairCursor::default(); 7],
+                commitment_remaining: None,
                 receive_density: ReceiveDensity::default(),
                 enqueue_pending: false,
                 output_pending: false,
@@ -1111,6 +1115,7 @@ impl<'a> Runner<'a> {
                     id,
                     initial_cid: header.dcid.as_ref().to_vec(),
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -1120,6 +1125,7 @@ impl<'a> Runner<'a> {
         };
         if let Some(c) = self.connections.get_mut(&connection) {
             let queued_before = c.transport.quic.dgram_recv_queue_len();
+            c.commitment_remaining = None;
             let received = c.transport.receive(
                 bytes,
                 quiche::RecvInfo {
@@ -1763,6 +1769,7 @@ impl<'a> Runner<'a> {
             .connections
             .get_mut(&connection)
             .ok_or(RuntimeError::Transport)?;
+        c.commitment_remaining = None;
         let h3 = c.transport.h3.as_mut().ok_or(RuntimeError::Transport)?;
         let cid = c.id;
         let (result, receipt) = transport::track_response(|| {
@@ -2221,6 +2228,7 @@ impl<'a> Runner<'a> {
                 });
                 match result {
                     Ok(()) => {
+                        c.commitment_remaining = None;
                         setup_progress += 1;
                         self.sessions
                             .get_mut(&id)
@@ -3128,6 +3136,7 @@ impl<'a> Runner<'a> {
                 .is_some_and(|at| at <= now)
             {
                 c.transport.quic.on_timeout();
+                c.commitment_remaining = None;
             }
             more |= c.transport.drain_path_events();
         }
@@ -3197,9 +3206,16 @@ impl<'a> Runner<'a> {
                         .then_some(*id)
                 })
                 .collect();
-            let remaining = ids.len() > 4;
-            let mut activated = 0;
-            for id in self.select_sessions(connection, 4, ids, 4) {
+            let c = self
+                .connections
+                .get_mut(&connection)
+                .ok_or(RuntimeError::Transport)?;
+            let remaining = c.commitment_remaining.get_or_insert(ids.len());
+            *remaining = (*remaining).min(ids.len());
+            let selected = round_robin(ids, &mut c.cursors[4], (*remaining).min(4));
+            *remaining -= selected.len();
+            more |= *remaining > 0;
+            for id in selected {
                 let s = self.sessions.get_mut(&id).ok_or(RuntimeError::Transport)?;
                 if self.connections.get_mut(&connection).is_some_and(|c| {
                     !c.transport.quic.stream_closed(s.stream)
@@ -3215,10 +3231,8 @@ impl<'a> Runner<'a> {
                         .checked_add(1)
                         .ok_or(RuntimeError::Diagnostics)?;
                     s._setup = None;
-                    activated += 1;
                 }
             }
-            more |= remaining && activated == 4;
         }
         let ids: Vec<_> = self
             .sessions
@@ -4186,6 +4200,7 @@ mod tests {
                     id: connection_id,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: density,
                     enqueue_pending: false,
                     output_pending: false,
@@ -4738,6 +4753,7 @@ mod tests {
                     id: connection_id,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -4867,6 +4883,7 @@ mod tests {
                     id: connection_id,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -4995,6 +5012,7 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -5082,6 +5100,7 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -5199,6 +5218,7 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -5298,6 +5318,7 @@ mod tests {
                     id: cid,
                     initial_cid: vec![],
                     cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
@@ -5580,6 +5601,7 @@ mod tests {
                         id: r.diagnostics.next_id().unwrap(),
                         initial_cid: vec![],
                         cursors: [FairCursor::default(); 7],
+                        commitment_remaining: None,
                         receive_density: ReceiveDensity::default(),
                         enqueue_pending: false,
                         output_pending: false,
@@ -6099,6 +6121,7 @@ mod tests {
                         id: r.diagnostics.next_id().unwrap(),
                         initial_cid: vec![],
                         cursors: [FairCursor::default(); 7],
+                        commitment_remaining: None,
                         receive_density: ReceiveDensity::default(),
                         enqueue_pending: false,
                         output_pending: false,

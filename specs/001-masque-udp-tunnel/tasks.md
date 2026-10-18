@@ -1146,3 +1146,29 @@ See the updated [configuration record](../../docs/validation/phase11-configurati
 
 
 - [X] T088 Define proxy as an HTTPS origin with optional default port 443, normalized root slash and canonical authority; reject non-HTTPS schemes, credentials, non-root paths, queries, fragments and malformed ports. Keep target/connect_address as explicit-port endpoints. Update fixtures, independent-peer adapter, examples, README, contracts/ADR and all configuration tables with a Required column. 199 native tests, 100 Python checks, 29 independent protocol cases, held-response shutdown, locked default/qlog builds, Clippy, format and public example/TLS/unit checks pass. Native unit/property negatives and E2E cases cover equivalent implicit/explicit 443 origins, trailing root slash, case normalization, custom ports, IPv4/IPv6 and privacy. Evidence: benchmarks/results/https-origin-20261018/. No new performance or ASan result is claimed.
+
+## Phase 12: Final independent review corrections
+
+- [X] T089 Complete a finite generation-fair commitment sweep before owner parking even behind ACK-pending receipts, preserving the four-session quota and preventing sweep self-restart. Add a failing-before/passing-after real selective-ACK owner regression and verify rearming on native input, lifecycle/scheduling and the affected prospectively frozen performance comparison (plan: Reactor steps 2/6, Constitution II/V/VII; final review P2).
+- [X] T090 Bound EINTR attempts in production receive/send/timerfd adapters, returning Interrupted to the owner without replaying accepted prefixes or changing packet generations/deadlines. Cover the shared production retry policy and process shutdown under injected persistent interruption, then run applicable native/static/interop/safety checks (diagnostics: bounded interrupted retries, Constitution II/V; final review P2).
+
+**Phase 12 completed (2026-10-18):** Both final-review P2 findings have regression
+failures before the corrections and passing checks afterward. Native input,
+due transport timers and response setup rearm finite commitment sweeps; held
+receipts alone cannot restart them. The real selective-ACK regression includes
+complete owner stages and subsequent ACK-driven rearming. Receive/send/timerfd
+read retries share a four-attempt budget. Persistent injected receive EINTR
+allows clean SIGTERM/SIGINT exit in both single/mmsg modes in about 7 ms, with
+observed error counters proving injection. Format, Clippy, locked default/qlog
+builds, 203 native tests, 100 Python tests, both explicit independent-peer tests
+(29 protocol cases plus held-response shutdown), and four ASan smoke campaigns
+pass. The focused prospective comparison passes all 18 members / 6 checks in
+780.39 seconds; every candidate resource direction delivers 500.736 Mbit/s with
+zero measured endpoint loss. The original metadata-invalid benchmark preflight
+and stale independent-peer attempt remain recorded; neither caused a numerical
+policy relaxation or production workaround. See [the correction record](../../docs/validation/final-review-p2.md)
+and [ADR 0027](../../docs/adr/0027-finite-controls-and-interrupted-syscalls.md).
+Candidate qlog SHA-256: `4dc83ee4acbf3234a49fd43bbe2479a094f573be200dbbe3bf40ada7c4ad214d`.
+Historical full qualification remains bound to its original executable. No new
+full release/VM/WireGuard/WAN/ARM64 qualification, independent patch re-review,
+commit, publication or deployment is claimed.
