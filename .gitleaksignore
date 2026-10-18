@@ -1,0 +1,8 @@
+# Reviewed false positives: SHA-256 checksums of upstream quiche's example
+# cert.key in public provenance manifests, not private key material.
+# Fingerprints suppress only these historical occurrences, not future changes.
+66fa997a7060494cb4aa07dd95a8a466ac6be297:benchmarks/policies/phase8-cubic-adoption.json:generic-api-key:37
+66fa997a7060494cb4aa07dd95a8a466ac6be297:benchmarks/policies/phase8-outer-buffer.json:generic-api-key:424
+66fa997a7060494cb4aa07dd95a8a466ac6be297:dependencies/quiche.json:generic-api-key:28
+66fa997a7060494cb4aa07dd95a8a466ac6be297:benchmarks/policies/phase8-output-order.json:generic-api-key:422
+66fa997a7060494cb4aa07dd95a8a466ac6be297:benchmarks/policies/phase8-outer-buffer-r2.json:generic-api-key:424

@@ -165,6 +165,13 @@ See the [architecture decisions](docs/adr/) and
 [validation guide](docs/validation/README.md) for design constraints and
 additional test suites.
 
+With Gitleaks available in `PATH`, enable this clone's pre-commit check:
+
+```bash
+git config --local core.hooksPath .githooks
+./scripts/validate/secrets.sh history
+```
+
 ## License
 
 [MIT](LICENSE).
