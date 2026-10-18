@@ -3,6 +3,8 @@ mod churn;
 mod common;
 #[path = "e2e/concurrency.rs"]
 mod concurrency;
+#[path = "e2e/configuration.rs"]
+mod configuration;
 #[path = "e2e/conformance.rs"]
 mod conformance;
 #[path = "e2e/diagnostics.rs"]

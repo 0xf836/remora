@@ -11,6 +11,7 @@ from benchmark import install_termination_handler
 import socket
 import subprocess
 import tempfile
+from urllib.parse import urlsplit
 import time
 import tomllib
 from benchmark import Owned, ROOT, write, sha
@@ -40,19 +41,22 @@ def run_case(out, peer, family, direction, case):
         credentials = tomllib.loads((f / "credentials.toml").read_text())["identities"][
             0
         ]
-        target_host = client["target_host"]
-        target = (
-            f'[{target_host}]:{client["target_port"]}'
-            if ":" in target_host
-            else f'{target_host}:{client["target_port"]}'
-        )
+        target = client["target"]
+        target_host, target_port = target.rsplit(":", 1)
+        target_host = target_host.strip("[]")
+        target_port = int(target_port)
+        origin = urlsplit(client["proxy"])
+        proxy_host = origin.hostname
+        proxy_port = origin.port or 443
+        authority_host = f"[{proxy_host}]" if ":" in proxy_host else proxy_host
+        authority = authority_host if proxy_port == 443 else f"{authority_host}:{proxy_port}"
         cfg = {
             "role": "client" if direction == "independent-client" else "server",
             "listen": server["listen"][0],
-            "server_address": client["server_address"],
-            "authority": client["proxy_authority"],
+            "server_address": client["connect_address"],
+            "authority": authority,
             "target": target,
-            "server_name": client["server_name"],
+            "server_name": proxy_host,
             "ca_file": str(f / "ca.pem"),
             "certificate_file": str(f / "server.pem"),
             "key_file": str(f / "server-key.pem"),
@@ -67,7 +71,7 @@ def run_case(out, peer, family, direction, case):
             answers = {
                 entry[4][0]
                 for entry in socket.getaddrinfo(
-                    "localhost", client["target_port"], type=socket.SOCK_DGRAM
+                    "localhost", target_port, type=socket.SOCK_DGRAM
                 )
             }
             if not {"127.0.0.1", "::1"}.issubset(answers):
@@ -79,14 +83,14 @@ def run_case(out, peer, family, direction, case):
                     'addresses = ["::1/128"]', 'addresses = ["::1/128", "127.0.0.1/32"]'
                 )
             p.write_text(text)
-            cfg["target"] = f'localhost:{client["target_port"]}'
+            cfg["target"] = f'localhost:{target_port}'
         if case == "denied-target":
-            allowed_port = client["target_port"] % 65535 + 1
+            allowed_port = target_port % 65535 + 1
             if direction == "independent-client":
                 # Request the monitored loopback endpoint, but authorize a
                 # different port. No traffic can escape to an unmonitored IP.
                 p = f / "credentials.toml"
-                entry = f'port = {client["target_port"]}\n'
+                entry = f'port = {target_port}\n'
                 text = p.read_text()
                 if text.count(entry) != 1:
                     raise ValueError("denied-target policy fixture")
@@ -133,7 +137,7 @@ def run_case(out, peer, family, direction, case):
         monitor = socket.socket(
             socket.AF_INET6 if family == "ipv6" else socket.AF_INET, socket.SOCK_DGRAM
         )
-        monitor.bind((target_host, client["target_port"]))
+        monitor.bind((target_host, target_port))
         monitor.setblocking(False)
         run = out / f"{family}-{direction}-{case}"
         run.mkdir()

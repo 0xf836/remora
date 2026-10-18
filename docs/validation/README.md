@@ -22,3 +22,9 @@ output as job artifacts; committing those files is unnecessary.
 Versioned benchmark bounds live in `benchmarks/policies/`. Reference hashes and
 the comparison outcome belong to local run artifacts. See
 [performance](../performance.md) for reference binding and comparison commands.
+
+
+The [configuration record](phase11-configuration.md) covers endpoint
+settings, bounded proxy DNS, DNS/IP SAN identity, CLI/operator guides and the
+focused paired reactor regression. It keeps its executable provenance separate
+from the earlier full qualification.

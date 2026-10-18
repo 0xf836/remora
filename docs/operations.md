@@ -5,7 +5,7 @@ configuration. The current implementation is tested natively on Linux x86_64.
 The selected CUBIC profile has [Phase 8 qualification](validation/release.md);
 [ARM64 is deferred outside current requirements](adr/0024-defer-arm64-release-scope.md). See
 [build prerequisites](build.md), [operations evidence](validation/operations.md),
-[configuration contract](../specs/001-masque-udp-tunnel/contracts/cli-config.md)
+[configuration reference](configuration.md)
 and [troubleshooting](troubleshooting.md).
 
 ## Install and provision
@@ -19,7 +19,7 @@ install -D -m 0755 target/release/remora "$HOME/.local/bin/remora"
 remora --version
 ```
 
-Use an ordinary user and ports above 1023. Remora does not configure firewall,
+Use an ordinary service user; UDP/443 needs the capability described below. Remora does not configure firewall,
 routing, a VPN, TUN, WireGuard keys or interfaces. Provide UDP reachability
 between roles, access from the server to the explicitly permitted UDP target,
 and server certificate/trust material out of band. The tunnel protects the
@@ -27,12 +27,18 @@ client-to-server leg; destination UDP confidentiality belongs to the application
 
 Create separate mode-0700 configuration directories on the role hosts. Copy the
 [client](../examples/client.toml) and [server](../examples/server.toml) templates,
-then adapt addresses, certificate identity, authority and target to your setup.
-All private inputs must be regular files owned by the role user or root, with
-no group/world access (normally 0600); symlinks are refused. Paths are relative
-to the config file's directory. Provision `ca.pem`, `server.pem` and
-`server-key.pem` privately; the CA must authenticate the configured DNS SAN
-`server_name`, even when `server_address` is a numeric IP. There is no bypass.
+then set `proxy = "https://remora.example.com"` on both roles and the client's
+`target`. The public name must resolve to the server, unless the client sets
+`connect_address`. See [all settings](configuration.md).
+
+Follow the [TLS guide](tls.md) to provision either a public-CA certificate with
+an explicit client trust bundle or a private CA with a matching SAN. Files are
+relative to the config directory and must be regular files: symlinks are
+rejected in every path component. Private inputs deny group/world access
+(normally `0600`). The client token must belong to the client process user;
+server keys and credentials may belong to that user or root, but the service
+still needs read access. Protect all configuration directories against changes
+by other users. No verification bypass is provided.
 
 Generate a 256-bit token and its SHA-256 digest of **canonical ASCII text** in
 an otherwise private provisioning directory. This command writes files and
@@ -96,13 +102,49 @@ setup until controlled restart. Already accepted unrelated flows remain usable.
 An unknown command/role does not forward anything. See the fixed error fields
 and numeric failure codes in [troubleshooting](troubleshooting.md).
 
-A client listener defaults to loopback. A non-loopback listener requires explicit
+The client `listen` field is required; the example binds loopback. A non-loopback listener requires explicit
 `allow_non_loopback = true`; it exposes relay use to applications that can reach
 it and must be protected by your host/network policy. IPv4 and IPv6 listeners
 are separate; IPv6 uses IPV6_V6ONLY. Wildcard listeners preserve the original
 local destination address in replies and distinguish sender/local-destination
-pairs. The demonstration server uses loopback; adapt it deliberately for a
-remote deployment. These instructions do not apply live host networking changes.
+pairs. The public server example binds IPv4 wildcard UDP/443; add a separate
+IPv6 listener if needed. These instructions do not apply live host networking changes.
+
+## Listening on UDP/443
+
+The public examples use port 443. Remora accepts any nonzero UDP port; 7443 and
+other high ports in validation fixtures let tests run without bind capabilities.
+TCP/443 is a separate socket and can serve an existing HTTPS site. Another
+HTTP/3 or QUIC service already using the same UDP address/443 conflicts with
+Remora unless an external deployment component explicitly routes that traffic.
+
+For a system service, install the binary at `/usr/local/bin/remora`, create a
+dedicated `remora` user/group, and provision `/etc/remora/server.toml` and its
+files for that service. The [example unit](../examples/remora-server.service)
+grants only `CAP_NET_BIND_SERVICE` for the privileged port. Install it as
+`/etc/systemd/system/remora-server.service`, run `systemd-analyze verify` on it,
+validate the config as the service user, then use your normal systemd start and
+logging workflow. It uses direct socket binding; Remora does not consume
+socket-activation descriptors. Make private files owned by `remora:remora` with
+mode `0600` when the service must read them without root access.
+
+For a manual run from the source build, a privileged administrator can grant
+the same file capability once:
+
+```bash
+sudo setcap cap_net_bind_service=+ep ./target/release/remora
+./target/release/remora server --config "$HOME/.config/remora/server.toml"
+```
+
+Grant this only to the intended executable. Replacing/reinstalling the binary
+can remove file capabilities; a systemd ambient capability avoids that renewal
+step. To remove a file capability, use `sudo setcap -r PATH`.
+
+Alternatively, manage UDP/443 forwarding to an unprivileged port using your
+existing host/network tooling: keep `proxy = "https://remora.example.com"` on both
+roles and set the server `listen = ["0.0.0.0:7443"]`. The client uses the public
+port. An HTTP reverse proxy alone does not provide this UDP forwarding. Remora
+does not install the forwarding rule or open firewall ports.
 
 ## Limits, payload size and lifecycle
 

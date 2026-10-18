@@ -181,3 +181,17 @@ After the first measurements, freeze a pre-change Remora revision/reference-mani
 ## Complexity Tracking
 
 No constitutional exception or speculative abstraction is introduced. The Linux syscall boundary is necessary for batch/ancillary/deadline control and must document unsafe invariants and target-native tests. Runtime/transport integration complexity is evaluated in ADR-0002. Revised A1/A2 are accepted specification decisions with no new quarantine subsystem or feasibility process; they do not waive correctness/security.
+
+## Endpoint usability amendment (2026-10-18)
+
+The initial configuration uses schema_version=1 with explicit
+`proxy = "https://host[:port]"` and client `target`, with no compatibility aliases.
+[ADR 0026](../../docs/adr/0026-endpoint-configuration.md) and the updated
+[CLI/config contract](contracts/cli-config.md) define derivation, optional
+numeric dial override, bounded off-owner proxy DNS, sequential family fallback,
+re-resolution/cancellation, TLS reference identity and redacted diagnostics.
+Reuse existing resolver permits/setup deadlines; do not change target policy,
+reactor ownership, packet queues, pacing or the UDP syscall boundary. Public
+operator reference/TLS/WireGuard guides replace qualification-only setup gaps.
+Validate parser negatives, DNS lifecycle, certificate SAN failures, E2E forwarding,
+configuration rejection cases, independent interop and applicable performance comparison.

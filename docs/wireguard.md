@@ -1,8 +1,61 @@
-# Independently prepared WireGuard validation
+# WireGuard over Remora
 
 WireGuard is an opaque UDP application to Remora. The operator owns peers,
 keys, routes, TUN interfaces and firewall configuration. Remora does not
 create, update or inspect private keys, install routes, or change VPN state.
+
+## Connect an existing peer
+
+Start with working WireGuard peers and a server listening on UDP/51820. With
+the [example configs](../examples/client.toml), the Remora client binds local
+UDP/51821 and forwards to `127.0.0.1:51820` **on the Remora server**. Allow that
+exact destination in `credentials.toml` and establish Remora using the
+[quickstart](../README.md#usage).
+
+Change the existing client's WireGuard peer endpoint to the local Remora port:
+
+```ini
+[Interface]
+# Keep your existing keys and addresses.
+MTU = 1120
+
+[Peer]
+# Keep your existing server public key and AllowedIPs.
+Endpoint = 127.0.0.1:51821
+PersistentKeepalive = 25
+```
+
+These are edits to an existing WireGuard configuration, not a complete peer
+file. Remora supplies no keys, interfaces or routes. `PersistentKeepalive` is
+optional WireGuard behavior and is separate from Remora's QUIC keepalive.
+The server-side WireGuard endpoint must already be reachable from Remora.
+
+`1120` is a conservative initial interface MTU for the current 1200-byte
+Remora payload profile, also used by the local validation setup. WireGuard
+data adds a 16-byte transport header and 16-byte authentication tag, and may
+pad the inner packet to a 16-byte boundary: 1120 leaves room within 1200.
+The UDP/IP headers outside WireGuard are not part of the payload that Remora
+carries. See the [WireGuard transport format](https://www.wireguard.com/protocol/#subsequent-messages-exchange-of-data-packets). A smaller effective tunnel/path ceiling can require a lower MTU;
+verify your route and application packets rather than treating 1120 as a
+universal guarantee. IPv6 inner traffic also has its own minimum-MTU
+requirements; this starting profile is for the documented IPv4 inner setup.
+
+For a full-tunnel WireGuard configuration, keep the Remora proxy's transport
+route **outside WireGuard** or the tunnel will try to carry its own connection.
+Use your existing route manager or `wg-quick` policy routing. A proxy with several
+DNS addresses needs correct routing for every address that may be selected;
+`connect_address` can pin the transport while retaining certificate verification.
+Remora does not create route exceptions or update them when DNS changes.
+
+After starting both roles, generate application traffic in both directions over
+the inner WireGuard addresses. Check `wg show INTERFACE latest-handshakes` and
+`wg show INTERFACE transfer`, then test actual application data (for example,
+ICMP to each configured inner IPv4 address if permitted). Confirm Remora's
+application counters increase in both directions. A handshake alone does not
+prove bidirectional data or the chosen MTU. First packets during Remora setup
+or recovery are dropped; WireGuard's retries supply fresh packets.
+
+## Maintainer qualification
 
 For the WireGuard qualification runner, prepare two exclusively used peers
 and a permitted server-side WireGuard UDP endpoint. Configure the local

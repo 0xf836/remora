@@ -4,8 +4,17 @@
 
 ### Added
 
+- Endpoint configuration: `proxy = "https://host[:port]"`, client `target`,
+  derived TLS/HTTP identity and standard MASQUE path, optional numeric
+  `connect_address` and advanced template override.
+- Bounded proxy DNS with IPv4/IPv6 fallback and fresh resolution on recovery,
+  including verified IP SAN identities for numeric proxies.
+- Subcommand help, visible successful config validation and privacy-safe
+  field/type/range and TOML syntax diagnostics; public configuration/TLS guides,
+  UDP/443 service example and practical WireGuard setup.
+
 - One Linux Rust executable with `client`, `server` and `check-config` commands;
-  schema-v1 private startup configuration, verified TLS server identity,
+  private startup configuration, verified TLS server identity,
   per-request Bearer authentication and explicit all-answer target authorization.
 - HTTP/3 CONNECT-UDP with QUIC DATAGRAM/Context ID 0, per-sender/local-destination
   sessions, connected destination sockets, bounded queues/resources and exact
@@ -21,6 +30,8 @@
   and performance results, and verified operator/build/WireGuard instructions.
 
 ### Changed
+
+- Require a matching DNS SAN for DNS proxy identities.
 
 - Pin quiche 0.30.0 to fork revision
   `154ce1995f23efa434e72dac269f707145be2015`, containing the reviewed
@@ -38,6 +49,9 @@
   requirements. No congestion-control bypass is introduced.
 
 ### Fixed
+
+- Report prohibited target addresses as `client.target` with a privacy-safe
+  explanation of the address restrictions.
 
 - Stop requesting immediate H3 owner turns solely for queued application data
   behind full ciphertext output; wait for real readiness/pacing/expiry while

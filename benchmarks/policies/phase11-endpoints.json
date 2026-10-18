@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "frozen_before_measurements": true,
+  "frozen_at": "2026-10-17T23:17:20.304241+00:00",
+  "scope": "Schema2 endpoint and proxy DNS change; focused steady-state owner-loop regression for small packets and 32-session resource load; not full release qualification",
+  "wall_budget_seconds": 1800,
+  "repetitions": 3,
+  "warmup_seconds": 3,
+  "direction": "simultaneous",
+  "cc": "cubic",
+  "workloads": [
+    [
+      "small-simultaneous",
+      1,
+      128,
+      64849,
+      15
+    ],
+    [
+      "resource-simultaneous",
+      32,
+      1200,
+      52160,
+      60
+    ]
+  ],
+  "mode_order": "direct, control/candidate; reverse control/candidate order on odd repetitions",
+  "control_binary_sha256": "a4b10cf925fea1739595c6b30d2d46a4535ebf9dce0d5398431cca9c77da557f",
+  "candidate_binary_sha256": "ca9c3d41f438d2b3afd4c318410a0a17710424ecd7db3e95f85df5af8caaa774",
+  "traffic_binary_sha256": "d2693daff0709b6c05c78a1476a35aaa0633139220f82a763e96d180c35ec36b",
+  "production_inputs_sha256": "8c23c0f7410550e967e59ebd773bfc5e19e79e0e40f4dc557a5f82c2146989ee",
+  "driver_sha256": "f461c71773f4399c6cac424c5201f6c2799686f4b90ab38ef267d38036abdfb8",
+  "reference_runner_sha256": "b9cac37bb7f8410daa72f93ff2bee055d2247dea82c1935544ca9ca51d7cc067",
+  "profile_sha256": "a1c3bbeb812026b0e648415bae94c7c975d7359b785b9ba19e378386c95a6834",
+  "baseline_loss_max_percent": 0.1,
+  "added_loss_max_pp": 0.1,
+  "paired_added_loss_max_pp": 0.1,
+  "paired_delivery_min_ratio": 0.99,
+  "paired_added_rtt_p95_max_ms": 1,
+  "paired_cpu_max_ratio": 1.05,
+  "paired_cpu_absolute_margin": 0.01,
+  "paired_rss_max_ratio": 1.1,
+  "paired_rss_margin_bytes": 1048576,
+  "unchanged_absolute_bounds": {
+    "capacity_ratio_min": 0.8,
+    "subcapacity_added_loss_pp_max": 0.1,
+    "subcapacity_added_rtt_p95_ms_max": 5,
+    "resource_delivery_mbit_s_each_min": 500,
+    "role_cpu_cores_max": 2,
+    "role_rss_bytes_max": 134217728
+  },
+  "applicability": "Small packet and 32-session resource regression only; no capacity search, medium workload, release, WAN or DNS convergence-time claim. Every repeat is checked separately.",
+  "historical_policy": "Adjacent T082 executable is the control. Existing per-repeat bounds are frozen before measurements; no relaxed CPU/loss/RTT criteria.",
+  "production_inputs_record": "Full source/dependency hashes retained in verification-summary.json and comparison/manifest.json."
+}

@@ -221,13 +221,16 @@ fn exposure_and_proxy_identity_validation_fail_closed() {
     );
     ValidatedConfig::load(&f.file("client.toml")).unwrap();
     for text in [
+        original.replace("proxy = ", "proxy = 'http://invalid' #"),
         original.replace(
-            "server_name = \"remora.test\"",
-            "server_name = \"other.test\"",
+            "[client]",
+            "[client]\nuri_template = 'http://remora.test/{target_host}/{target_port}/'",
         ),
-        original.replace("https://", "http://"),
-        original.replace("{target_port}", "{unknown}"),
-        original.replace("target_host = \"127.0.0.1\"", "target_host = \"224.0.0.1\""),
+        original.replace(
+            "[client]",
+            "[client]\nuri_template = 'https://wrong.test:443/{target_host}/{unknown}/'",
+        ),
+        original.replace("target = \"127.0.0.1:", "target = \"224.0.0.1:"),
     ] {
         fs::write(f.file("client.toml"), text).unwrap();
         invalid(&f, "client.toml");
@@ -441,4 +444,177 @@ fn bounded_input_and_credential_identity_limits_fail_closed() {
     )
     .unwrap();
     invalid(&f, "server.toml");
+}
+
+#[test]
+fn configuration_derives_identity_route_and_target_without_dns_at_validation() {
+    let f = Fixtures::new();
+    let client = "schema_version=1\n[client]\nlisten='127.0.0.1:51821'\nproxy='https://Proxy.Invalid.'\ntarget='[::1]:51820'\nca_file='ca.pem'\ntoken_file='client.token'\n";
+    fs::write(f.file("endpoint.toml"), client).unwrap();
+    let cfg = ValidatedConfig::load(&f.file("endpoint.toml")).unwrap();
+    let RoleConfig::Client(c) = cfg.role() else {
+        panic!()
+    };
+    assert_eq!(c.connect_address, None);
+    assert_eq!(c.server_name, "proxy.invalid");
+    assert_eq!(c.proxy_authority, "proxy.invalid");
+    assert_eq!(
+        c.uri_template,
+        "https://proxy.invalid/.well-known/masque/udp/{target_host}/{target_port}/"
+    );
+    assert_eq!((c.target_host.as_str(), c.target_port), ("::1", 51820));
+    for (from, to, field) in [
+        (
+            "proxy='https://Proxy.Invalid.'",
+            "proxy='http://proxy.invalid'",
+            "client.proxy",
+        ),
+        (
+            "proxy='https://Proxy.Invalid.'",
+            "proxy='proxy.invalid'",
+            "client.proxy",
+        ),
+        (
+            "proxy='https://Proxy.Invalid.'",
+            "proxy='https://proxy.invalid:0'",
+            "client.proxy",
+        ),
+        (
+            "target='[::1]:51820'",
+            "target='::1:51820'",
+            "client.target",
+        ),
+        (
+            "target='[::1]:51820'",
+            "target='224.0.0.1:51820'",
+            "client.target",
+        ),
+        ("[client]", "[client]\nunknown='SECRET-SENTINEL'", "client"),
+    ] {
+        fs::write(f.file("endpoint.toml"), client.replace(from, to)).unwrap();
+        assert_eq!(invalid(&f, "endpoint.toml").field(), field);
+    }
+    fs::write(
+        f.file("endpoint.toml"),
+        client.replace("[client]", "[client]\nconnect_address='127.0.0.1:7443'"),
+    )
+    .unwrap();
+    let cfg = ValidatedConfig::load(&f.file("endpoint.toml")).unwrap();
+    let RoleConfig::Client(c) = cfg.role() else {
+        panic!()
+    };
+    assert_eq!(c.connect_address, Some("127.0.0.1:7443".parse().unwrap()));
+    assert_eq!(c.server_name, "proxy.invalid");
+    let server = "schema_version=1\n[server]\nlisten=['127.0.0.1:7443']\nproxy='https://Proxy.Invalid.'\ncertificate_file='server.pem'\nprivate_key_file='server-key.pem'\ncredentials_file='credentials.toml'\n";
+    fs::write(f.file("endpoint.toml"), server).unwrap();
+    let cfg = ValidatedConfig::load(&f.file("endpoint.toml")).unwrap();
+    let RoleConfig::Server(s) = cfg.role() else {
+        panic!()
+    };
+    assert_eq!(s.proxy_authority, "proxy.invalid");
+    assert_eq!(s.path_prefix, "/.well-known/masque/udp/");
+    assert_eq!(s.listen[0].port(), 7443);
+}
+
+#[test]
+fn prohibited_target_addresses_report_the_public_field_without_echoing_values() {
+    let f = Fixtures::new();
+    let original = fs::read_to_string(f.file("client.toml")).unwrap();
+    for target in [
+        "0.0.0.0:51820",
+        "[::]:51820",
+        "224.0.0.1:51820",
+        "[ff02::1]:51820",
+        "255.255.255.255:51820",
+        "[fe80::1]:51820",
+    ] {
+        let mut document: toml::Table = toml::from_str(&original).unwrap();
+        document["client"]
+            .as_table_mut()
+            .unwrap()
+            .insert("target".into(), target.into());
+        fs::write(f.file("client.toml"), toml::to_string(&document).unwrap()).unwrap();
+        let error = invalid(&f, "client.toml");
+        assert_eq!(error.field(), "client.target");
+        assert_eq!(error.reason, ConfigReason::Range);
+        let message = error.to_string();
+        for category in [
+            "unspecified",
+            "multicast",
+            "broadcast",
+            "unscoped IPv6 link-local",
+        ] {
+            assert!(
+                message.contains(category),
+                "missing address restriction: {category}"
+            );
+        }
+        assert!(!message.contains(target));
+        let output = Command::new(env!("CARGO_BIN_EXE_remora"))
+            .args(["check-config", "--config"])
+            .arg(f.file("client.toml"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            format!("{message}\n")
+        );
+    }
+}
+
+#[test]
+fn field_and_syntax_diagnostics_are_actionable_without_echoing_values() {
+    let f = Fixtures::new();
+    let original = fs::read_to_string(f.file("client.toml")).unwrap();
+    for (suffix, field, hint) in [
+        ("[io]\nbatch_max=0", "io.batch_max", "1..64"),
+        ("[io]\nmode='SECRET-SENTINEL'", "io.mode", "mmsg or single"),
+        (
+            "[transport]\napplication_max_bytes='SECRET-SENTINEL'",
+            "transport.application_max_bytes",
+            "integer",
+        ),
+        (
+            "[limits]\nmax_sessions=16",
+            "limits.max_sessions_per_identity",
+            "limits.max_sessions",
+        ),
+    ] {
+        fs::write(f.file("bad.toml"), format!("{original}\n{suffix}")).unwrap();
+        let error = invalid(&f, "bad.toml");
+        assert_eq!(error.field(), field);
+        assert!(error.to_string().contains(hint));
+        assert!(!format!("{error} {error:?}").contains("SECRET-SENTINEL"));
+    }
+    fs::write(
+        f.file("bad.toml"),
+        "schema_version=1\n[client\nsecret='SECRET-SENTINEL'",
+    )
+    .unwrap();
+    let error = invalid(&f, "bad.toml");
+    assert!(error.to_string().contains("line 2, column"));
+    assert!(!format!("{error} {error:?}").contains("SECRET-SENTINEL"));
+}
+
+#[test]
+fn command_help_and_successful_validation_are_visible() {
+    for command in ["client", "server", "check-config"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_remora"))
+            .args([command, "--help"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&format!("Usage: remora {command} --config PATH")));
+    }
+    let f = Fixtures::new();
+    let output = Command::new(env!("CARGO_BIN_EXE_remora"))
+        .args(["check-config", "--config"])
+        .arg(f.file("client.toml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"configuration is valid (client)\n");
 }

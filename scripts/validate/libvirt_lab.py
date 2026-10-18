@@ -370,15 +370,14 @@ class Lab:
                 text = (f / "client.toml").read_text()
                 # Replace the ephemeral-port template fields explicitly.
                 text = re.sub(r'listen = ".*"', f'listen = "127.0.0.1:{listener}"', text)
-                text = re.sub(r'server_address = ".*"', f'server_address = "{self.m["domains"]["b"]["ip"]}:{outer}"', text)
-                text = re.sub(r'proxy_authority = ".*"', f'proxy_authority = "remora.test:{outer}"', text)
-                text = re.sub(r'uri_template = ".*"', f'uri_template = "https://remora.test:{outer}/.well-known/masque/udp/{{target_host}}/{{target_port}}/"', text)
-                text = re.sub(r'target_port = \d+', f'target_port = {target}', text)
+                text = re.sub(r'connect_address = ".*"', f'connect_address = "{self.m["domains"]["b"]["ip"]}:{outer}"', text)
+                text = re.sub(r'proxy = ".*"', f'proxy = "https://remora.test:{outer}"', text)
+                text = re.sub(r'target = ".*"', f'target = "127.0.0.1:{target}"', text)
                 idle = 15000 if channel == "wg" else 5000
                 write(f / "client.toml", text + f"\n[transport]\nidle_timeout_ms = {idle}\n")
                 text = (f / "server.toml").read_text()
                 text = re.sub(r'listen = \[.*\]', f'listen = ["{self.m["domains"]["b"]["ip"]}:{outer}"]', text)
-                text = re.sub(r'proxy_authority = ".*"', f'proxy_authority = "remora.test:{outer}"', text)
+                text = re.sub(r'proxy = ".*"', f'proxy = "https://remora.test:{outer}"', text)
                 write(f / "server.toml", text + f"\n[transport]\nidle_timeout_ms = {idle}\n")
             for role in "ab":
                 mode = "client" if role == "a" else "server"

@@ -1,4 +1,4 @@
-//! Immutable schema-v1 startup settings. No file contents enter error messages.
+//! Immutable versioned startup settings. No file contents enter error messages.
 //!
 //! Files are read through owned directory descriptors, rejecting symlinks at
 //! every component. Provisioning must protect the directory and use atomic
@@ -26,6 +26,8 @@ use std::{
 pub struct ConfigError {
     field: &'static str,
     pub reason: ConfigReason,
+    location: Option<(usize, usize)>,
+    hint: Option<&'static str>,
 }
 impl ConfigError {
     pub fn field(&self) -> &'static str {
@@ -49,12 +51,24 @@ impl fmt::Display for ConfigError {
             f,
             "invalid configuration: {} ({:?})",
             self.field, self.reason
-        )
+        )?;
+        if let Some((line, column)) = self.location {
+            write!(f, " at line {line}, column {column}")?;
+        }
+        if let Some(hint) = self.hint {
+            write!(f, ": {hint}")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for ConfigError {}
 fn error(field: &'static str, reason: ConfigReason) -> ConfigError {
-    ConfigError { field, reason }
+    ConfigError {
+        field,
+        reason,
+        location: None,
+        hint: None,
+    }
 }
 
 macro_rules! settings {
@@ -139,9 +153,27 @@ struct Document {
 }
 fn parse_document(bytes: &[u8]) -> Result<Document, ConfigError> {
     let text = std::str::from_utf8(bytes).map_err(|_| error("config", ConfigReason::Schema))?;
-    let doc: Document = toml::from_str(text).map_err(|_| error("config", ConfigReason::Schema))?;
+    let value: toml::Table = toml::from_str(text).map_err(|e: toml::de::Error| {
+        let mut err = error("config", ConfigReason::Schema);
+        if let Some(span) = e.span() {
+            let prefix = &text[..span.start.min(text.len())];
+            let line = prefix.bytes().filter(|b| *b == b'\n').count() + 1;
+            let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            err.location = Some((line, column));
+        }
+        err.hint = Some("invalid TOML syntax; check this location");
+        err
+    })?;
+    validate_document_fields(&value)?;
+    let doc: Document = value
+        .try_into()
+        .map_err(|_| error("config", ConfigReason::Schema))?;
     if doc.schema_version != 1 {
-        return Err(error("schema_version", ConfigReason::Schema));
+        return Err(with_hint(
+            "schema_version",
+            ConfigReason::Schema,
+            "supported version: 1",
+        ));
     }
     Ok(doc)
 }
@@ -151,21 +183,19 @@ struct ClientDocument {
     listen: SocketAddr,
     #[serde(default)]
     allow_non_loopback: bool,
-    server_address: SocketAddr,
-    server_name: String,
-    proxy_authority: String,
-    uri_template: String,
+    uri_template: Option<String>,
+    proxy: String,
+    connect_address: Option<SocketAddr>,
+    target: String,
     ca_file: PathBuf,
     token_file: PathBuf,
-    target_host: String,
-    target_port: u16,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerDocument {
     listen: Vec<SocketAddr>,
-    proxy_authority: String,
-    path_prefix: String,
+    proxy: String,
+    path_prefix: Option<String>,
     certificate_file: PathBuf,
     private_key_file: PathBuf,
     credentials_file: PathBuf,
@@ -180,7 +210,10 @@ impl Token {
 }
 pub struct ClientConfig {
     pub listen: SocketAddr,
-    pub server_address: SocketAddr,
+    /// Numeric override, or the literal proxy address. None requires DNS.
+    pub connect_address: Option<SocketAddr>,
+    pub proxy_host: String,
+    pub proxy_port: u16,
     pub server_name: String,
     pub proxy_authority: String,
     pub uri_template: String,
@@ -337,21 +370,34 @@ fn private_owner_allowed(owner: u32, mode: u32, executing_uid: u32, root_ok: boo
     (owner == executing_uid || (root_ok && owner == 0)) && mode & 0o077 == 0
 }
 fn load_client(c: ClientDocument, parent: &Path) -> Result<ClientConfig, ConfigError> {
-    if (!c.listen.ip().is_loopback() && !c.allow_non_loopback)
-        || c.listen.port() == 0
-        || c.server_address.port() == 0
-        || c.server_address.ip().is_unspecified()
-        || c.server_address.ip().is_multicast()
-    {
-        return Err(error("client.address", ConfigReason::Range));
+    if (!c.listen.ip().is_loopback() && !c.allow_non_loopback) || c.listen.port() == 0 {
+        return Err(with_hint(
+            "client.listen",
+            ConfigReason::Range,
+            "use a nonzero loopback port, or explicitly set allow_non_loopback = true",
+        ));
     }
-    let server_name = canonical_host(&c.server_name)?;
-    let (authority_host, _) = authority(&c.proxy_authority)?;
-    if authority_host != server_name {
-        return Err(error("proxy_authority", ConfigReason::Format));
+    let (proxy_host, proxy_port) = proxy_origin(&c.proxy, "client.proxy")?;
+    let server_name = proxy_host.clone();
+    let proxy_authority = format_authority(&proxy_host, proxy_port);
+    let uri_template = c.uri_template.unwrap_or_else(|| {
+        format!("https://{proxy_authority}/.well-known/masque/udp/{{target_host}}/{{target_port}}/")
+    });
+    let (target_host, target_port) = endpoint(&c.target, "client.target")?;
+    let connect_address = c.connect_address.or_else(|| {
+        proxy_host
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, proxy_port))
+    });
+    validate_target(&proxy_host, proxy_port)
+        .map_err(|_| error("client.proxy", ConfigReason::Range))?;
+    if let Some(address) = connect_address {
+        validate_target(&address.ip().to_string(), address.port())
+            .map_err(|_| error("client.connect_address", ConfigReason::Range))?;
     }
-    crate::masque::UriTemplate::parse(&c.uri_template, &c.proxy_authority)
-        .map_err(|_| error("uri_template", ConfigReason::Format))?;
+    crate::masque::UriTemplate::parse(&uri_template, &proxy_authority)
+        .map_err(|_| error("client.uri_template", ConfigReason::Format))?;
     let ca_pem = read_file(
         &parent.join(c.ca_file),
         false,
@@ -368,16 +414,23 @@ fn load_client(c: ClientDocument, parent: &Path) -> Result<ClientConfig, ConfigE
     if !lower_hex(&token) {
         return Err(error("token_file", ConfigReason::Format));
     }
-    let target_host = canonical_host(&c.target_host)?;
-    validate_target(&target_host, c.target_port)?;
+    validate_target(&target_host, target_port).map_err(|err| {
+        with_hint(
+            "client.target",
+            err.reason,
+            "unspecified, multicast, broadcast and unscoped IPv6 link-local target addresses are not allowed",
+        )
+    })?;
     Ok(ClientConfig {
         listen: c.listen,
-        server_address: c.server_address,
+        connect_address,
+        proxy_host,
+        proxy_port,
         server_name,
-        proxy_authority: c.proxy_authority,
-        uri_template: c.uri_template,
+        proxy_authority,
+        uri_template,
         target_host,
-        target_port: c.target_port,
+        target_port,
         ca_pem,
         token: Token(token),
     })
@@ -399,14 +452,19 @@ fn load_server(s: ServerDocument, parent: &Path) -> Result<ServerConfig, ConfigE
     {
         return Err(error("server.listen", ConfigReason::Range));
     }
-    authority(&s.proxy_authority)?;
-    if !s.path_prefix.starts_with('/')
-        || !s.path_prefix.is_ascii()
-        || s.path_prefix
+    let (host, port) = proxy_origin(&s.proxy, "server.proxy")?;
+    let proxy_authority = format_authority(&host, port);
+    let path_prefix = s
+        .path_prefix
+        .unwrap_or_else(|| "/.well-known/masque/udp/".into());
+
+    if !path_prefix.starts_with('/')
+        || !path_prefix.is_ascii()
+        || path_prefix
             .bytes()
             .any(|b| b.is_ascii_control() || b == b' ' || b == b'\\')
-        || !s.path_prefix.ends_with('/')
-        || s.path_prefix.contains(['?', '#', '{', '}', '\r', '\n'])
+        || !path_prefix.ends_with('/')
+        || path_prefix.contains(['?', '#', '{', '}', '\r', '\n'])
     {
         return Err(error("path_prefix", ConfigReason::Format));
     }
@@ -453,8 +511,8 @@ fn load_server(s: ServerDocument, parent: &Path) -> Result<ServerConfig, ConfigE
     let identities = parse_credentials(&credentials)?;
     Ok(ServerConfig {
         listen: s.listen,
-        proxy_authority: s.proxy_authority,
-        path_prefix: s.path_prefix,
+        proxy_authority,
+        path_prefix,
         certificate_pem,
         private_key_pem,
         identities,
@@ -652,69 +710,174 @@ fn validate_target(host: &str, port: u16) -> Result<(), ConfigError> {
     }
     Ok(())
 }
-fn authority(value: &str) -> Result<(String, u16), ConfigError> {
-    let fail = || error("proxy_authority", ConfigReason::Format);
+fn with_hint(field: &'static str, reason: ConfigReason, hint: &'static str) -> ConfigError {
+    ConfigError {
+        hint: Some(hint),
+        ..error(field, reason)
+    }
+}
+fn endpoint(value: &str, field: &'static str) -> Result<(String, u16), ConfigError> {
+    let fail = || {
+        with_hint(
+            field,
+            ConfigReason::Format,
+            "expected host:port or [IPv6]:port; port must be 1..65535",
+        )
+    };
     let (host, port) = if let Some(bracketed) = value.strip_prefix('[') {
         let (host, tail) = bracketed.split_once(']').ok_or_else(fail)?;
-        if host.parse::<std::net::Ipv6Addr>().is_err() {
-            return Err(fail());
-        }
-        (
-            host,
-            if tail.is_empty() {
-                443
-            } else {
-                tail.strip_prefix(':')
-                    .ok_or_else(fail)?
-                    .parse()
-                    .map_err(|_| fail())?
-            },
-        )
-    } else if let Some((host, port)) = value.split_once(':') {
-        (host, port.parse().map_err(|_| fail())?)
+        host.parse::<std::net::Ipv6Addr>().map_err(|_| fail())?;
+        (host, tail.strip_prefix(':').ok_or_else(fail)?)
     } else {
-        (value, 443)
+        value.split_once(':').ok_or_else(fail)?
     };
+    let port = port.parse::<u16>().map_err(|_| fail())?;
     if port == 0 {
         return Err(fail());
     }
-    Ok((canonical_host(host)?, port))
+    Ok((canonical_host(host).map_err(|_| fail())?, port))
 }
+/// A deliberately restricted HTTPS origin, not a general-purpose URL parser.
+/// Credentials, paths other than the root, queries and fragments are invalid.
+fn proxy_origin(value: &str, field: &'static str) -> Result<(String, u16), ConfigError> {
+    let fail = || {
+        with_hint(
+            field,
+            ConfigReason::Format,
+            "expected https://host[:port] or https://[IPv6][:port]; no credentials, path, query or fragment",
+        )
+    };
+    if !value
+        .get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+    {
+        return Err(fail());
+    }
+    let authority = value[8..].strip_suffix('/').unwrap_or(&value[8..]);
+    if authority.contains(['/', '?', '#', '@', '\\', '%']) {
+        return Err(fail());
+    }
+    let explicit_port = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, tail) = bracketed.split_once(']').ok_or_else(fail)?;
+        host.parse::<std::net::Ipv6Addr>().map_err(|_| fail())?;
+        if tail.is_empty() {
+            None
+        } else {
+            Some(tail.strip_prefix(':').ok_or_else(fail)?)
+        }
+    } else {
+        authority.split_once(':').map(|(_, port)| port)
+    };
+    if let Some(port) = explicit_port {
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(fail());
+        }
+        endpoint(authority, field).map_err(|_| fail())
+    } else {
+        endpoint(&format!("{authority}:443"), field).map_err(|_| fail())
+    }
+}
+fn format_authority(host: &str, port: u16) -> String {
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    if port == 443 {
+        host
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+#[path = "config/fields.rs"]
+mod fields;
+use fields::validate_document_fields;
+
 fn validate_budgets(doc: &Document, listeners: usize) -> Result<usize, ConfigError> {
     let l = &doc.limits;
-    let range = || error("budgets", ConfigReason::Range);
     let arithmetic = || error("budgets", ConfigReason::Arithmetic);
-    for value in [
-        l.max_connections,
-        l.max_sessions,
-        l.max_sessions_per_identity,
-        l.max_sessions_per_connection,
-        l.max_pending_setup,
-        l.max_relay_sockets,
-        l.session_queue_packets,
-        l.session_queue_bytes,
-        l.application_pool_bytes,
-        l.ciphertext_pool_bytes,
-        l.scratch_pool_bytes,
-        l.quiche_dgram_packets,
-        l.connection_dgram_bytes,
-        doc.io.outer_socket_buffer_bytes,
-        doc.io.relay_socket_buffer_bytes,
-        doc.transport.application_max_bytes,
+    for (field, value) in [
+        ("limits.max_connections", l.max_connections),
+        ("limits.max_sessions", l.max_sessions),
+        (
+            "limits.max_sessions_per_identity",
+            l.max_sessions_per_identity,
+        ),
+        (
+            "limits.max_sessions_per_connection",
+            l.max_sessions_per_connection,
+        ),
+        ("limits.max_pending_setup", l.max_pending_setup),
+        ("limits.max_relay_sockets", l.max_relay_sockets),
+        ("limits.session_queue_packets", l.session_queue_packets),
+        ("limits.session_queue_bytes", l.session_queue_bytes),
+        ("limits.application_pool_bytes", l.application_pool_bytes),
+        ("limits.ciphertext_pool_bytes", l.ciphertext_pool_bytes),
+        ("limits.scratch_pool_bytes", l.scratch_pool_bytes),
+        ("limits.quiche_dgram_packets", l.quiche_dgram_packets),
+        ("limits.connection_dgram_bytes", l.connection_dgram_bytes),
+        (
+            "io.outer_socket_buffer_bytes",
+            doc.io.outer_socket_buffer_bytes,
+        ),
+        (
+            "io.relay_socket_buffer_bytes",
+            doc.io.relay_socket_buffer_bytes,
+        ),
+        (
+            "transport.application_max_bytes",
+            doc.transport.application_max_bytes,
+        ),
     ] {
         if value == 0 || value > isize::MAX as usize {
-            return Err(range());
+            return Err(with_hint(
+                field,
+                ConfigReason::Range,
+                "must be positive and fit the platform size limit",
+            ));
         }
     }
-    if l.max_sessions_per_identity > l.max_sessions
-        || l.max_sessions_per_connection > l.max_sessions
-        || !(1..=64).contains(&doc.io.batch_max)
-        || !(1200..=65527).contains(&doc.transport.outer_udp_max_bytes)
-        || doc.transport.application_max_bytes > 65527
-        || doc.io.outer_socket_buffer_bytes > i32::MAX as usize
-        || doc.io.relay_socket_buffer_bytes > i32::MAX as usize
-    {
-        return Err(range());
+    for (field, invalid, hint) in [
+        (
+            "limits.max_sessions_per_identity",
+            l.max_sessions_per_identity > l.max_sessions,
+            "must not exceed limits.max_sessions",
+        ),
+        (
+            "limits.max_sessions_per_connection",
+            l.max_sessions_per_connection > l.max_sessions,
+            "must not exceed limits.max_sessions",
+        ),
+        (
+            "io.batch_max",
+            !(1..=64).contains(&doc.io.batch_max),
+            "expected 1..64",
+        ),
+        (
+            "transport.outer_udp_max_bytes",
+            !(1200..=65527).contains(&doc.transport.outer_udp_max_bytes),
+            "expected 1200..65527 bytes",
+        ),
+        (
+            "transport.application_max_bytes",
+            doc.transport.application_max_bytes > 65527,
+            "expected 1..65527 bytes",
+        ),
+        (
+            "io.outer_socket_buffer_bytes",
+            doc.io.outer_socket_buffer_bytes > i32::MAX as usize,
+            "must fit a positive signed 32-bit socket option",
+        ),
+        (
+            "io.relay_socket_buffer_bytes",
+            doc.io.relay_socket_buffer_bytes > i32::MAX as usize,
+            "must fit a positive signed 32-bit socket option",
+        ),
+    ] {
+        if invalid {
+            return Err(with_hint(field, ConfigReason::Range, hint));
+        }
     }
     let native = l
         .quiche_dgram_packets
@@ -722,19 +885,35 @@ fn validate_budgets(doc: &Document, listeners: usize) -> Result<usize, ConfigErr
         .and_then(|n| n.checked_mul(doc.transport.outer_udp_max_bytes))
         .ok_or_else(arithmetic)?;
     if native > l.connection_dgram_bytes {
-        return Err(range());
+        return Err(with_hint(
+            "limits.connection_dgram_bytes",
+            ConfigReason::Range,
+            "must cover 2 * limits.quiche_dgram_packets * transport.outer_udp_max_bytes",
+        ));
     }
-    for ms in [
-        l.idle_session_ms,
-        l.application_residence_ms,
-        l.ciphertext_residence_ms,
-        doc.transport.idle_timeout_ms,
-        doc.recovery.keepalive_interval_ms,
-        doc.recovery.peer_progress_timeout_ms,
-        doc.recovery.setup_timeout_ms,
-        doc.recovery.retry_initial_ms,
-        doc.recovery.retry_max_ms,
-        doc.diagnostics.snapshot_interval_ms,
+    for (field, ms) in [
+        ("limits.idle_session_ms", l.idle_session_ms),
+        (
+            "limits.application_residence_ms",
+            l.application_residence_ms,
+        ),
+        ("limits.ciphertext_residence_ms", l.ciphertext_residence_ms),
+        ("transport.idle_timeout_ms", doc.transport.idle_timeout_ms),
+        (
+            "recovery.keepalive_interval_ms",
+            doc.recovery.keepalive_interval_ms,
+        ),
+        (
+            "recovery.peer_progress_timeout_ms",
+            doc.recovery.peer_progress_timeout_ms,
+        ),
+        ("recovery.setup_timeout_ms", doc.recovery.setup_timeout_ms),
+        ("recovery.retry_initial_ms", doc.recovery.retry_initial_ms),
+        ("recovery.retry_max_ms", doc.recovery.retry_max_ms),
+        (
+            "diagnostics.snapshot_interval_ms",
+            doc.diagnostics.snapshot_interval_ms,
+        ),
     ] {
         if ms == 0
             || ms.checked_mul(1_000_000).is_none()
@@ -742,15 +921,35 @@ fn validate_budgets(doc: &Document, listeners: usize) -> Result<usize, ConfigErr
                 .checked_add(Duration::from_millis(ms))
                 .is_none()
         {
-            return Err(range());
+            return Err(with_hint(
+                field,
+                ConfigReason::Range,
+                "expected positive, representable milliseconds",
+            ));
         }
     }
     if doc.recovery.retry_initial_ms < 100
-        || doc.recovery.retry_max_ms < doc.recovery.retry_initial_ms
-        || doc.recovery.retry_max_ms > 2000
-        || doc.diagnostics.snapshot_interval_ms < 1000
+        || doc.recovery.retry_initial_ms > doc.recovery.retry_max_ms
     {
-        return Err(range());
+        return Err(with_hint(
+            "recovery.retry_initial_ms",
+            ConfigReason::Range,
+            "expected 100 <= initial <= retry_max_ms",
+        ));
+    }
+    if doc.recovery.retry_max_ms > 2000 {
+        return Err(with_hint(
+            "recovery.retry_max_ms",
+            ConfigReason::Range,
+            "must be at most 2000 ms",
+        ));
+    }
+    if doc.diagnostics.snapshot_interval_ms < 1000 {
+        return Err(with_hint(
+            "diagnostics.snapshot_interval_ms",
+            ConfigReason::Range,
+            "must be at least 1000 ms",
+        ));
     }
     l.max_sessions
         .checked_mul(l.session_queue_packets)
@@ -777,11 +976,26 @@ fn validate_budgets(doc: &Document, listeners: usize) -> Result<usize, ConfigErr
                 .max(doc.transport.application_max_bytes),
         )
         .ok_or_else(arithmetic)?;
-    if l.application_pool_bytes < doc.transport.application_max_bytes
-        || l.ciphertext_pool_bytes < doc.transport.outer_udp_max_bytes
-        || l.scratch_pool_bytes < scratch_min
-    {
-        return Err(range());
+    for (field, invalid, hint) in [
+        (
+            "limits.application_pool_bytes",
+            l.application_pool_bytes < doc.transport.application_max_bytes,
+            "must cover transport.application_max_bytes",
+        ),
+        (
+            "limits.ciphertext_pool_bytes",
+            l.ciphertext_pool_bytes < doc.transport.outer_udp_max_bytes,
+            "must cover transport.outer_udp_max_bytes",
+        ),
+        (
+            "limits.scratch_pool_bytes",
+            l.scratch_pool_bytes < scratch_min,
+            "must cover io.batch_max * max(outer_udp_max_bytes, application_max_bytes)",
+        ),
+    ] {
+        if invalid {
+            return Err(with_hint(field, ConfigReason::Range, hint));
+        }
     }
     // Listener/outer sockets, relay cleanup, two setup FDs each, diagnostics and
     // a 32-FD runtime/control reserve. This is a conservative planned ceiling,
@@ -813,6 +1027,56 @@ mod properties;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn https_proxy_origins_normalize_identity_and_optional_port() {
+        for (value, host, port, authority) in [
+            ("https://Proxy.Test.", "proxy.test", 443, "proxy.test"),
+            ("https://proxy.test/", "proxy.test", 443, "proxy.test"),
+            ("HTTPS://PROXY.TEST:443/", "proxy.test", 443, "proxy.test"),
+            (
+                "https://proxy.test:7443",
+                "proxy.test",
+                7443,
+                "proxy.test:7443",
+            ),
+            ("https://127.0.0.1", "127.0.0.1", 443, "127.0.0.1"),
+            ("https://[::1]", "::1", 443, "[::1]"),
+            ("https://[::1]:7443/", "::1", 7443, "[::1]:7443"),
+        ] {
+            let (actual_host, actual_port) = proxy_origin(value, "client.proxy").unwrap();
+            assert_eq!((actual_host.as_str(), actual_port), (host, port));
+            assert_eq!(format_authority(&actual_host, actual_port), authority);
+        }
+        for value in [
+            "proxy.test:443",
+            "http://proxy.test",
+            "https://",
+            "https://proxy.test:",
+            "https://proxy.test:0",
+            "https://proxy.test:65536",
+            "https://proxy.test:+443",
+            "https://proxy.test/path",
+            "https://proxy.test//",
+            "https://proxy.test?query",
+            "https://proxy.test/#fragment",
+            "https://SECRET-SENTINEL@proxy.test",
+            "https://user:SECRET-SENTINEL@proxy.test",
+            "https://proxy.test\\path",
+            "https://proxy%2etest",
+            "https://::1",
+            "https://[::1",
+            "https://[::1]extra",
+            "https://[fe80::1%25eth0]",
+            "https://proxy.test\n",
+            "https://proxy.test:443?",
+        ] {
+            let error = proxy_origin(value, "client.proxy").unwrap_err();
+            assert_eq!(error.field(), "client.proxy");
+            assert_eq!(error.reason, ConfigReason::Format);
+            assert!(!format!("{error} {error:?}").contains("SECRET-SENTINEL"));
+        }
+    }
+
     #[test]
     fn private_owner_rules_allow_root_only_for_provisioned_server_material() {
         assert!(private_owner_allowed(1000, 0o100600, 1000, false));

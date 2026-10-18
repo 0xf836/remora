@@ -1,35 +1,170 @@
 # Remora
 
-A UDP tunnel over QUIC and HTTP/3 CONNECT-UDP, written in Rust with Cloudflare
-quiche. One executable provides client, server and `check-config`, with verified
-TLS, Bearer credentials, explicit target authorization and bounded sessions.
+**UDP tunneling over HTTP/3.**
+
+Remora carries WireGuard and other UDP traffic through an authenticated MASQUE
+proxy. Point your application at a local UDP port, and Remora forwards its
+traffic to the configured destination through an encrypted QUIC connection.
+
+```text
+Application <-> Remora client <== HTTP/3 + QUIC ==> Remora server <-> UDP service
+```
+
+## Features
+
+- Preserves UDP payloads and datagram boundaries, including empty datagrams.
+- Verifies server identity and enforces client authentication and destination
+  allowlists.
+- Supports multiple clients and isolated sessions with configurable resource
+  limits.
+- Reconnects automatically after transient outages while keeping the local
+  listener available.
+- Supports IPv4 and IPv6, structured JSON diagnostics, and optional filtered qlog
+  tracing.
+
+## Build from source
+
+Requires Linux 6.1+ (x86_64, glibc). Install the
+[build prerequisites](docs/build.md#pinned-inputs-and-prerequisites), then run:
 
 ```bash
 cargo build --locked --release
-./target/release/remora --help
-./target/release/remora check-config --config /absolute/private/client.toml
 ```
 
-Start a configured role with `remora client --config PATH` or
-`remora server --config PATH`. The [quickstart](specs/001-masque-udp-tunnel/quickstart.md)
-provides isolated test fixtures; the [build guide](docs/build.md) explains the
-pinned toolchain and quiche fork. See [operations](docs/operations.md) for trust,
-credentials, updates/revocation, compatibility and filtered diagnostic tracing,
-and [WireGuard](docs/wireguard.md) for independently managed peers.
+See the [build guide](docs/build.md) for container builds and optional features.
 
-The selected **native Linux GNU x86_64 CUBIC profile** passed functional,
-security, independent interoperability, 30-minute generic/WireGuard and bounded
-reference performance qualification. [Results and limits](docs/performance.md)
-identify the exact executable, workload and remaining risks. Linux GNU x86_64
-is the sole current required platform; [ARM64 is deferred](docs/adr/0024-defer-arm64-release-scope.md)
-outside this scope. Its prepared tooling is experimental. GSO/GRO remain effective off.
-The [changelog](CHANGELOG.md) describes the current unreleased implementation;
-these local results do not assert a published release or deployment.
+## Usage
 
-Setup and outage packets can be dropped. UDP delivery/order is best effort;
-there is no reliable payload fallback or private fragmentation. Applications
-must fit the current payload ceiling. Remora does not manage VPN/TUN state,
-WireGuard keys, routing or firewalls. Live sessions reject identifiable stale
-work, but external UDP cannot establish freshness after identical tuple reuse.
-Already generated or kernel-submitted traffic cannot be recalled by stream close.
-See the [wire contract](specs/001-masque-udp-tunnel/contracts/masque-wire.md).
+This example forwards `127.0.0.1:51821` on the client to `127.0.0.1:51820`
+on the server. Replace `remora.example.com` with your server's DNS name and
+use a certificate for that name. The client resolves it automatically.
+
+### 1. Prepare the configuration
+
+On each host, create a private configuration directory:
+
+```bash
+install -d -m 0700 "$HOME/.config/remora"
+```
+
+Copy the [server example](examples/server.toml) there as `server.toml` on the
+server, and the [client example](examples/client.toml) as `client.toml` on the
+client. Keep the files at mode `0600`. Paths inside the configuration are
+relative to this directory.
+
+Use the [TLS guide](docs/tls.md) to obtain/provision these files with either
+a public CA or a private CA:
+
+| Host | Files |
+| --- | --- |
+| Server | `server.pem` — certificate chain for `remora.example.com`; `server-key.pem` — private key |
+| Client | `ca.pem` — CA certificate used to verify the server |
+
+### 2. Set the proxy and destination
+
+Both example configs use `proxy = "https://remora.example.com"`. On the client:
+
+```toml
+[client]
+listen = "127.0.0.1:51821"
+proxy = "https://remora.example.com"
+target = "127.0.0.1:51820"
+ca_file = "ca.pem"
+token_file = "client.token"
+```
+
+The server binds `0.0.0.0:443`; allow incoming **UDP/443** in your firewall.
+`target` is resolved/reached from the server, so `127.0.0.1` is the server's
+local service. To use a fixed proxy IP, add `connect_address = "203.0.113.10:443"`;
+TLS still verifies `remora.example.com`. See the
+[configuration reference](docs/configuration.md) for all settings and overrides.
+
+### 3. Authorize the client
+
+Generate the client token and print its SHA-256 digest on the client host:
+
+```bash
+umask 077
+openssl rand -hex 32 | tr -d '\n' > "$HOME/.config/remora/client.token"
+sha256sum "$HOME/.config/remora/client.token"
+```
+
+On the server, save this as `credentials.toml` with mode `0600`. Replace
+`PASTE_SHA256_HERE` with the digest printed above, keeping the token on the
+client:
+
+```toml
+[[identities]]
+id = "client"
+token_sha256 = "PASTE_SHA256_HERE"
+
+[[identities.targets]]
+host = "127.0.0.1"
+port = 51820
+addresses = ["127.0.0.1/32"]
+```
+
+This rule permits only the server's local UDP service on port `51820`.
+For another destination, update both the client target and this rule.
+
+### 4. Validate and start
+
+On the server (direct UDP/443 binding requires `CAP_NET_BIND_SERVICE`; see the
+[service example and manual setup](docs/operations.md#listening-on-udp443)):
+
+```bash
+./target/release/remora check-config --config "$HOME/.config/remora/server.toml"
+./target/release/remora server --config "$HOME/.config/remora/server.toml"
+```
+
+On the client:
+
+```bash
+./target/release/remora check-config --config "$HOME/.config/remora/client.toml"
+./target/release/remora client --config "$HOME/.config/remora/client.toml"
+```
+
+Send application traffic to `127.0.0.1:51821` on the client. For WireGuard,
+use that address as the peer's `Endpoint`; choose the interface MTU using the
+[WireGuard guide](docs/wireguard.md). The destination service must already be
+running on the server.
+
+See the [operations guide](docs/operations.md) for service setup, updates and
+credential revocation.
+
+### Datagram handling
+
+UDP delivery remains best effort. Packets received during setup or recovery
+are dropped rather than replayed. The default payload limit is 1200 bytes;
+the effective limit depends on the path. Oversized packets are dropped and
+counted, without truncation or a reliable transport fallback.
+
+The QUIC connection encrypts traffic between the client and server. Encryption
+between the server and destination is the application's responsibility.
+
+## Documentation
+
+- [Configuration](docs/configuration.md) — fields, defaults and overrides.
+- [TLS](docs/tls.md) — certificates and client trust.
+- [Operations](docs/operations.md) — configuration, credentials, limits and updates.
+- [Troubleshooting](docs/troubleshooting.md) — diagnostics and failure codes.
+- [Performance](docs/performance.md) — measurements, methodology and limitations.
+- [Changelog](CHANGELOG.md) — changes and compatibility notes.
+
+## Contributing
+
+Run the native checks before submitting changes:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+```
+
+See the [architecture decisions](docs/adr/) and
+[validation guide](docs/validation/README.md) for design constraints and
+additional test suites.
+
+## License
+
+[MIT](LICENSE).

@@ -59,8 +59,7 @@ if a.scenario == "security":
         ["cargo", "test", "--locked", "--test", "e2e", "security"], cwd=ROOT, check=True
     )
 else:
-    target = client["target_host"]
-    target = f"[{target}]" if ":" in target else target
+    target = client["target"]
     tool = str(ROOT / "tools/traffic/target/release/remora-traffic")
     binary = str(ROOT / "target/release/remora")
     owned = []
@@ -74,7 +73,7 @@ else:
                         tool,
                         "responder",
                         "--listen",
-                        f"{target}:{client['target_port']}",
+                        target,
                         "--start-ms",
                         str(deadline),
                         "--seconds",

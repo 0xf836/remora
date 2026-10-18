@@ -1,6 +1,6 @@
 # CLI and configuration contract
 
-Version: 1. Startup file/schema validation is implemented in Phase 2; commands below remain the planned T024 interface. Requirements FR-001/006/007/009/011/012/017/020/024/025/028/029.
+Version: 1. Commands and startup validation are implemented; schema_version=1 is the sole configuration format. Requirements FR-001/006/007/009/011/012/017/020/024/025/028/029.
 
 ## Commands and process lifecycle
 
@@ -10,11 +10,46 @@ remora server --config PATH
 remora check-config --config PATH
 remora --version
 remora --help
+remora client|server|check-config --help
 ```
 
 PATH is configuration, never a token. check-config validates schema, arithmetic, role fields, secret permissions/format, PEM/trust parsing and policy; it does not bind ports, contact peers or claim network readiness. Return 0 on success/graceful SIGINT/SIGTERM completion, 2 on invalid config, 1 on fatal runtime initialization/permanent rejection. Fatal mapping initialization/identity/config failure before usable sessions reports rejection then exits. After startup, mapping-wide permanent rejection stops new setup and awaits operator restart; session-specific auth/policy/capability rejection closes only its flow and leaves unrelated accepted sessions/process alive; transient outages keep its listener and recover automatically. Operational NDJSON goes to stdout, structured events to stderr. Version includes build commit, Rust/quiche version and supported target/profile. Unknown flags/fields/schema versions fail early. SIGTERM/SIGINT stops admission, cancels setup/recovery and releases all resources within five seconds.
 
 ## TOML schema_version=1
+
+The public [configuration reference](../../../docs/configuration.md) specifies
+all fields, defaults and constraints. Minimal public examples
+are [client](../../../examples/client.toml) and [server](../../../examples/server.toml).
+Exactly one role section is required. `proxy` is an HTTPS origin: port 443
+is optional, other nonzero ports are explicit, and IPv6 is bracketed. An empty
+or root path is accepted; credentials, non-root paths, queries, fragments,
+unbracketed IPv6 and non-HTTPS schemes are rejected with a safe field error.
+Equivalent default-port and root-slash forms normalize to one authority with
+443 omitted; nondefault ports remain explicit. Client `target` and numeric
+`connect_address` require an explicit port in host:port / [IPv6]:port syntax.
+TLS identity, canonical HTTP authority
+and the standard HTTPS URI template derive from `proxy`. Optional
+`connect_address` overrides only the numeric transport destination; an advanced
+`uri_template` must still match the canonical proxy authority. Server `proxy`
+is independent of its numeric listeners; `path_prefix` defaults to the standard
+MASQUE route. Neither role has a default listener.
+
+Proxy DNS uses the existing bounded resolver worker pool (at most
+`max_pending_setup` jobs), a setup-timeout per lookup and at most 128 answers.
+Normalize and deduplicate usable numeric addresses, alternate families, and
+try one bounded handshake at a time with normal recovery backoff. Exhaustion
+re-resolves; successful connection setup discards the remaining list so the
+next recovery re-resolves. Cancel the owned lookup on rejection/stop. Actual
+uncancellable libc workers keep their permits; no stale callback mutates owner
+state. Proxy address selection never changes TLS reference identity. DNS SAN
+and IP SAN verification precede H3/authentication. Target DNS retains its
+separate authentication-before-resolution and all-answer authorization rules.
+See [ADR 0026](../../../docs/adr/0026-endpoint-configuration.md).
+
+Schema/type errors name only compile-time field/table names and expectations;
+syntax errors include source line/column without input. Successful check-config
+prints `configuration is valid (client)` or `(server)` and still performs no
+DNS, bind or handshake. Runtime/exit semantics below remain in force.
 
 Exactly one `[client]` or `[server]` role section is required. Explicit config values override defaults; no secret-bearing environment or CLI override. Paths resolve relative to config file directory. Client tokens and server keys/credential files must be regular files owned by the executing uid (or root for a provisioned server) and deny group/world access; reject symlink substitution/unsafe ownership at secure open. Do not echo contents on errors. Server certificate chain and CA bundle are public, private key and token files are not.
 
@@ -22,40 +57,14 @@ Initial bounded parser ceilings: configuration <=256 KiB, credentials <=4 MiB,
 each PEM input <=1 MiB, <=16 distinct server listeners, <=128 CIDRs per target
 rule, and identity IDs of 1..64 ASCII alphanumeric/`_-.` bytes. Token input is
 at most 65 bytes including optional terminal LF. Encrypted private keys are
-unsupported in v1 and fail without prompting; the leaf certificate must match
+unsupported and fail without prompting; the leaf certificate must match
 the private key. These startup checks do not establish peer trust or DNS policy.
 See [ADR-0005](../../../docs/adr/0005-foundation-primitives.md) for descriptor-open
 guarantees, provisioning assumptions and the conservative FD calculation.
 
-Client example:
-
-```toml
-schema_version = 1
-[client]
-listen = "127.0.0.1:51821"
-allow_non_loopback = false
-server_address = "127.0.0.1:4433"
-server_name = "remora.test"
-proxy_authority = "remora.test:4433"
-uri_template = "https://remora.test:4433/.well-known/masque/udp/{target_host}/{target_port}/"
-ca_file = "ca.pem"
-token_file = "client.token"
-target_host = "127.0.0.1"
-target_port = 9000
-```
-
-Server example (the digest is supplied by provisioning, not a literal template accepted at runtime):
-
-```toml
-schema_version = 1
-[server]
-listen = ["127.0.0.1:4433", "[::1]:4433"]
-proxy_authority = "remora.test:4433"
-path_prefix = "/.well-known/masque/udp/"
-certificate_file = "server.pem"
-private_key_file = "server-key.pem"
-credentials_file = "credentials.toml"
-```
+Client and server examples are maintained in the public reference and
+`examples/`; protocol-derived TLS/authority/template values are not separate
+required configuration fields.
 
 Credential file shape:
 
@@ -98,7 +107,7 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | io.outer_socket_buffer_bytes | 1048576 | Requested outer RX/TX kernel buffers; report effective values/clamps; explicit 262144 retains the former default; include per-socket kernel ceilings/counts separately from process RSS |
 | io.relay_socket_buffer_bytes | 131072 | Requested RX/TX buffers for client application listener and server relay sockets; report effective values/clamps; explicit 65536 retains the former default |
 | transport.cc | cubic | cubic, bbr2_gcongestion, reno; no generic bbr alias exposed |
-| transport.pacing | timerfd | Mandatory user-space deadlines; no off mode in v1 |
+| transport.pacing | timerfd | Mandatory user-space deadlines; no off mode |
 | transport.outer_udp_max_bytes | 1350 | >=1200; PMTU probes and peer/path limits still apply |
 | transport.application_max_bytes | 1200 | Actual limit may be smaller; empty payload supported |
 | transport.idle_timeout_ms | 5000 | Finite liveness profile; keepalive when active flows otherwise idle |
@@ -114,7 +123,7 @@ For each offload, accept `off` and `auto` even when its implementation is deferr
 
 Set both maximum receive and send outer UDP payload sizes explicitly. Reject larger complete outer messages after GRO splitting. Validate that twice the configured quiche queue count times the worst-case outer size fits connection_dgram_bytes; otherwise reduce counts or reject configuration. Transport control windows are explicitly capped: connection receive window 256 KiB, per-stream 16 KiB, H3 field section 16 KiB, QPACK dynamic capacity/blocked streams zero, at most eight peer unidirectional streams, stream setup limit tied to admitted requests. Set both initial and maximum flow windows, drain bodies/control incrementally and bound priority/settings metadata. A window controls flow bytes, not every native-library allocation; RSS and adversarial tests remain necessary.
 
-Client listener defaults to loopback. An explicit non-loopback bind additionally requires allow_non_loopback=true. V4/v6 binds remain separate, IPV6_V6ONLY set. A wildcard listener preserves the local destination IP/port from packet info as its reply source, including replies queued after EAGAIN. Associations include both sender and local destination tuples: one sender addressing two local listener IPs uses separate bounded sessions, and neither can rewrite the other's reply source. A remote numeric dial address and DNS certificate identity are different fields; no insecure/skip-verify/keylog option. URI host/authority must match the expected proxy identity/config; secrets are sent only after verified TLS handshake. Auth-disabled operation is unsupported.
+Client listen is required; the example binds loopback. An explicit non-loopback bind additionally requires allow_non_loopback=true. V4/v6 binds remain separate, IPV6_V6ONLY set. A wildcard listener preserves the local destination IP/port from packet info as its reply source, including replies queued after EAGAIN. Associations include both sender and local destination tuples: one sender addressing two local listener IPs uses separate bounded sessions, and neither can rewrite the other's reply source. The optional numeric dial override does not change proxy certificate identity; no insecure/skip-verify/keylog option. URI host/authority must match the expected proxy identity/config; secrets are sent only after verified TLS handshake. Auth-disabled operation is unsupported.
 
 The 120000 ms session inactivity default follows [RFC 9298 §3.1](https://www.rfc-editor.org/rfc/rfc9298.html#section-3.1). Activity is valid UDP traffic in either direction; QUIC keepalives alone do not refresh it. Expiry closes the request stream and its relay socket together. A shorter operator override is an intentional deviation from the RFC SHOULD and must document its deployment rationale: sparse traffic can trigger repeated setup, source-port changes and first-packet loss. No separate approval mechanism is introduced. This is distinct from the transport liveness timeout and SC-007 reclamation of already closed resources.
 

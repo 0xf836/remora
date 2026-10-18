@@ -180,10 +180,7 @@ fn examples_parse_after_private_nonsecret_fixture_provisioning() {
             .replace("127.0.0.1:7443", &format!("127.0.0.1:{}", p["proxy"]))
             .replace("remora.test:7443", &format!("remora.test:{}", p["proxy"]))
             .replace("127.0.0.1:51821", &format!("127.0.0.1:{}", p["client"]))
-            .replace(
-                "target_port = 51820",
-                &format!("target_port = {}", p["target"]),
-            );
+            .replace("127.0.0.1:51820", &format!("127.0.0.1:{}", p["target"]));
         atomically_replace(&f, &format!("{role}.toml"), &text);
         assert!(check(&f, role).status.success(), "example {role} invalid");
     }

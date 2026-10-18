@@ -13,7 +13,7 @@ use crate::{
     udp::{MonotonicTimer, ReceiveFault, SendPacket, Udp},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     future::Future,
     io,
     net::SocketAddr,
@@ -131,6 +131,8 @@ struct Runner<'a> {
     senders: HashMap<(SocketAddr, SocketAddr), u64>,
     pending: Vec<Pending<'a>>,
     resolver: &'a SystemResolver,
+    proxy_lookup: Option<policy::ResolveFuture<'a>>,
+    proxy_candidates: VecDeque<SocketAddr>,
     generations: Generations,
     budgets: ResourceBudgets,
     identities: Vec<Budget>,
@@ -279,6 +281,8 @@ impl<'a> Runner<'a> {
             senders: HashMap::new(),
             pending: Vec::new(),
             resolver,
+            proxy_lookup: None,
+            proxy_candidates: VecDeque::new(),
             generations: Generations::default(),
             budgets: ResourceBudgets::new(cfg.limits(), cfg.required_fds()),
             identities: match cfg.role() {
@@ -428,6 +432,70 @@ impl<'a> Runner<'a> {
         if self.primary.is_some() || self.stopping || !self.latch.may_setup() {
             return Ok(());
         }
+        if self.proxy_lookup.is_some() {
+            return Ok(());
+        }
+        let RoleConfig::Client(client) = self.cfg.role() else {
+            return Err(RuntimeError::Transport);
+        };
+        let address = if let Some(address) = client.connect_address {
+            address
+        } else if let Some(address) = self.proxy_candidates.pop_front() {
+            address
+        } else {
+            self.reconnect.started();
+            self.proxy_lookup = Some(Box::pin(policy::resolve_proxy(
+                self.resolver,
+                &client.proxy_host,
+                client.proxy_port,
+                Duration::from_millis(self.cfg.recovery().setup_timeout_ms),
+            )));
+            return Ok(());
+        };
+        self.connect_client_address(address, now)
+    }
+    fn proxy_resolved(
+        &mut self,
+        result: Result<Vec<SocketAddr>, PolicyError>,
+        now: Instant,
+    ) -> Result<(), RuntimeError> {
+        // Only the currently owned future can deliver a completion. Stop and
+        // permanent rejection drop it before another owner poll can consume it.
+        if self.stopping || !self.latch.may_setup() {
+            return Ok(());
+        }
+        match result {
+            Ok(addresses) => {
+                self.proxy_candidates = addresses.into();
+                if let Err(error) = self.start_client_connection(now) {
+                    if error == RuntimeError::Diagnostics {
+                        return Err(error);
+                    }
+                    self.failure(Failure::Socket, 0, None, None);
+                    self.schedule_reconnect(now)?;
+                }
+            }
+            Err(error) => {
+                self.failure(
+                    if error == PolicyError::Timeout {
+                        Failure::SetupTimeout
+                    } else {
+                        Failure::Resolution
+                    },
+                    0,
+                    None,
+                    None,
+                );
+                self.schedule_reconnect(now)?;
+            }
+        }
+        Ok(())
+    }
+    fn connect_client_address(
+        &mut self,
+        peer: SocketAddr,
+        now: Instant,
+    ) -> Result<(), RuntimeError> {
         self.reconnect.started();
         self.snapshot.recovery.connection_attempts = self
             .snapshot
@@ -440,7 +508,7 @@ impl<'a> Runner<'a> {
         };
         let permit = resource(self.budgets.connections.reserve(1, 0))?;
         let socket_permit = resource(self.budgets.fds.reserve(1, 0))?;
-        let address = if client.server_address.is_ipv4() {
+        let address = if peer.is_ipv4() {
             "0.0.0.0:0"
         } else {
             "[::]:0"
@@ -451,20 +519,36 @@ impl<'a> Runner<'a> {
             false,
         )
         .map_err(|_| RuntimeError::Socket)?;
-        socket
-            .connect(client.server_address)
-            .map_err(|_| RuntimeError::Socket)?;
+        socket.connect(peer).map_err(|_| RuntimeError::Socket)?;
         let local = socket.local_addr();
         let cid = transport::random_cid().map_err(|_| RuntimeError::Resource)?;
         let generation = resource(self.generations.next_generation())?;
         let mut quic = quiche::connect_with_buffer_factory::<TrackedFactory>(
-            Some(&client.server_name),
+            client
+                .server_name
+                .parse::<std::net::IpAddr>()
+                .is_err()
+                .then_some(client.server_name.as_str()),
             &quiche::ConnectionId::from_ref(&cid),
             local,
-            client.server_address,
+            peer,
             &mut self.quic_config,
         )
         .map_err(|_| RuntimeError::Transport)?;
+        {
+            // Configure reference identity before the first handshake output.
+            let tls: &mut boring::ssl::SslRef = quic.as_mut();
+            if let Ok(ip) = client.server_name.parse() {
+                // Literal references require an IP SAN and omit DNS SNI.
+                tls.verify_param_mut()
+                    .set_ip(ip)
+                    .map_err(|_| RuntimeError::Transport)?;
+            } else {
+                // A trusted matching CN alone is insufficient for a DNS identity.
+                tls.verify_param_mut()
+                    .set_hostflags(boring::x509::verify::X509CheckFlags::NEVER_CHECK_SUBJECT);
+            }
+        }
         let id = self
             .diagnostics
             .next_id()
@@ -526,6 +610,8 @@ impl<'a> Runner<'a> {
         code: u64,
     ) -> Result<(), RuntimeError> {
         self.latch.reject();
+        self.proxy_lookup = None;
+        self.proxy_candidates.clear();
         self.reconnect.reset();
         self.setup_retry.reset();
         // Only already accepted flows survive terminal mapping rejection.
@@ -1731,6 +1817,7 @@ impl<'a> Runner<'a> {
                     && self.latch.may_setup()
                 {
                     self.reconnect.reset();
+                    self.proxy_candidates.clear();
                     self.client_state(ClientState::Active, Instant::now())?;
                 }
                 Ok(value)
@@ -3357,6 +3444,8 @@ impl<'a> Runner<'a> {
     }
     fn stop_owned(&mut self, now: Instant) -> Result<(), RuntimeError> {
         self.stopping = true;
+        self.proxy_lookup = None;
+        self.proxy_candidates.clear();
         self.stop_started.get_or_insert(now);
         self.reconnect.reset();
         self.setup_retry.reset();
@@ -3711,11 +3800,19 @@ impl<'a> Runner<'a> {
                 tokio::task::yield_now().await;
             }
             let mut completions = Vec::new();
+            let mut proxy_completion = None;
             let stop = std::future::poll_fn(|cx| {
                 if term.poll_recv(cx).is_ready() || interrupt.poll_recv(cx).is_ready() {
                     return Poll::Ready(true);
                 }
                 let mut ready = more;
+                if let Some(lookup) = self.proxy_lookup.as_mut()
+                    && let Poll::Ready(result) = lookup.as_mut().poll(cx)
+                {
+                    proxy_completion = Some(result);
+                    self.proxy_lookup = None;
+                    ready = true;
+                }
                 // Register/poll a bounded setup slice after cancellation checks.
                 // Continue until every future has a waker; then await readiness.
                 let mut index = self.setup_cursor.min(self.pending.len());
@@ -3749,6 +3846,9 @@ impl<'a> Runner<'a> {
             if stop {
                 self.stop_owned(Instant::now())?;
                 return Ok(());
+            }
+            if let Some(result) = proxy_completion {
+                self.proxy_resolved(result, Instant::now())?;
             }
             for (id, key, result) in completions {
                 self.setup_done(id, key, result, Instant::now())?;
@@ -3800,6 +3900,7 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
     let mut runner = Runner::new(settings, &resolver, diagnostics)?;
     let result = runner.run(term, interrupt).await;
     runner.pending.clear();
+    runner.proxy_lookup = None;
     let ids: Vec<_> = runner.sessions.keys().copied().collect();
     for id in ids {
         runner.close_session(id, 0x100);
@@ -4837,7 +4938,7 @@ mod tests {
                 r.pools.scratch = crate::buffers::BufferPool::new(2048, 4096).unwrap();
                 let port = r.outer[0].get_ref().0.borrow().local_addr().port();
                 let sender = if let RoleConfig::Client(client) = cfg.role() {
-                    std::net::UdpSocket::bind(client.server_address).unwrap()
+                    std::net::UdpSocket::bind(client.connect_address.unwrap()).unwrap()
                 } else {
                     std::net::UdpSocket::bind("127.0.0.1:0").unwrap()
                 };

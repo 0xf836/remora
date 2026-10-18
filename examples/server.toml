@@ -1,18 +1,10 @@
-# Local demonstration server. Adapt listen/authority and provision private files.
-# Exact target permission and canonical-text digest belong in credentials.toml.
+# Public UDP/443 listener. Requires CAP_NET_BIND_SERVICE or UDP port forwarding.
+# Provision TLS and credentials alongside this file; see docs/operations.md.
 schema_version = 1
+
 [server]
-listen = ["127.0.0.1:7443"]
-proxy_authority = "remora.test:7443"
-path_prefix = "/.well-known/masque/udp/"
+listen = ["0.0.0.0:443"]
+proxy = "https://remora.example.com"
 certificate_file = "server.pem"
 private_key_file = "server-key.pem"
 credentials_file = "credentials.toml"
-[diagnostics]
-level = "info"
-snapshot_interval_ms = 1000
-[io]
-mode = "mmsg"
-batch_max = 32
-gso = "off"
-gro = "off"

@@ -31,11 +31,6 @@ impl Tunnel {
                 );
             }
             f.rewrite("credentials.toml", "::1/32", "::1/128");
-            f.rewrite(
-                "client.toml",
-                "target_host = \"[::1]\"",
-                "target_host = \"::1\"",
-            );
         }
         change(&f);
         let target = UdpSocket::bind(format!("{host}:{}", ports["target"])).unwrap();

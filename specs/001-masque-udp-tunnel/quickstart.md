@@ -9,6 +9,11 @@ build/workload and limitations. Linux GNU x86_64 is the sole required platform;
 current completion requirements.
 The operator owns application, WireGuard, routes, firewall and trust provisioning.
 
+For a deployment quickstart and all configuration settings, see the public
+[README](../../README.md#usage), [configuration](../../docs/configuration.md)
+and [TLS](../../docs/tls.md) guides. Generated validation fixtures below use the same application configuration
+format and unprivileged local ports.
+
 ## Prerequisites and checks
 
 Use Rust 1.99.0 with the lockfiles, Linux 6.1+ GNU, native C/C++/CMake/Clang tools,
@@ -61,7 +66,7 @@ or 30-minute duration claim. To generate IPv6 fixtures:
 
 For an existing application, adapt the [client](../../examples/client.toml) and
 [server](../../examples/server.toml) templates. Set the client listener, numeric
-proxy dial address, DNS `server_name`/CA, proxy authority/URI template and exact
+public `proxy = "https://host[:port]"`, CA trust, optional numeric `connect_address` and exact
 target host/port. Provision the client token and server canonical-text digest
 and target address ranges privately using [operations](../../docs/operations.md#install-and-provision).
 Start each role on its own host/terminal after candidate validation:

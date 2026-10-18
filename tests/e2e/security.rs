@@ -24,14 +24,14 @@ fn bad_credential_forbidden_target_and_wrong_tls_name_never_reach_target() {
                 f.rewrite("credentials.toml", "127.0.0.1/32", "192.0.2.1/32");
                 f.rewrite(
                     "client.toml",
-                    "target_host = \"127.0.0.1\"",
-                    "target_host = \"localhost\"",
+                    "target = \"127.0.0.1:",
+                    "target = \"localhost:",
                 );
             }
             6 => f.rewrite(
                 "client.toml",
-                "target_host = \"127.0.0.1\"",
-                "target_host = \"localhost\"",
+                "target = \"127.0.0.1:",
+                "target = \"localhost:",
             ),
             7 => {
                 // Revoke the old token by retaining the identity/rule with a

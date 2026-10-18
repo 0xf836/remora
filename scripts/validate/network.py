@@ -191,8 +191,8 @@ def characterize(network, out):
             client = f / "client.toml"
             client.write_text(
                 client.read_text().replace(
-                    f'server_address = "127.0.0.1:{ports["proxy"]}"',
-                    f'server_address = "10.203.0.2:{ports["proxy"]}"',
+                    f'connect_address = "127.0.0.1:{ports["proxy"]}"',
+                    f'connect_address = "10.203.0.2:{ports["proxy"]}"',
                 )
             )
             endpoint = Owned(

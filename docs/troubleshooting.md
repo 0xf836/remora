@@ -7,6 +7,24 @@ fields, not user labels. Never request payloads, headers or credential contents
 for a diagnostic report. Include executable hash, config **field names and
 nonsecret bounds**, kernel/tool versions and the observable failure class.
 
+## Configuration and connection checks
+
+Run `remora check-config --config PATH` first; success prints the role. An error
+names the known field and expected type/range; TOML syntax errors include line
+and column. Values and input lines are withheld. An unknown-field error names
+the containing table: compare its keys with the [configuration reference](configuration.md).
+Use `proxy` and `target` in the role section; the configuration format
+is `schema_version = 1`. Unknown fields are rejected. Run `remora client --help` or `remora server --help` for command syntax.
+
+For DNS connection failures, check the client's resolver and proxy reachability.
+The client bounds each lookup, tries returned addresses with retry delays, and
+resolves again after an exhausted list or established-connection failure.
+`connect_address` can isolate resolution/routing problems while TLS still checks
+`proxy`. A `trust` failure requires fixing the identity, SAN, chain, CA bundle
+or clock; another IP and `check-config` alone do not establish live trust.
+For `bind` failures on UDP/443, check both port occupancy and the service's
+`CAP_NET_BIND_SERVICE`; see [port 443](operations.md#listening-on-udp443).
+
 ## Read the boundaries correctly
 
 | Field | What it establishes |
@@ -60,7 +78,8 @@ reasons. Availability never implies every packet is eligible. An auto mode with
 | `trust/0` | Check CA bundle, DNS SAN identity, certificate validity and numeric dial destination; do not weaken verification |
 | `authentication/401` | Check privately provisioned token and canonical-text digest; controlled restart after correction |
 | `authorization/403` | Check exact host/port and every DNS answer's numeric address permission |
-| `authorization/404` | Check exact proxy route/authority profile |
+| `malformed/400` | Check the public `proxy` HTTPS origin and matching URI template (canonical authority omits port 443); a malformed request or authority mismatch is 400 |
+| `authorization/404` | Check the configured MASQUE path/prefix; an unknown route is 404 |
 | `capability/501` or capability refusal | Peer must support h3, DATAGRAM and Extended CONNECT; no reliable fallback |
 | `resolution/502` | Observed resolver failure; inspect host/resolver availability privately |
 | `setup_timeout/504` | Setup deadline expired; distinguish this from observed DNS NXDOMAIN/socket errno |

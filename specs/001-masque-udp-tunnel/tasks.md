@@ -1100,3 +1100,49 @@ SHA-256: `a4b10cf925fea1739595c6b30d2d46a4535ebf9dce0d5398431cca9c77da557f`.
 Prior full T076/T077 evidence remains bound to its original executable; no new
 full VM/reference qualification, ARM64, independent review, commit or publication
 is claimed by this increment.
+
+## Phase 11: Configuration and operator usability
+
+- [X] T083 Implement the initial proxy/target configuration with endpoint derivation and overrides, field/type/range/syntax diagnostics, offline check-config acknowledgement and subcommand help; add malformed/unknown-field/privacy tests and the configuration contract (ADR 0026).
+- [X] T084 Implement bounded asynchronous proxy DNS, family fallback, fresh recovery resolution and cancellation using existing resolver permits; preserve verified DNS/IP SAN identity and target policy; cover lifecycle, TLS negatives and real E2E forwarding.
+- [X] T085 Update minimal UDP/443 examples, README quickstart, public configuration reference, complete TLS provisioning, bind-capability/service and practical WireGuard guidance; verify examples/links/commands and obtain follow-up read-only security/usability review, then run applicable native/static/interop and prospectively frozen performance checks. Record exact evidence and retain old qualification provenance.
+
+
+**Phase 11 completed (2026-10-18):** Endpoint configuration, bounded
+proxy DNS/recovery, strict DNS/IP SAN verification, actionable private diagnostics,
+CLI help and public operator guides are implemented. Independent read-only
+usability/security review finds no remaining blockers after four corrections.
+196 native tests, 100 Python checks, 29 independent protocol cases, independent
+held-response shutdown, four ASan smoke campaigns, format/Clippy and locked
+default/qlog builds pass. The private-CA recipe, both public configs and service
+unit syntax are checked. The prospectively frozen small-packet/resource comparison
+passes all 18 members/6 per-repeat checks in 780.60 seconds; all candidate
+resource directions deliver 500.736 Mbit/s with zero measured endpoint loss.
+See [the Phase 11 record](../../docs/validation/phase11-configuration.md),
+[ADR 0026](../../docs/adr/0026-endpoint-configuration.md) and
+`benchmarks/policies/phase11-endpoints.json`. Qlog executable SHA-256:
+`ca9c3d41f438d2b3afd4c318410a0a17710424ecd7db3e95f85df5af8caaa774`.
+Historical full qualification remains bound to its original executable; no new
+full VM/WireGuard/reference qualification or remote deployment is claimed.
+
+
+- [X] T086 Simplify the initial application configuration to its sole schema_version=1 format with proxy/target: remove compatibility parser branches and migration documentation, convert all generated fixtures/runners/tests, and verify native/Python/independent-peer checks plus builds and static documentation checks. Preserve historical benchmark binary provenance without applying it to a new executable.
+
+
+**T086 completed (2026-10-18):** The sole application configuration is
+schema_version=1 with proxy/target endpoints. Compatibility code, aliases and
+migration instructions are absent. All generated fixtures, runner adapters,
+public examples and native tests use this format. 195 native tests, 100 Python
+checks, the 29-case independent matrix, held-response shutdown, locked
+release/default and qlog builds, Clippy, formatting and public example/TLS/unit
+checks pass. Current qlog SHA-256:
+`b896031402f0f144510fdc41c0c7c42a18939870c4edc9a27be461901a888769`.
+The reactor/TLS/policy/UDP sources are unchanged by this cleanup; prior frozen
+performance and ASan results retain their original executable/source provenance.
+See the updated [configuration record](../../docs/validation/phase11-configuration.md).
+
+
+- [X] T087 Correct the public field in prohibited client-target diagnostics to client.target, preserving Range rejection and safe static hints. The new regression fails before the fix and passes afterward for unspecified IPv4/IPv6, multicast IPv4/IPv6, IPv4 broadcast and unscoped IPv6 link-local; each CLI case exits 2 without echoing values. All 18 config integration tests and nine config unit/property tests pass, as do format, Clippy and locked default/qlog release builds. This changes only startup diagnostics; no full-suite or performance rerun is claimed. Evidence: benchmarks/results/target-diagnostic-20261018/.
+
+
+- [X] T088 Define proxy as an HTTPS origin with optional default port 443, normalized root slash and canonical authority; reject non-HTTPS schemes, credentials, non-root paths, queries, fragments and malformed ports. Keep target/connect_address as explicit-port endpoints. Update fixtures, independent-peer adapter, examples, README, contracts/ADR and all configuration tables with a Required column. 199 native tests, 100 Python checks, 29 independent protocol cases, held-response shutdown, locked default/qlog builds, Clippy, format and public example/TLS/unit checks pass. Native unit/property negatives and E2E cases cover equivalent implicit/explicit 443 origins, trailing root slash, case normalization, custom ports, IPv4/IPv6 and privacy. Evidence: benchmarks/results/https-origin-20261018/. No new performance or ASan result is claimed.

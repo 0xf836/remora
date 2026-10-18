@@ -62,19 +62,16 @@ addresses = ["{host}/{prefix}"]
 [client]
 listen = "{bracketed}:{client_port}"
 allow_non_loopback = false
-server_address = "{bracketed}:{proxy_port}"
-server_name = "remora.test"
-proxy_authority = "remora.test:{proxy_port}"
-uri_template = "https://remora.test:{proxy_port}/.well-known/masque/udp/{{target_host}}/{{target_port}}/"
+proxy = "https://remora.test:{proxy_port}"
+connect_address = "{bracketed}:{proxy_port}"
 ca_file = "ca.pem"
 token_file = "client.token"
-target_host = "{host}"
-target_port = {target_port}
+target = "{bracketed}:{target_port}"
 ''')
     (root / "server.toml").write_text(f'''schema_version = 1
 [server]
 listen = ["{bracketed}:{proxy_port}"]
-proxy_authority = "remora.test:{proxy_port}"
+proxy = "https://remora.test:{proxy_port}"
 path_prefix = "/.well-known/masque/udp/"
 certificate_file = "server.pem"
 private_key_file = "server-key.pem"

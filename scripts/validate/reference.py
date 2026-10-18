@@ -328,8 +328,8 @@ def _run_once(
                     text = text.replace(address("proxy"), proxy)
                 else:
                     text = text.replace(
-                        f'server_address = "{address("proxy")}"',
-                        f'server_address = "{proxy}"',
+                        f'connect_address = "{address("proxy")}"',
+                        f'connect_address = "{proxy}"',
                     )
                 text += f'\n[io]\nmode = "{profile["io"]}"\nbatch_max = {profile["batch_max"]}\n\n[transport]\ncc = "{profile["cc"]}"\n\n[limits]\nmax_sessions = 32\nmax_sessions_per_identity = 32\nmax_sessions_per_connection = 32\n'
                 path.write_text(text)

@@ -243,3 +243,52 @@ fn explicitly_authorized_scoped_link_local_answer_keeps_interface_scope() {
         Err(PolicyError::Denied)
     );
 }
+
+#[test]
+fn proxy_dns_is_bounded_interleaved_validated_and_deadlined() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let a = "192.0.2.1:443".parse().unwrap();
+        let b = "192.0.2.2:443".parse().unwrap();
+        let c = "[2001:db8::1]:443".parse().unwrap();
+        let f = Fake {
+            calls: Cell::new(0),
+            answer: Ok(vec![a, b, a, c]),
+            delay: Duration::ZERO,
+        };
+        assert_eq!(
+            resolve_proxy(&f, "proxy.test", 443, Duration::from_secs(1)).await,
+            Ok(vec![a, c, b])
+        );
+        for answers in [
+            vec![],
+            vec![a; 129],
+            vec!["0.0.0.0:443".parse().unwrap()],
+            vec!["224.0.0.1:443".parse().unwrap()],
+            vec!["[fe80::1]:443".parse().unwrap()],
+            vec!["192.0.2.1:444".parse().unwrap()],
+        ] {
+            let f = Fake {
+                calls: Cell::new(0),
+                answer: Ok(answers),
+                delay: Duration::ZERO,
+            };
+            assert_eq!(
+                resolve_proxy(&f, "proxy.test", 443, Duration::from_secs(1)).await,
+                Err(PolicyError::Resolution)
+            );
+        }
+        let f = Fake {
+            calls: Cell::new(0),
+            answer: Ok(vec![a]),
+            delay: Duration::from_secs(60),
+        };
+        assert_eq!(
+            resolve_proxy(&f, "proxy.test", 443, Duration::from_millis(1)).await,
+            Err(PolicyError::Timeout)
+        );
+    });
+}

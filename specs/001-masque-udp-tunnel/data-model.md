@@ -69,7 +69,7 @@ another H3 turn, removing sender associations and setup permits while retaining
 accepted Active flows. Record their mapping refusal before retirement; late
 200 responses and queued request submission cannot bypass terminal admission.
 
-Only configuration, trust material, client secret files, server credential digests and optional bounded diagnostics persist; no persistent port-reservation store is mandated. Config/credential/policy updates require a controlled process restart; the revocation completion point is old-process exit plus new-process readiness. No migration/database schema is needed. Config schema_version=1 rejects unknown fields; future incompatible schemas require explicit migration guidance.
+Only configuration, trust material, client secret files, server credential digests and optional bounded diagnostics persist; no persistent port-reservation store is mandated. Config/credential/policy updates require a controlled process restart; the revocation completion point is old-process exit plus new-process readiness. No migration/database schema is needed. The sole configuration format is schema_version=1, rejecting unknown fields. TLS identity and HTTP authority/template derive from an HTTPS proxy origin with default port 443, with an optional numeric dial override; client target is host:port. The CLI/config contract and public reference specify the interface.
 
 ## Phase 5 request ordering and numeric observations
 

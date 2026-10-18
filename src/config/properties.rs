@@ -36,11 +36,11 @@ proptest! {
     ) {
         for input in [&bytes[..], text.as_bytes()] {
             match parse_document(input) {
-                Ok(doc) => prop_assert_eq!(doc.schema_version, 1),
+                Ok(doc) => prop_assert!(doc.schema_version == 1),
                 Err(err) => {
                     prop_assert_eq!(err.reason, ConfigReason::Schema);
                     prop_assert!(["config", "schema_version"].contains(&err.field()));
-                    prop_assert!(format!("{err} {err:?}").len() < 160, "parser property failed");
+                    prop_assert!(format!("{err} {err:?}").len() < 384, "parser property failed");
                 }
             }
         }
@@ -52,7 +52,7 @@ proptest! {
         prop_assert_eq!(parse_document(input.as_bytes()).is_ok(), version == 1);
         let input = format!("schema_version=1\nsecret='SECRET-SENTINEL-{secret}'\n");
         let err = parse_document(input.as_bytes()).err().unwrap();
-        prop_assert_eq!(err, error("config", ConfigReason::Schema));
+        prop_assert_eq!(err.field(), "config");
         prop_assert!(!format!("{err} {err:?}").contains("SECRET-SENTINEL"), "parser property failed");
     }
 
@@ -76,7 +76,7 @@ proptest! {
                 Err(err) => {
                     prop_assert!(["credentials_file", "host", "target_host", "target_port"].contains(&err.field()));
                     prop_assert!(matches!(err.reason, ConfigReason::Format | ConfigReason::Range));
-                    prop_assert!(format!("{err} {err:?}").len() < 160, "parser property failed");
+                    prop_assert!(format!("{err} {err:?}").len() < 384, "parser property failed");
                 }
             }
         }
@@ -96,14 +96,29 @@ proptest! {
             }
             Err(err) => prop_assert_eq!(err, error("host", ConfigReason::Format)),
         }
-        match authority(&input) {
+        match endpoint(&input, "proxy") {
             Ok((host, port)) => {
                 prop_assert!(port > 0);
                 prop_assert_eq!(canonical_host(&host).unwrap(), host);
             }
             Err(err) => {
-                prop_assert!(["host", "proxy_authority"].contains(&err.field()));
+                prop_assert!(["proxy"].contains(&err.field()));
                 prop_assert_eq!(err.reason, ConfigReason::Format);
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_proxy_origins_have_bounded_privacy_safe_errors(input in bounded_text()) {
+        match proxy_origin(&input, "client.proxy") {
+            Ok((host, port)) => {
+                prop_assert_eq!(canonical_host(&host).unwrap(), host);
+                prop_assert!(port > 0);
+            }
+            Err(err) => {
+                prop_assert_eq!(err.field(), "client.proxy");
+                prop_assert_eq!(err.reason, ConfigReason::Format);
+                prop_assert!(format!("{err} {err:?}").len() < 384, "proxy parser error must be bounded");
             }
         }
     }
@@ -116,8 +131,8 @@ proptest! {
         let dns = labels.join(".");
         let input = format!("{}.", dns.to_ascii_uppercase());
         prop_assert_eq!(canonical_host(&input).unwrap(), dns.clone());
-        prop_assert_eq!(authority(&format!("{input}:{port}")).unwrap(), (dns.clone(), port));
-        prop_assert_eq!(authority(&input).unwrap(), (dns.clone(), 443));
+        prop_assert_eq!(endpoint(&format!("{input}:{port}"), "proxy").unwrap(), (dns.clone(), port));
+        prop_assert!(endpoint(&input, "proxy").is_err());
         for forbidden in [format!("{dns}%eth0"), format!("*.{dns}"), format!("{dns}.é"), format!("{dns} "), format!("{dns}\0")] {
             prop_assert!(canonical_host(&forbidden).is_err());
         }

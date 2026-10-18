@@ -1,0 +1,195 @@
+# Configuration
+
+Remora reads one TOML file at startup. Choose a client or server role; changes
+require a restart. Paths are relative to the configuration file's directory.
+Use `remora check-config --config PATH` to validate files and settings without
+binding sockets, resolving DNS or contacting the peer.
+
+## Client
+
+```toml
+schema_version = 1
+
+[client]
+listen = "127.0.0.1:51821"
+proxy = "https://remora.example.com"
+target = "127.0.0.1:51820"
+ca_file = "ca.pem"
+token_file = "client.token"
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `listen` | Yes | Local numeric IP and nonzero UDP port. Applications send here. |
+| `proxy` | Yes | Public HTTPS origin, such as `https://remora.example.com`. Port 443 is the default; use `https://remora.example.com:7443` for another port. DNS, IPv4 and bracketed IPv6 are accepted. |
+| `target` | Yes | Destination `host:port`, interpreted **from the server**. `127.0.0.1` means the server itself. DNS and bracketed IPv6 are accepted. The server must explicitly authorize it. |
+| `ca_file` | Yes | PEM trust bundle. Only these certificates are trusted; system roots are not loaded implicitly. See [TLS](tls.md). |
+| `token_file` | Yes | Private file containing 64 lowercase hex characters, with one optional final LF. |
+| `allow_non_loopback` | No | Default `false`. Set `true` explicitly to expose a non-loopback local listener. Protect access with host/network policy. |
+| `connect_address` | No | Numeric IP:port override for the transport. It can use a different port from `proxy`, for example behind UDP forwarding. TLS identity and HTTP authority still come from `proxy`. No proxy DNS lookup occurs when set. |
+| `uri_template` | No | Absolute HTTPS URI template for another MASQUE deployment. Defaults to `<proxy>/.well-known/masque/udp/{target_host}/{target_port}/`. Its literal authority must match the canonical proxy authority (omit port 443). |
+
+`proxy` determines the verified TLS identity (DNS SAN or IP SAN), the HTTP
+`:authority` and the default MASQUE URI. A DNS identity sends SNI; a literal IP
+uses IP SAN verification without DNS SNI. DNS names are normalized to lowercase,
+with a trailing dot removed; Unicode names, scoped IPv6 and ambiguous numeric
+forms are rejected. A root trailing slash is accepted; credentials, non-root
+paths, queries and fragments are rejected. `https://host`, `https://host/` and
+`https://host:443` select the same origin. Port 443 is omitted from the canonical
+HTTP authority and generated URI; other ports are retained. Examples include
+`https://203.0.113.10` and `https://[2001:db8::1]:7443`.
+
+The default port follows the [HTTPS URI scheme](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.2.2).
+Remora reaches that origin using HTTP/3 over QUIC/UDP. `listen`, `target` and
+`connect_address` remain socket endpoints with explicit ports.
+
+For a fixed transport address with a DNS certificate:
+
+```toml
+proxy = "https://remora.example.com"
+connect_address = "203.0.113.10:7443"
+```
+
+Without an override, DNS resolution runs off the reactor in the existing
+bounded resolver pool, limited by `limits.max_pending_setup`. Each lookup has
+`recovery.setup_timeout_ms` to complete and at most 128 answers. Duplicates are
+removed, IPv4/IPv6 candidates alternate while preserving order within each
+family, and one handshake runs at a time. Failed candidates are tried with the
+normal bounded retry delay. Exhausting the list starts a fresh lookup. After a
+successful connection, recovery starts with a fresh lookup, so an IP change can
+be picked up without editing the config. A wrong certificate remains a permanent
+trust failure; another address never bypasses verification. Shutdown cancels the
+owned lookup; an uninterruptible libc DNS worker retains its bounded slot until
+it actually finishes.
+
+Custom templates must contain both `target_host` and `target_port`
+variables using the supported RFC 6570 subset. The client supports path and
+query expansion; Remora's server accepts the path form described below, so a
+query template is for a compatible external proxy. See the
+[wire contract](../specs/001-masque-udp-tunnel/contracts/masque-wire.md) for the exact subset.
+
+## Server
+
+```toml
+schema_version = 1
+
+[server]
+listen = ["0.0.0.0:443"]
+proxy = "https://remora.example.com"
+certificate_file = "server.pem"
+private_key_file = "server-key.pem"
+credentials_file = "credentials.toml"
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `listen` | Yes | Array of 1–16 distinct numeric IP:port listeners. Ports must be nonzero. IPv4 and IPv6 binds are separate (`IPV6_V6ONLY`). |
+| `proxy` | Yes | **Public HTTPS origin**, such as `https://remora.example.com`, expected in requests. Port 443 is the default. Independent of the bind address and port. It does not cause a DNS lookup on the server. |
+| `certificate_file` | Yes | PEM chain, leaf first, then intermediates. The leaf must match the private key. |
+| `private_key_file` | Yes | Private PEM key. Encrypted keys are rejected without prompting. |
+| `credentials_file` | Yes | Private TOML file of identities and exact target permissions. |
+| `path_prefix` | No | Default `/.well-known/masque/udp/`. Must start/end with `/`; no query, fragment, whitespace, backslash or template braces. Requests append `{target_host}/{target_port}/`. |
+
+For external UDP/443 forwarding to an unprivileged listener, use
+`proxy = "https://remora.example.com"` and `listen = ["0.0.0.0:7443"]`. No HTTP
+reverse proxy or socket activation is assumed. Direct UDP/443 requires a bind
+capability; see [running on port 443](operations.md#listening-on-udp443).
+
+## Credentials and file handling
+
+```toml
+[[identities]]
+id = "client"
+token_sha256 = "<SHA-256 of the client's 64 ASCII token characters>"
+
+[[identities.targets]]
+host = "127.0.0.1"
+port = 51820
+addresses = ["127.0.0.1/32"]
+```
+
+`host` and `port` select the exact permitted destination. `addresses` separately
+restricts the numeric results: **every** DNS answer must fall within the allowed
+CIDRs before a target is pinned to its request. These checks also apply to
+literal IP targets. No wildcard names or ports. Loopback/private addresses need
+explicit permission. An empty identity list is invalid; the limits are 128
+identities, 128 target rules per identity and 128 CIDRs per rule. IDs are 1–64
+ASCII letters/digits or `_-.`; IDs and token digests must be unique.
+
+Hash canonical ASCII token text, excluding the optional LF, rather than the
+32 decoded bytes. See [token provisioning](operations.md#install-and-provision)
+for working commands.
+
+Config files are at most 256 KiB, credentials 4 MiB and each PEM input 1 MiB.
+All inputs must be regular files; symlinks are rejected at **every path
+component**. The client token must be owned by the process user with no
+group/world permissions. Server keys and credentials may instead be root-owned,
+provided the service can read them and they have no group/world permissions.
+Mode `0600` is usual. CA bundles and certificate chains are public material;
+protect their integrity and directories. Use atomic replacement and restart
+for renewal or revocation. There is no live reload.
+
+## Tuning
+
+Optional tables below apply to both roles. Omitted fields take these defaults;
+minimal configs do not need to repeat them. Byte limits count bytes, durations
+are milliseconds, and counts are integers. Positive counts/bytes must fit the
+platform size type; all derived arithmetic and the process FD budget are
+checked before startup. Timeouts must be positive and representable.
+
+| Section/key | Required | Default | Constraint / behavior |
+|-------------|----------|---------|-----------------------|
+| limits.max_connections | No | 64 | Active plus handshaking; no allocation beyond ceiling |
+| limits.max_sessions | No | 128 | Active plus pending, all identities |
+| limits.max_sessions_per_identity | No | 32 | <= global; admission rejects on exhaustion |
+| limits.max_sessions_per_connection | No | 32 | <= global; separate HTTP streams |
+| limits.max_pending_setup | No | 16 | Includes DNS and authentication/authorization setup |
+| limits.max_relay_sockets | No | 256 | Active plus bounded cleanup relay sockets; admission rejects at ceiling |
+| limits.session_queue_packets | No | 32 | Per direction/session, reject newest on full |
+| limits.session_queue_bytes | No | 65536 | Both directions/session combined; checked before allocation |
+| limits.application_pool_bytes | No | 8388608 | Global retained slabs/queue ownership, not only lengths |
+| limits.ciphertext_pool_bytes | No | 4194304 | Includes all generated unsent QUIC packets |
+| limits.scratch_pool_bytes | No | 2097152 | Shared syscall/GRO scratch, independent of session count |
+| limits.quiche_dgram_packets | No | 64 | Per connection/direction, explicit enable_dgram counts |
+| limits.connection_dgram_bytes | No | 262144 | Send+receive bytes cap including internal queued ownership |
+| limits.idle_session_ms | No | 120000 | Default two-minute UDP association inactivity timeout; positive finite; close stream and socket together; shorter override is a documented RFC SHOULD deviation |
+| limits.application_residence_ms | No | 20 | Includes native outgoing quiche queue; conservative purge-all at earliest queued expiry |
+| limits.ciphertext_residence_ms | No | 100 | Stuck generated output fails its connection, not recreated |
+| io.mode | No | mmsg | mmsg or single |
+| io.batch_max | No | 32 | Batch count, range 1..64 |
+| io.gso / io.gro | No | off / off | off or auto; outer sockets only; auto currently uses ordinary I/O with effective off / not_implemented |
+| io.outer_socket_buffer_bytes | No | 1048576 | Requested outer RX/TX kernel buffers; report effective values/clamps; explicit 262144 retains the former default; include per-socket kernel ceilings/counts separately from process RSS |
+| io.relay_socket_buffer_bytes | No | 131072 | Requested RX/TX buffers for client application listener and server relay sockets; report effective values/clamps; explicit 65536 retains the former default |
+| transport.cc | No | cubic | cubic, bbr2_gcongestion, reno; no generic bbr alias exposed |
+| transport.pacing | No | timerfd | User-space deadlines; no off mode |
+| transport.outer_udp_max_bytes | No | 1350 | >=1200; PMTU probes and peer/path limits still apply |
+| transport.application_max_bytes | No | 1200 | Actual limit may be smaller; empty payload supported |
+| transport.idle_timeout_ms | No | 5000 | Finite liveness profile; keepalive when active flows otherwise idle |
+| recovery.keepalive_interval_ms | No | 2000 | Active-flow otherwise-idle QUIC probe, normally paced |
+| recovery.peer_progress_timeout_ms | No | 10000 | Watchdog based on authenticated peer progress, separate from quiche idle rules |
+| recovery.setup_timeout_ms | No | 5000 | Bounded proxy DNS, handshake and request setup |
+| recovery.retry_initial_ms / retry_max_ms | No | 100 / 2000 | Validate 100 <= initial <= max <=2000; scheduling floor plus uniform capped exponential jitter, total delay <=max; <=10 attempts/s/process, one handshake in flight |
+| diagnostics.level | No | info | error/warn/info/debug/trace; same redaction at every level |
+| diagnostics.snapshot_interval_ms | No | 1000 | Minimum 1000; bounded stdout NDJSON snapshots |
+| diagnostics.qlog_directory | No | absent | Disabled by default; qlog build feature plus fresh empty owner-0700 directory; filtered NDJSON only, never raw H3 |
+
+
+Additional coupled constraints:
+
+- `max_sessions_per_identity` and `max_sessions_per_connection` cannot exceed
+  `max_sessions`.
+- `1 <= application_max_bytes <= 65527` and
+  `1200 <= outer_udp_max_bytes <= 65527`.
+- `connection_dgram_bytes` must cover
+  `2 * quiche_dgram_packets * outer_udp_max_bytes`.
+- Application and ciphertext pools must each hold their maximum configured
+  message; scratch must cover `batch_max * max(outer, application)` bytes.
+- Socket buffer requests must fit a positive signed 32-bit value. Linux may
+  clamp them; status reports the effective values.
+- `100 <= retry_initial_ms <= retry_max_ms <= 2000` and
+  `snapshot_interval_ms >= 1000`.
+
+The default 120000 ms association inactivity timeout follows RFC 9298. A shorter
+override can increase repeated setup, source-port changes and first-packet loss;
+record the deployment reason. QUIC keepalives do not refresh this application
+inactivity timer. See [datagram and lifecycle limits](operations.md#limits-payload-size-and-lifecycle).

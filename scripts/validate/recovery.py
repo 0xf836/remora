@@ -206,8 +206,8 @@ def characterize(network, out, scenario, peer_binary):
             )
             client_file.write_text(
                 client_file.read_text().replace(
-                    f'server_address = "127.0.0.1:{ports["proxy"]}"',
-                    f'server_address = "{proxy}"',
+                    f'connect_address = "127.0.0.1:{ports["proxy"]}"',
+                    f'connect_address = "{proxy}"',
                 )
             )
             binary = str(ROOT / "target/release/remora")

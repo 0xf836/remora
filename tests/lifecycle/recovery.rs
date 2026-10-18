@@ -816,3 +816,85 @@ fn wire_goaway_keeps_lower_flow_and_places_new_request_on_fresh_verified_connect
         assert_eq!(r.sessions[&fresh_session].queue.used().count, 0);
     });
 }
+
+#[test]
+fn proxy_round_falls_back_then_resolves_again_and_stop_rejects_late_completion() {
+    runtime().block_on(async {
+        let f = Fixtures::new();
+        let mut doc: toml::Table =
+            toml::from_str(&std::fs::read_to_string(f.file("client.toml")).unwrap()).unwrap();
+        let client = doc.get_mut("client").unwrap().as_table_mut().unwrap();
+        client.remove("connect_address");
+        client.insert("proxy".into(), "https://localhost".into());
+        client.insert("target".into(), "127.0.0.1:51820".into());
+        std::fs::write(f.file("client.toml"), toml::to_string(&doc).unwrap()).unwrap();
+        let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+        let resolver = SystemResolver::new(1).unwrap();
+        let now = Instant::now();
+        let (diag, _rx) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+        let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+        assert!(r.primary.is_none());
+        assert!(r.proxy_lookup.is_some());
+        let listener = r
+            .listener
+            .as_ref()
+            .unwrap()
+            .get_ref()
+            .0
+            .borrow()
+            .local_addr();
+        // Substitute a bounded resolver completion at the real owner boundary.
+        // Neither failed endpoint is contacted through an external interface.
+        r.proxy_lookup = None;
+        let a: SocketAddr = "[::1]:443".parse().unwrap();
+        let b: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        r.proxy_resolved(Ok(vec![a, b]), now).unwrap();
+        let first = r.primary.unwrap();
+        assert_eq!(
+            r.connections[&first]
+                .transport
+                .quic
+                .path_stats()
+                .next()
+                .unwrap()
+                .peer_addr,
+            a
+        );
+        r.remove_connection(first, now).unwrap();
+        r.service_recovery(r.reconnect.deadline().unwrap()).unwrap();
+        let second = r.primary.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            r.connections[&second]
+                .transport
+                .quic
+                .path_stats()
+                .next()
+                .unwrap()
+                .peer_addr,
+            b
+        );
+        r.remove_connection(second, now).unwrap();
+        r.service_recovery(r.reconnect.deadline().unwrap()).unwrap();
+        assert!(
+            r.proxy_lookup.is_some(),
+            "exhausted DNS answers require a new resolution round"
+        );
+        assert_eq!(
+            r.listener
+                .as_ref()
+                .unwrap()
+                .get_ref()
+                .0
+                .borrow()
+                .local_addr(),
+            listener
+        );
+        r.stop_owned(now).unwrap();
+        assert!(r.proxy_lookup.is_none());
+        r.proxy_resolved(Ok(vec![b]), now).unwrap();
+        assert!(r.primary.is_none());
+        assert!(r.connections.is_empty());
+        assert!(r.proxy_candidates.is_empty());
+    });
+}

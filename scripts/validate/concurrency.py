@@ -82,8 +82,8 @@ class Lab:
             text = (
                 base.replace(f'127.0.0.1:{ports["client"]}', f"127.0.0.1:{port}")
                 .replace(
-                    f'target_port = {ports["target"]}',
-                    f"target_port = {self.targets[i // 2].getsockname()[1]}",
+                    f'target = "127.0.0.1:{ports["target"]}"',
+                    f'target = "127.0.0.1:{self.targets[i // 2].getsockname()[1]}"',
                 )
                 .replace("client.token", f"client-{i}.token")
             )

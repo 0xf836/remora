@@ -56,6 +56,57 @@ pub trait Resolver {
     fn resolve<'a>(&'a self, host: &'a str, port: u16) -> ResolveFuture<'a>;
 }
 
+/// Resolve one proxy round within the setup deadline. Keep resolver order within
+/// each family, alternating families to avoid exhausting one before fallback.
+/// These addresses select the transport only; TLS retains the configured identity.
+pub async fn resolve_proxy(
+    resolver: &dyn Resolver,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<Vec<SocketAddr>, PolicyError> {
+    let answers = tokio::time::timeout(timeout, resolver.resolve(host, port))
+        .await
+        .map_err(|_| PolicyError::Timeout)??;
+    if answers.is_empty() || answers.len() > 128 {
+        return Err(PolicyError::Resolution);
+    }
+    let first_v4 = answers[0].is_ipv4();
+    let mut v4 = std::collections::VecDeque::new();
+    let mut v6 = std::collections::VecDeque::new();
+    for answer in answers {
+        let ip = normalize_ip(answer.ip());
+        if answer.port() != port
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || matches!(ip, IpAddr::V4(v) if v.is_broadcast())
+            || matches!(ip, IpAddr::V6(v) if v.is_unicast_link_local())
+        {
+            return Err(PolicyError::Resolution);
+        }
+        let answer = SocketAddr::new(ip, port);
+        let family = if answer.is_ipv4() { &mut v4 } else { &mut v6 };
+        if !family.contains(&answer) {
+            family.push_back(answer);
+        }
+    }
+    let (first, second) = if first_v4 {
+        (&mut v4, &mut v6)
+    } else {
+        (&mut v6, &mut v4)
+    };
+    let mut result = Vec::new();
+    while !first.is_empty() || !second.is_empty() {
+        if let Some(address) = first.pop_front() {
+            result.push(address);
+        }
+        if let Some(address) = second.pop_front() {
+            result.push(address);
+        }
+    }
+    Ok(result)
+}
+
 /// Slots stay captured by the actual blocking lookup even if its async caller
 /// times out or is cancelled. Dropping a JoinHandle does not cancel getaddrinfo.
 /// Thus repeated timeouts cannot create an unbounded queue of resolver jobs.
