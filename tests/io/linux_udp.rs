@@ -69,6 +69,16 @@ fn real_batches_preserve_empty_datagrams_metadata_reuse_and_families() {
             };
             let mut sender = Udp::bind(family.parse().unwrap(), &settings, false).unwrap();
             let mut receiver = Udp::bind(family.parse().unwrap(), &settings, false).unwrap();
+            // The kernel may cap requests, and Linux reports doubled effective sizes.
+            // Compare with an independent socket rather than assuming host sysctl limits.
+            let reference = std::net::UdpSocket::bind(family).unwrap();
+            let reference = socket2::SockRef::from(&reference);
+            reference
+                .set_recv_buffer_size(settings.outer_socket_buffer_bytes)
+                .unwrap();
+            reference
+                .set_send_buffer_size(settings.outer_socket_buffer_bytes)
+                .unwrap();
             let pool = BufferPool::new(2048, 8192).unwrap();
             for data in [b"".as_slice(), b"boundary-sentinel", &[7; 1200], b""] {
                 assert_eq!(
@@ -94,8 +104,11 @@ fn real_batches_preserve_empty_datagrams_metadata_reuse_and_families() {
                     .kind(),
                 io::ErrorKind::WouldBlock
             );
-            assert!(receiver.receive_buffer >= settings.outer_socket_buffer_bytes);
-            assert!(receiver.send_buffer >= settings.outer_socket_buffer_bytes);
+            assert_eq!(
+                receiver.receive_buffer,
+                reference.recv_buffer_size().unwrap()
+            );
+            assert_eq!(receiver.send_buffer, reference.send_buffer_size().unwrap());
         }
     }
 }
