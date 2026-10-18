@@ -71,4 +71,53 @@ class CandidateConstruction(unittest.TestCase):
         self.assertFalse(self.source.exists())
 
 
+class SourceArchiveExtraction(unittest.TestCase):
+    def test_regular_files_keep_content_and_executable_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = io.BytesIO()
+            with tarfile.open(fileobj=data, mode='w') as archive:
+                member = tarfile.TarInfo('scripts/check.sh')
+                member.mode = 0o4755
+                member.size = 4
+                archive.addfile(member, io.BytesIO(b'test'))
+            data.seek(0)
+            with tarfile.open(fileobj=data) as archive:
+                b.extract_sources(archive, root)
+            self.assertEqual((root / 'scripts/check.sh').read_bytes(), b'test')
+            self.assertEqual((root / 'scripts/check.sh').stat().st_mode & 0o7777, 0o755)
+
+    def test_traversal_absolute_links_and_devices_are_rejected_before_writing(self):
+        for name, kind in [('..', tarfile.DIRTYPE), ('../escape', tarfile.REGTYPE),
+                           ('/escape', tarfile.REGTYPE), ('link', tarfile.SYMTYPE),
+                           ('link', tarfile.LNKTYPE), ('device', tarfile.CHRTYPE),
+                           ('pipe', tarfile.FIFOTYPE)]:
+            with self.subTest(name=name, kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / 'source'; root.mkdir()
+                data = io.BytesIO()
+                with tarfile.open(fileobj=data, mode='w') as archive:
+                    safe = tarfile.TarInfo('safe.rs'); safe.size = 4
+                    archive.addfile(safe, io.BytesIO(b'safe'))
+                    unsafe = tarfile.TarInfo(name); unsafe.type = kind; unsafe.linkname = '../escape'
+                    archive.addfile(unsafe)
+                data.seek(0)
+                with tarfile.open(fileobj=data) as archive, self.assertRaises(ValueError):
+                    b.extract_sources(archive, root)
+                self.assertEqual(list(root.iterdir()), [])
+
+    def test_existing_symlink_cannot_redirect_an_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'source'; root.mkdir()
+            outside = Path(directory) / 'outside'; outside.mkdir()
+            (root / 'redirect').symlink_to(outside, target_is_directory=True)
+            data = io.BytesIO()
+            with tarfile.open(fileobj=data, mode='w') as archive:
+                member = tarfile.TarInfo('redirect/escape'); member.size = 4
+                archive.addfile(member, io.BytesIO(b'test'))
+            data.seek(0)
+            with tarfile.open(fileobj=data) as archive, self.assertRaises(ValueError):
+                b.extract_sources(archive, root)
+            self.assertEqual(list(outside.iterdir()), [])
+
+
 if __name__ == '__main__': unittest.main()

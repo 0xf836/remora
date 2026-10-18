@@ -16,6 +16,31 @@ from benchmark import sha, write
 from diagnostic_regression import read
 
 
+def extract_sources(archive, source):
+    """Extract regular source files/directories, including on Python 3.11.2.
+
+    Source snapshots do not need links or devices. Validate paths explicitly
+    instead of falling back to unfiltered extractall on older Python versions.
+    """
+    source = source.resolve()
+    members = archive.getmembers()
+    for member in members:
+        path = Path(member.name)
+        if (path.is_absolute() or ".." in path.parts
+                or not (member.isdir() or member.isfile())
+                or not (source / path).resolve().is_relative_to(source)):
+            raise ValueError("unsafe source archive member")
+    for member in members:
+        destination = source / member.name
+        if member.isdir():
+            destination.mkdir(parents=True, exist_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.extractfile(member) as incoming, destination.open("wb") as output:
+                shutil.copyfileobj(incoming, output)
+            destination.chmod(member.mode & 0o755)
+
+
 def prepare_baseline(inputs, revision, source, target, traffic):
     from benchmark import ROOT
     if not re.fullmatch(r"[0-9a-f]{40}", revision) or inputs.exists() or source.exists():
@@ -23,7 +48,7 @@ def prepare_baseline(inputs, revision, source, target, traffic):
     inputs.mkdir(parents=True); source.mkdir(parents=True)
     archive = subprocess.check_output(["git", "archive", revision], cwd=ROOT)
     (inputs / "phase6.tar").write_bytes(archive)
-    with tarfile.open(fileobj=io.BytesIO(archive)) as tar: tar.extractall(source, filter="data")
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar: extract_sources(tar, source)
     files = sorted(p for p in (ROOT / "src").rglob("*") if p.is_file())
     files += [ROOT / name for name in ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml"]]
     with tarfile.open(inputs / "phase7-proposed.tar", "w") as tar:
@@ -63,7 +88,7 @@ def build_candidate(inputs, policy_path, source, target):
     materialized = time.time()
     for name in ["phase6.tar", "phase7-proposed.tar"]:
         with tarfile.open(inputs / name) as archive:
-            archive.extractall(source, filter="data")
+            extract_sources(archive, source)
     sources = {str(p.relative_to(source)): sha(p) for p in (source / "src").rglob("*") if p.is_file()}
     sources.update({p: sha(source / p) for p in ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml"]})
     if sources != proposal["proposed_sources"]:
