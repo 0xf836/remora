@@ -18,50 +18,75 @@ ca_file = "ca.pem"
 token_file = "client.token"
 ```
 
+Application (e.g. WireGuard) sends UDP to `listen` on the client host. Remora connects to
+the server at `proxy`, which forwards the traffic to `target`. In this example,
+the destination is UDP/51820 on the Remora server itself. Replies travel back
+through the same tunnel.
+
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `listen` | Yes | Local numeric IP and nonzero UDP port. Applications send here. |
-| `proxy` | Yes | Public HTTPS origin, such as `https://remora.example.com`. Port 443 is the default; use `https://remora.example.com:7443` for another port. DNS, IPv4 and bracketed IPv6 are accepted. |
-| `target` | Yes | Destination `host:port`, interpreted **from the server**. `127.0.0.1` means the server itself. DNS and bracketed IPv6 are accepted. The server must explicitly authorize it. |
+| `proxy` | Yes | HTTPS address of the Remora server. Port 443 is the default; use `https://remora.example.com:7443` for another port. DNS, IPv4 and bracketed IPv6 are accepted. |
+| `target` | Yes | UDP destination `host:port`, reached **from the server**. `127.0.0.1` means the server itself; `10.0.0.5:9000` would reach another service in its network. The server must explicitly authorize the destination. DNS and bracketed IPv6 are accepted. |
 | `ca_file` | Yes | PEM trust bundle. Only these certificates are trusted; system roots are not loaded implicitly. See [TLS](tls.md). |
 | `token_file` | Yes | Private file containing 64 lowercase hex characters, with one optional final LF. |
 | `allow_non_loopback` | No | Default `false`. Set `true` explicitly to expose a non-loopback local listener. Protect access with host/network policy. |
-| `connect_address` | No | Numeric IP:port override for the transport. It can use a different port from `proxy`, for example behind UDP forwarding. TLS identity and HTTP authority still come from `proxy`. No proxy DNS lookup occurs when set. |
+| `connect_address` | No | Fixed numeric IP:port used instead of resolving the host in `proxy`. Normally omitted. The server name used for TLS verification still comes from `proxy`. |
 | `uri_template` | No | Absolute HTTPS URI template for another MASQUE deployment. Defaults to `<proxy>/.well-known/masque/udp/{target_host}/{target_port}/`. Its literal authority must match the canonical proxy authority (omit port 443). |
 
-`proxy` determines the verified TLS identity (DNS SAN or IP SAN), the HTTP
-`:authority` and the default MASQUE URI. A DNS identity sends SNI; a literal IP
-uses IP SAN verification without DNS SNI. DNS names are normalized to lowercase,
-with a trailing dot removed; Unicode names, scoped IPv6 and ambiguous numeric
-forms are rejected. A root trailing slash is accepted; credentials, non-root
-paths, queries and fragments are rejected. `https://host`, `https://host/` and
-`https://host:443` select the same origin. Port 443 is omitted from the canonical
-HTTP authority and generated URI; other ports are retained. Examples include
-`https://203.0.113.10` and `https://[2001:db8::1]:7443`.
+### Proxy name and connection address
 
-The default port follows the [HTTPS URI scheme](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.2.2).
-Remora reaches that origin using HTTP/3 over QUIC/UDP. `listen`, `target` and
-`connect_address` remain socket endpoints with explicit ports.
+For normal setup, set `proxy` and omit `connect_address`. Remora resolves the
+proxy's hostname through DNS, connects using QUIC/UDP and verifies the server's
+certificate against that hostname. HTTPS uses port 443 by default;
+`listen`, `target` and `connect_address` always include an explicit port.
 
-For a fixed transport address with a DNS certificate:
+To reach the same service at a specific IP, for example while testing a new
+server before updating DNS:
 
 ```toml
 proxy = "https://remora.example.com"
-connect_address = "203.0.113.10:7443"
+connect_address = "203.0.113.10:443"
 ```
 
-Without an override, DNS resolution runs off the reactor in the existing
-bounded resolver pool, limited by `limits.max_pending_setup`. Each lookup has
-`recovery.setup_timeout_ms` to complete and at most 128 answers. Duplicates are
-removed, IPv4/IPv6 candidates alternate while preserving order within each
-family, and one handshake runs at a time. Failed candidates are tried with the
-normal bounded retry delay. Exhausting the list starts a fresh lookup. After a
-successful connection, recovery starts with a fresh lookup, so an IP change can
-be picked up without editing the config. A wrong certificate remains a permanent
-trust failure; another address never bypasses verification. Shutdown cancels the
-owned lookup; an uninterruptible libc DNS worker retains its bounded slot until
-it actually finishes.
+This connects to `203.0.113.10:443` while verifying the certificate for
+`remora.example.com`. An override can also use a private IP or a different port
+when reaching the same service through another network path. It stays fixed on
+reconnect: update it if the server's address changes.
 
+**SNI** is the server name the client sends when starting TLS. Remora sets it
+automatically from the hostname in `proxy`; there is no separate SNI option.
+Setting `connect_address` leaves that name unchanged. If `proxy` contains a
+literal IP instead, no DNS SNI is sent and the certificate must cover that IP
+(IP SAN). See [TLS certificates and trust](tls.md).
+
+### DNS and recovery
+
+For a hostname proxy without `connect_address`, Remora resolves the name at
+startup and again after an established connection fails. It tries IPv4/IPv6
+addresses one at a time, alternating families, with handshake timeouts and retry
+delays. Exhausting the address list starts a fresh lookup. A wrong certificate
+remains a permanent trust failure; another address never bypasses verification.
+
+Each lookup has `recovery.setup_timeout_ms` to complete and accepts at most 128
+answers. At most `limits.max_pending_setup` system lookups run at once. A lookup
+that times out keeps its slot until the underlying operating-system call
+finishes. Stopping the client cancels pending connection attempts.
+
+### URL format and custom routes
+
+`proxy` is an HTTPS origin: the scheme, host and optional port. DNS names are
+normalized to lowercase, with a trailing dot removed; Unicode names, scoped
+IPv6 and ambiguous numeric forms are rejected. A root trailing slash is
+accepted; credentials, non-root paths, queries and fragments are rejected.
+`https://host`, `https://host/` and `https://host:443` select the same origin.
+The normalized host and port form the HTTP authority sent in requests. Port
+443 is omitted from that authority and the generated URI; other ports are
+retained. Examples include `https://203.0.113.10` and
+`https://[2001:db8::1]:7443`. The default port follows the
+[HTTPS URI scheme](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.2.2).
+
+Leave `uri_template` unset unless the proxy uses a nonstandard MASQUE route.
 Custom templates must contain both `target_host` and `target_port`
 variables using the supported RFC 6570 subset. The client supports path and
 query expansion; Remora's server accepts the path form described below, so a
@@ -84,7 +109,7 @@ credentials_file = "credentials.toml"
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `listen` | Yes | Array of 1–16 distinct numeric IP:port listeners. Ports must be nonzero. IPv4 and IPv6 binds are separate (`IPV6_V6ONLY`). |
-| `proxy` | Yes | **Public HTTPS origin**, such as `https://remora.example.com`, expected in requests. Port 443 is the default. Independent of the bind address and port. It does not cause a DNS lookup on the server. |
+| `proxy` | Yes | Public HTTPS address of this service; use the same value in the client configuration. Port 443 is the default. The local bind address and port are set separately by `listen`; this field causes no server-side DNS lookup. |
 | `certificate_file` | Yes | PEM chain, leaf first, then intermediates. The leaf must match the private key. |
 | `private_key_file` | Yes | Private PEM key. Encrypted keys are rejected without prompting. |
 | `credentials_file` | Yes | Private TOML file of identities and exact target permissions. |

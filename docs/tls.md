@@ -1,9 +1,12 @@
 # TLS certificates and trust
 
-The client verifies both the server's certificate chain and the identity in
-`client.proxy`. Keep the same public `proxy` on both roles. A DNS proxy needs a
-matching DNS subject alternative name (SAN); a literal IP needs a matching IP
-SAN. Setting `connect_address` changes only the transport destination.
+The client verifies the server's certificate chain and checks that the
+certificate covers the host in `client.proxy`. Keep the same public `proxy` on
+both roles. For `https://remora.example.com`, the certificate needs a DNS subject
+alternative name (SAN) that covers `remora.example.com`. For a literal IP, it
+needs an IP SAN. A fixed [`connect_address`](configuration.md#proxy-name-and-connection-address)
+changes where the client connects; the certificate must still cover the host
+in `proxy`.
 
 Remora reads certificates at startup. It does not obtain certificates or reload
 them automatically, and has no skip-verification option.

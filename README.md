@@ -74,10 +74,10 @@ token_file = "client.token"
 ```
 
 The server binds `0.0.0.0:443`; allow incoming **UDP/443** in your firewall.
-`target` is resolved/reached from the server, so `127.0.0.1` is the server's
-local service. To use a fixed proxy IP, add `connect_address = "203.0.113.10:443"`;
-TLS still verifies `remora.example.com`. See the
-[configuration reference](docs/configuration.md) for all settings and overrides.
+Your application (e.g. WireGuard) sends to `listen` on the client. Remora connects to `proxy`,
+then the server forwards UDP to `target`: here, its own local port `51820`.
+Normally, `proxy` is resolved through DNS. For a fixed IP, see
+[proxy name and connection address](docs/configuration.md#proxy-name-and-connection-address).
 
 ### 3. Authorize the client
 
