@@ -5,7 +5,8 @@ cd "$(dirname "$0")/../.."
 seconds=${1:-30}
 output=${2:?usage: fuzz.sh SECONDS FRESH_OUTPUT}
 [[ "$seconds" =~ ^[0-9]+$ ]] && (( seconds >= 1 && seconds <= 86400 ))
-mkdir -m 700 "$output"
+mkdir -p -- "$(dirname -- "$output")"
+mkdir -m 700 -- "$output"
 output=$(realpath "$output")
 ./scripts/validate/fixtures.sh --output "$output/fixtures" > "$output/fixtures.log"
 export REMORA_FUZZ_CONFIG="$output/fixtures/server.toml"
