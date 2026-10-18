@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## [Initial development notes](docs/releasing.md#first-release)
+
+These notes describe development before the first release. Release Please adds
+versioned entries above this section; the notes and their evidence boundaries
+remain available as historical context.
 
 ### Added
 
@@ -79,7 +83,7 @@
   Linux GNU **x86_64** profile, the sole current required platform. ARM64/T072
   is [deferred outside requirements](docs/adr/0024-defer-arm64-release-scope.md);
   retained manual-only tooling/profile files are experimental, not support evidence. No release tag, publication
-  or deployment is asserted by this Unreleased entry.
+  or deployment is asserted by these development notes.
 - GSO/GRO remain effective off, including deferred `auto`. High-rate active
   tracing, BBR2/full WAN performance and universal WireGuard MTUs are unqualified.
 - Setup/outage traffic can be dropped; there is no reliable payload fallback,

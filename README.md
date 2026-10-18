@@ -165,6 +165,9 @@ See the [architecture decisions](docs/adr/) and
 [validation guide](docs/validation/README.md) for design constraints and
 additional test suites.
 
+The [release guide](docs/releasing.md) explains development PRs, generated
+release PRs, versioning and binary publication through Release Please.
+
 With Gitleaks available in `PATH`, enable this clone's pre-commit check:
 
 ```bash

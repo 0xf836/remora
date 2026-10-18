@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag to resume; leave empty to update the release PR
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: remora-release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.ref == 'refs/heads/main' && inputs.release_tag == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: >-
+      always() && !cancelled() && github.ref == 'refs/heads/main' &&
+      ((needs.release-please.result == 'success' && needs.release-please.outputs.release_created == 'true') ||
+       (github.event_name == 'workflow_dispatch' && inputs.release_tag != ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Select an existing draft release
+        id: candidate
+        env:
+          CREATED_TAG: ${{ needs.release-please.outputs.tag_name }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          release_tag="${REQUESTED_TAG:-$CREATED_TAG}"
+          [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(gh release view "$release_tag" --json isDraft --jq .isDraft)" = true
+          release_sha="$(gh release view "$release_tag" --json targetCommitish --jq .targetCommitish)"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.candidate.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a native x86_64 host and a release from main
+        env:
+          RELEASE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Build pinned tool image
+        run: docker build --pull -t remora-release-build tools/build
+      - name: Build and package the tagged source
+        env:
+          RELEASE_TAG: ${{ steps.candidate.outputs.tag }}
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --env CARGO_HOME=/tmp/cargo --env RELEASE_TAG \
+            --mount "type=bind,source=$PWD,target=/work" remora-release-build \
+            bash -euc '
+              cargo fetch --locked
+              python3 scripts/validate/quiche_inputs.py
+              cargo build --locked --release --features qlog
+              python3 scripts/release/package.py \
+                --tag "$RELEASE_TAG" --binary target/release/remora \
+                --build-packages /usr/local/share/remora-build-packages.txt \
+                --output release
+            '
+      - name: Upload assets and publish the complete release
+        env:
+          RELEASE_TAG: ${{ steps.candidate.outputs.tag }}
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          gh release view "$RELEASE_TAG" --json body --jq .body > release/RELEASE-NOTES.md
+          cat >> release/RELEASE-NOTES.md <<EOF
+
+          ### Binary and compatibility
+
+          - Linux GNU x86_64, Linux 6.1+, glibc 2.36+, libstdc++/libgcc runtime (Debian 12 or compatible); built with the optional qlog feature.
+          - Verify the archive against SHA256SUMS. Build inputs and the binary hash are in BUILD-INFO.json inside the archive.
+          - Configuration and credential updates require a controlled restart.
+          - [Known limitations and development evidence]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$RELEASE_TAG/CHANGELOG.md#initial-development-notes) describe the scope of the recorded measurements; these release assets have their own hashes.
+          - [Configuration]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$RELEASE_TAG/docs/configuration.md), [TLS]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$RELEASE_TAG/docs/tls.md), and [operations]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$RELEASE_TAG/docs/operations.md).
+          EOF
+          gh release upload "$RELEASE_TAG" release/*.tar.gz release/SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --notes-file release/RELEASE-NOTES.md --draft=false

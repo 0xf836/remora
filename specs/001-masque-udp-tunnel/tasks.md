@@ -1172,3 +1172,7 @@ Candidate qlog SHA-256: `4dc83ee4acbf3234a49fd43bbe2479a094f573be200dbbe3bf40ada
 Historical full qualification remains bound to its original executable. No new
 full release/VM/WireGuard/WAN/ARM64 qualification, independent patch re-review,
 commit, publication or deployment is claimed.
+
+## Phase 13: Release automation
+
+- [X] T091 Add maintainer-controlled Release Please automation for the single production Rust package: first v0.1.0, Conventional Commit versioning, a separate release PR, exact-source x86_64 qlog artifacts, checksums/build metadata and recoverable draft publication. Preserve existing history/evidence and handwritten changelog notes; update all Remora lockfile entries on subsequent versions. Verify config generation, packaging failure modes, workflow syntax and the pinned container build; document GitHub setup and the first PR/merge/release procedure (ADR 0028). Local implementation verification does not claim a remote workflow run, tag or published release.
