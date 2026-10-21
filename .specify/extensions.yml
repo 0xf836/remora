@@ -1,5 +1,6 @@
 installed:
 - agent-context
+- bug
 - git
 settings:
   auto_execute_hooks: true
