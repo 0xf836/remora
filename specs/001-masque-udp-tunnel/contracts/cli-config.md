@@ -51,7 +51,37 @@ syntax errors include source line/column without input. Successful check-config
 prints `configuration is valid (client)` or `(server)` and still performs no
 DNS, bind or handshake. Runtime/exit semantics below remain in force.
 
-Exactly one `[client]` or `[server]` role section is required. Explicit config values override defaults; no secret-bearing environment or CLI override. Paths resolve relative to config file directory. Client tokens and server keys/credential files must be regular files owned by the executing uid (or root for a provisioned server) and deny group/world access; reject symlink substitution/unsafe ownership at secure open. Do not echo contents on errors. Server certificate chain and CA bundle are public, private key and token files are not.
+Exactly one `[client]` or `[server]` role section is required. Explicit config values override defaults; no secret-bearing environment or CLI override. Paths resolve relative to config file directory. All inputs must be regular files; reject symlinks at every path component. Private-file metadata and ACL checks use the held descriptor. Do not echo contents on errors. Server certificate chain and CA bundle are public, private key and token files are not.
+
+Without an extended Linux POSIX access ACL, client tokens must be owned by the
+executing UID; provisioned server keys/credentials may also be root-owned.
+Require zero group/other mode bits, preserving ordinary `0400`/`0600` handling.
+An encoded base-only ACL follows the same ordinary ownership/mode rules.
+For an extended access ACL, trust only root or the executing UID as inode owner, and
+require zero effective permissions for every group, unrelated named UID and
+`other`. Apply the mask to named users and groups, never owner/other. Named root
+and the executing UID are trusted. A root-owned file delegated to a non-root
+executing UID must grant that UID exactly effective read permission via a named
+entry. This explicit exception applies equally to client tokens and both server
+secrets; it does not allow plain group-readable `0440`/`0640` files.
+
+Read `system.posix_acl_access` once through the held FD with a 64 KiB ceiling;
+validate Linux xattr version 2, canonical tag-class ordering/unique qualifiers,
+permissions, required base entries/mask, and consistency with inode mode.
+`ENODATA` and `EOPNOTSUPP` select only the strict ordinary-file policy. Any other
+read error, malformed ACL, oversize input or observed metadata change fails
+closed with a fixed `Permissions` error. Numeric named UID/GID order is
+unrestricted. Check uniqueness within each class using a fallibly allocated
+copy of at most 8191 qualifier pairs (less than 64 KiB requested), sorted without
+modifying ACL entries. Allocation failure rejects. No unbounded retry or path
+reopening.
+For ACL acceptance, obtain the kernel overflow UID from a bounded procfs read;
+reject an inode owner equal to it, failed procfs inspection, and undefined or
+unmapped named IDs. Compare kernel-translated ACL IDs and metadata in the
+process's current UID namespace; do not interpret on-disk IDs independently.
+This specifies Linux POSIX ACL behavior, not NFSv4 or arbitrary remote ACLs.
+Path names and environment variables never establish trust. See
+[ADR 0029](../../../docs/adr/0029-private-file-acls.md).
 
 Initial bounded parser ceilings: configuration <=256 KiB, credentials <=4 MiB,
 each PEM input <=1 MiB, <=16 distinct server listeners, <=128 CIDRs per target

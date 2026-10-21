@@ -6,7 +6,8 @@
 
 use boring::{pkey::PKey, x509::X509};
 use rustix::{
-    fs::{Mode, OFlags, openat},
+    fs::{Mode, OFlags, fgetxattr, openat},
+    io::Errno,
     process::{Resource, geteuid, getrlimit},
 };
 use serde::Deserialize;
@@ -252,7 +253,7 @@ impl ValidatedConfig {
     }
     /// Like load, with a caller-supplied *stricter* FD budget for deterministic tests.
     pub fn load_with_fd_limit(path: &Path, fd_limit: u64) -> Result<Self, ConfigError> {
-        let bytes = read_file(path, false, false, 256 * 1024, "config")?;
+        let bytes = read_file(path, FileAccess::Public, 256 * 1024, "config")?;
         let mut doc = parse_document(&bytes)?;
         let parent = path.parent().unwrap_or(Path::new("."));
         if let Some(ref mut qlog) = doc.diagnostics.qlog_directory {
@@ -312,10 +313,16 @@ impl ValidatedConfig {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileAccess {
+    Public,
+    ClientToken,
+    ServerSecret,
+}
+
 fn read_file(
     path: &Path,
-    private: bool,
-    root_ok: bool,
+    access: FileAccess,
     maximum: usize,
     field: &'static str,
 ) -> Result<Vec<u8>, ConfigError> {
@@ -351,9 +358,7 @@ fn read_file(
     if !metadata.is_file() || metadata.len() > maximum as u64 {
         return Err(fail());
     }
-    if private
-        && !private_owner_allowed(metadata.uid(), metadata.mode(), geteuid().as_raw(), root_ok)
-    {
+    if access != FileAccess::Public && !private_file_allowed(&current, &metadata, access) {
         return Err(error(field, ConfigReason::Permissions));
     }
     let mut bytes = Vec::new();
@@ -366,8 +371,178 @@ fn read_file(
     }
     Ok(bytes)
 }
-fn private_owner_allowed(owner: u32, mode: u32, executing_uid: u32, root_ok: bool) -> bool {
-    (owner == executing_uid || (root_ok && owner == 0)) && mode & 0o077 == 0
+// Linux POSIX access ACL xattr v2: a little-endian u32 header followed by
+// (u16 tag, u16 permissions, u32 qualifier) records. One fixed-size syscall
+// avoids a size-query/read race and bounds both input and parser work.
+const MAX_ACCESS_ACL_BYTES: usize = 64 * 1024;
+const ACL_UNDEFINED_ID: u32 = u32::MAX;
+
+fn private_file_allowed(file: &File, metadata: &std::fs::Metadata, access: FileAccess) -> bool {
+    let allowed = private_permissions_allowed(
+        metadata.uid(),
+        metadata.mode(),
+        geteuid().as_raw(),
+        access,
+        |buffer| fgetxattr(file, c"system.posix_acl_access", buffer),
+        kernel_overflow_uid,
+    );
+    // Same held inode throughout. Detect observed permission/ownership changes;
+    // this is not an atomic snapshot against a trusted owner (ADR-0005/0029).
+    allowed
+        && file.metadata().is_ok_and(|after| {
+            after.uid() == metadata.uid()
+                && after.gid() == metadata.gid()
+                && after.mode() == metadata.mode()
+                && after.ctime() == metadata.ctime()
+                && after.ctime_nsec() == metadata.ctime_nsec()
+        })
+}
+
+fn kernel_overflow_uid() -> Option<u32> {
+    // The kernel reports an unmapped inode owner as overflowuid, whereas ACL
+    // named qualifiers use UINT32_MAX. Never confuse that owner with a trusted
+    // UID. A missing/unreadable procfs value cannot enable ACL acceptance.
+    let file = File::open("/proc/sys/kernel/overflowuid").ok()?;
+    let mut text = String::new();
+    file.take(32).read_to_string(&mut text).ok()?;
+    let text = text.trim();
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
+fn private_permissions_allowed(
+    owner: u32,
+    mode: u32,
+    executing_uid: u32,
+    access: FileAccess,
+    read_acl: impl FnOnce(&mut [u8]) -> rustix::io::Result<usize>,
+    overflow_uid: impl FnOnce() -> Option<u32>,
+) -> bool {
+    if owner != executing_uid && owner != 0 {
+        return false;
+    }
+    let mut buffer = [0; MAX_ACCESS_ACL_BYTES];
+    match read_acl(&mut buffer) {
+        // EOPNOTSUPP is the explicit Linux no-POSIX-ACL-filesystem result.
+        // Neither result permits an ACL exception or nonzero group/other bits.
+        Err(Errno::NODATA | Errno::OPNOTSUPP) => {
+            (owner == executing_uid || access == FileAccess::ServerSecret) && mode & 0o077 == 0
+        }
+        Ok(length) if length <= buffer.len() => {
+            overflow_uid().is_some_and(|overflow| owner != overflow)
+                && access_acl_allowed(owner, mode, executing_uid, &buffer[..length], access)
+        }
+        // Including EINTR/ERANGE: one attempt, no fallback on a failed read.
+        _ => false,
+    }
+}
+
+fn access_acl_allowed(
+    owner: u32,
+    mode: u32,
+    executing_uid: u32,
+    bytes: &[u8],
+    access: FileAccess,
+) -> bool {
+    if (owner != executing_uid && owner != 0)
+        || executing_uid == ACL_UNDEFINED_ID
+        || bytes.len() < 28
+        || bytes.len() > MAX_ACCESS_ACL_BYTES
+        || bytes[..4] != 2_u32.to_le_bytes()
+        || !(bytes.len() - 4).is_multiple_of(8)
+    {
+        return false;
+    }
+    let mut owner_permissions = None;
+    let mut group_permissions = None;
+    let mut other_permissions = None;
+    let mut mask = None;
+    let mut previous_tag = 0;
+    let (records, _) = bytes[4..].as_chunks::<8>();
+    let mut named_ids = Vec::new();
+    // At most 8191 records fit in the checked input. A fallible reservation
+    // bounds requested qualifier storage to less than 64 KiB; no later push
+    // reallocates. Kernel-exported numeric IDs need not be sorted.
+    if named_ids.try_reserve_exact(records.len()).is_err() {
+        return false;
+    }
+    for record in records {
+        let (tag, permissions, id) = acl_entry(record);
+        if permissions & !7 != 0
+            || tag < previous_tag
+            || (tag == previous_tag && !matches!(tag, 2 | 8))
+        {
+            return false;
+        }
+        match tag {
+            1 | 4 | 16 | 32 if id != ACL_UNDEFINED_ID => return false,
+            1 => owner_permissions = Some(permissions),
+            4 => group_permissions = Some(permissions),
+            16 => mask = Some(permissions),
+            32 => other_permissions = Some(permissions),
+            2 | 8 if id != ACL_UNDEFINED_ID => named_ids.push((tag, id)),
+            _ => return false,
+        }
+        previous_tag = tag;
+    }
+    let named = !named_ids.is_empty();
+    // Sort only the copied qualifiers, keeping user/group ID classes distinct.
+    // This deterministic O(n log n) check also catches nonadjacent duplicates.
+    named_ids.sort_unstable();
+    if named_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        return false;
+    }
+    let (Some(owner_permissions), Some(group_permissions), Some(other_permissions)) =
+        (owner_permissions, group_permissions, other_permissions)
+    else {
+        return false;
+    };
+    if (named && mask.is_none())
+        || u32::from(owner_permissions) != (mode >> 6) & 7
+        || u32::from(mask.unwrap_or(group_permissions)) != (mode >> 3) & 7
+        || u32::from(other_permissions) != mode & 7
+        || other_permissions != 0
+        || group_permissions & mask.unwrap_or(7) != 0
+    {
+        return false;
+    }
+    let mut service_read = false;
+    for record in records {
+        let (tag, permissions, id) = acl_entry(record);
+        let effective = permissions & mask.unwrap_or(7);
+        match tag {
+            2 => {
+                if id != 0 && id != executing_uid && effective != 0 {
+                    return false;
+                }
+                if owner == 0 && executing_uid != 0 && id == executing_uid {
+                    if effective != 4 {
+                        return false;
+                    }
+                    service_read = true;
+                }
+            }
+            8 if effective != 0 => return false,
+            _ => {}
+        }
+    }
+    // Root-owned client tokens are admitted only by explicit read delegation,
+    // never by widening the ordinary-file root ownership exception.
+    owner == executing_uid
+        || (owner == 0
+            && (service_read
+                // A base-only ACL is the ordinary mode policy in ACL form.
+                || (!named && mask.is_none() && access == FileAccess::ServerSecret)))
+}
+
+fn acl_entry(record: &[u8; 8]) -> (u16, u16, u32) {
+    (
+        u16::from_le_bytes([record[0], record[1]]),
+        u16::from_le_bytes([record[2], record[3]]),
+        u32::from_le_bytes([record[4], record[5], record[6], record[7]]),
+    )
 }
 fn load_client(c: ClientDocument, parent: &Path) -> Result<ClientConfig, ConfigError> {
     if (!c.listen.ip().is_loopback() && !c.allow_non_loopback) || c.listen.port() == 0 {
@@ -400,13 +575,17 @@ fn load_client(c: ClientDocument, parent: &Path) -> Result<ClientConfig, ConfigE
         .map_err(|_| error("client.uri_template", ConfigReason::Format))?;
     let ca_pem = read_file(
         &parent.join(c.ca_file),
-        false,
-        false,
+        FileAccess::Public,
         1024 * 1024,
         "ca_file",
     )?;
     parse_certificates(&ca_pem, "ca_file")?;
-    let bytes = read_file(&parent.join(c.token_file), true, false, 65, "token_file")?;
+    let bytes = read_file(
+        &parent.join(c.token_file),
+        FileAccess::ClientToken,
+        65,
+        "token_file",
+    )?;
     let bytes = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
     let token: [u8; 64] = bytes
         .try_into()
@@ -470,15 +649,13 @@ fn load_server(s: ServerDocument, parent: &Path) -> Result<ServerConfig, ConfigE
     }
     let certificate_pem = read_file(
         &parent.join(s.certificate_file),
-        false,
-        true,
+        FileAccess::Public,
         1024 * 1024,
         "certificate_file",
     )?;
     let private_key_pem = read_file(
         &parent.join(s.private_key_file),
-        true,
-        true,
+        FileAccess::ServerSecret,
         1024 * 1024,
         "private_key_file",
     )?;
@@ -503,8 +680,7 @@ fn load_server(s: ServerDocument, parent: &Path) -> Result<ServerConfig, ConfigE
     }
     let credentials = read_file(
         &parent.join(s.credentials_file),
-        true,
-        true,
+        FileAccess::ServerSecret,
         4 * 1024 * 1024,
         "credentials_file",
     )?;
@@ -1027,6 +1203,10 @@ mod properties;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn client_acl_allowed(owner: u32, mode: u32, executing_uid: u32, bytes: &[u8]) -> bool {
+        super::access_acl_allowed(owner, mode, executing_uid, bytes, FileAccess::ClientToken)
+    }
     #[test]
     fn https_proxy_origins_normalize_identity_and_optional_port() {
         for (value, host, port, authority) in [
@@ -1079,11 +1259,342 @@ mod tests {
 
     #[test]
     fn private_owner_rules_allow_root_only_for_provisioned_server_material() {
-        assert!(private_owner_allowed(1000, 0o100600, 1000, false));
-        assert!(!private_owner_allowed(1001, 0o100600, 1000, false));
-        assert!(!private_owner_allowed(0, 0o100600, 1000, false));
-        assert!(private_owner_allowed(0, 0o100600, 1000, true));
-        assert!(!private_owner_allowed(0, 0o100640, 1000, true));
-        assert!(!private_owner_allowed(1000, 0o100604, 1000, false));
+        for absent in [Errno::NODATA, Errno::OPNOTSUPP] {
+            let ordinary = |owner, mode, access| {
+                private_permissions_allowed(owner, mode, 1000, access, |_| Err(absent), || None)
+            };
+            for access in [FileAccess::ClientToken, FileAccess::ServerSecret] {
+                for mode in [0o100400, 0o100600] {
+                    assert!(ordinary(1000, mode, access));
+                    assert!(!ordinary(1001, mode, access));
+                }
+                for mode in [0o100440, 0o100640, 0o100604, 0o100602, 0o100601] {
+                    assert!(!ordinary(1000, mode, access));
+                }
+            }
+            assert!(!ordinary(0, 0o100600, FileAccess::ClientToken));
+            assert!(ordinary(0, 0o100600, FileAccess::ServerSecret));
+        }
+    }
+
+    fn acl(records: &[(u16, u16, u32)]) -> Vec<u8> {
+        let mut bytes = 2_u32.to_le_bytes().to_vec();
+        for &(tag, permissions, id) in records {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(permissions.to_le_bytes());
+            bytes.extend(id.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn delegated_acl(service: u16, mask: u16) -> Vec<u8> {
+        acl(&[
+            (1, 4, ACL_UNDEFINED_ID),
+            (2, service, 1000),
+            (4, 0, ACL_UNDEFINED_ID),
+            (16, mask, ACL_UNDEFINED_ID),
+            (32, 0, ACL_UNDEFINED_ID),
+        ])
+    }
+
+    #[test]
+    fn private_acl_read_delegation_is_shared_but_ordinary_ownership_is_not() {
+        let ordinary = acl(&[
+            (1, 4, ACL_UNDEFINED_ID),
+            (4, 0, ACL_UNDEFINED_ID),
+            (32, 0, ACL_UNDEFINED_ID),
+        ]);
+        assert!(super::access_acl_allowed(
+            0,
+            0o400,
+            1000,
+            &ordinary,
+            FileAccess::ServerSecret
+        ));
+        assert!(!client_acl_allowed(0, 0o400, 1000, &ordinary));
+        assert!(client_acl_allowed(1000, 0o400, 1000, &ordinary));
+        for access in [FileAccess::ClientToken, FileAccess::ServerSecret] {
+            let bytes = delegated_acl(4, 4);
+            assert!(private_permissions_allowed(
+                0,
+                0o100440,
+                1000,
+                access,
+                |buffer| {
+                    buffer[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(bytes.len())
+                },
+                || Some(65534),
+            ));
+        }
+        assert!(!client_acl_allowed(1001, 0o440, 1000, &delegated_acl(4, 4)));
+        for service in 0..8 {
+            assert_eq!(
+                client_acl_allowed(0, 0o470, 1000, &delegated_acl(service, 7)),
+                service == 4
+            );
+        }
+        assert!(!client_acl_allowed(0, 0o400, 1000, &delegated_acl(4, 0)));
+        assert!(client_acl_allowed(1000, 0o440, 1000, &delegated_acl(4, 4)));
+        // Even an ACL naming root cannot delegate on behalf of an unrelated owner.
+        assert!(!client_acl_allowed(2000, 0o440, 0, &delegated_acl(4, 4)));
+    }
+
+    #[test]
+    fn private_acl_effective_foreign_user_and_group_grants_are_denied() {
+        for tag in [2, 4, 8] {
+            for permissions in 0..8 {
+                for mask in 0..8 {
+                    let mut records = vec![(1, 4, ACL_UNDEFINED_ID)];
+                    if tag == 2 {
+                        records.push((2, permissions, 2000));
+                    }
+                    records.push((4, if tag == 4 { permissions } else { 0 }, ACL_UNDEFINED_ID));
+                    if tag == 8 {
+                        records.push((8, permissions, 3000));
+                    }
+                    records.extend([(16, mask, ACL_UNDEFINED_ID), (32, 0, ACL_UNDEFINED_ID)]);
+                    assert_eq!(
+                        client_acl_allowed(
+                            1000,
+                            0o400 | (u32::from(mask) << 3),
+                            1000,
+                            &acl(&records)
+                        ),
+                        permissions & mask == 0
+                    );
+                }
+            }
+        }
+        for other in 1..8 {
+            let bytes = acl(&[
+                (1, 4, ACL_UNDEFINED_ID),
+                (4, 0, ACL_UNDEFINED_ID),
+                (16, 0, ACL_UNDEFINED_ID),
+                (32, other, ACL_UNDEFINED_ID),
+            ]);
+            assert!(!client_acl_allowed(
+                1000,
+                0o400 | u32::from(other),
+                1000,
+                &bytes
+            ));
+        }
+        // Root is already trusted, including when it is a named user.
+        let bytes = acl(&[
+            (1, 6, ACL_UNDEFINED_ID),
+            (2, 7, 0),
+            (4, 0, ACL_UNDEFINED_ID),
+            (16, 7, ACL_UNDEFINED_ID),
+            (32, 0, ACL_UNDEFINED_ID),
+        ]);
+        assert!(client_acl_allowed(1000, 0o670, 1000, &bytes));
+    }
+
+    #[test]
+    fn private_acl_named_ids_allow_any_order_but_require_uniqueness() {
+        for users in [
+            [0, 1000, 2000],
+            [0, 2000, 1000],
+            [1000, 0, 2000],
+            [1000, 2000, 0],
+            [2000, 0, 1000],
+            [2000, 1000, 0],
+        ] {
+            for groups in [[3000, 4000], [4000, 3000]] {
+                let mut records = vec![(1, 4, ACL_UNDEFINED_ID)];
+                records.extend(users.map(|uid| (2, if uid == 2000 { 0 } else { 4 }, uid)));
+                records.push((4, 0, ACL_UNDEFINED_ID));
+                records.extend(groups.map(|gid| (8, 0, gid)));
+                records.extend([(16, 4, ACL_UNDEFINED_ID), (32, 0, ACL_UNDEFINED_ID)]);
+                assert!(client_acl_allowed(0, 0o440, 1000, &acl(&records)));
+            }
+        }
+        for tag in [2, 8] {
+            let mut records = vec![(1, 4, ACL_UNDEFINED_ID)];
+            if tag == 8 {
+                records.push((4, 0, ACL_UNDEFINED_ID));
+            }
+            records.extend([(tag, 0, 2000), (tag, 0, 1000), (tag, 0, 2000)]);
+            if tag == 2 {
+                records.push((4, 0, ACL_UNDEFINED_ID));
+            }
+            records.extend([(16, 0, ACL_UNDEFINED_ID), (32, 0, ACL_UNDEFINED_ID)]);
+            assert!(!client_acl_allowed(1000, 0o400, 1000, &acl(&records)));
+        }
+        // Equal numeric UID/GID values belong to different qualifier classes.
+        let records = [
+            (1, 4, ACL_UNDEFINED_ID),
+            (2, 4, 1000),
+            (4, 0, ACL_UNDEFINED_ID),
+            (8, 0, 1000),
+            (16, 4, ACL_UNDEFINED_ID),
+            (32, 0, ACL_UNDEFINED_ID),
+        ];
+        assert!(client_acl_allowed(0, 0o440, 1000, &acl(&records)));
+    }
+
+    #[test]
+    fn private_acl_malformed_or_inconsistent_records_fail_closed() {
+        let safe = delegated_acl(4, 4);
+        for length in 0..safe.len() {
+            assert!(!client_acl_allowed(0, 0o440, 1000, &safe[..length]));
+        }
+        for (index, value) in [(0, 3), (4, 64), (6, 8), (8, 0), (16, 255), (20, 1), (30, 8)] {
+            let mut malformed = safe.clone();
+            malformed[index] = value;
+            assert!(!client_acl_allowed(0, 0o440, 1000, &malformed));
+        }
+        for mode in [0o040, 0o400, 0o640, 0o444] {
+            assert!(!client_acl_allowed(0, mode, 1000, &safe));
+        }
+        let mut missing_mask = safe.clone();
+        missing_mask.drain(28..36);
+        assert!(!client_acl_allowed(0, 0o400, 1000, &missing_mask));
+        let mut duplicate = safe.clone();
+        duplicate.splice(20..20, safe[12..20].iter().copied());
+        assert!(!client_acl_allowed(0, 0o440, 1000, &duplicate));
+        let mut duplicate_base = safe.clone();
+        duplicate_base.splice(12..12, safe[4..12].iter().copied());
+        assert!(!client_acl_allowed(0, 0o440, 1000, &duplicate_base));
+        for start in [4, 20, 28, 36] {
+            let mut duplicate = safe.clone();
+            duplicate.splice(start..start, safe[start..start + 8].iter().copied());
+            assert!(!client_acl_allowed(0, 0o440, 1000, &duplicate));
+        }
+        for named_tag in [2, 8] {
+            let mut records = vec![(1, 4, ACL_UNDEFINED_ID)];
+            if named_tag == 2 {
+                records.push((2, 0, ACL_UNDEFINED_ID));
+            }
+            records.push((4, 0, ACL_UNDEFINED_ID));
+            if named_tag == 8 {
+                records.push((8, 0, ACL_UNDEFINED_ID));
+            }
+            records.extend([(16, 0, ACL_UNDEFINED_ID), (32, 0, ACL_UNDEFINED_ID)]);
+            // Unmapped qualifiers are invalid even when their permissions are masked out.
+            assert!(!client_acl_allowed(1000, 0o400, 1000, &acl(&records)));
+        }
+        let mut trailing = safe.clone();
+        trailing.push(0);
+        assert!(!client_acl_allowed(0, 0o440, 1000, &trailing));
+        assert!(!client_acl_allowed(
+            0,
+            0o440,
+            1000,
+            &vec![0; MAX_ACCESS_ACL_BYTES + 1]
+        ));
+        assert!(!client_acl_allowed(0, 0o440, u32::MAX, &safe));
+    }
+
+    #[test]
+    fn private_acl_adapter_errors_and_overflow_owner_never_enable_access() {
+        for errno in [
+            Errno::ACCESS,
+            Errno::IO,
+            Errno::INTR,
+            Errno::RANGE,
+            Errno::NOSYS,
+            Errno::PERM,
+        ] {
+            for mode in [0o400, 0o440, 0o600] {
+                let mut attempts = 0;
+                assert!(!private_permissions_allowed(
+                    1000,
+                    mode,
+                    1000,
+                    FileAccess::ClientToken,
+                    |_| {
+                        attempts += 1;
+                        Err(errno)
+                    },
+                    || Some(65534)
+                ));
+                assert_eq!(attempts, 1);
+            }
+        }
+        let safe = delegated_acl(4, 4);
+        for overflow in [None, Some(0)] {
+            assert!(!private_permissions_allowed(
+                0,
+                0o440,
+                1000,
+                FileAccess::ClientToken,
+                |buffer| {
+                    buffer[..safe.len()].copy_from_slice(&safe);
+                    Ok(safe.len())
+                },
+                || overflow
+            ));
+        }
+        assert!(!private_permissions_allowed(
+            0,
+            0o440,
+            1000,
+            FileAccess::ClientToken,
+            |_| Ok(MAX_ACCESS_ACL_BYTES + 1),
+            || Some(65534)
+        ));
+    }
+
+    #[test]
+    fn private_acl_inspection_keeps_the_open_inode_after_path_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut random = [0; 16];
+        getrandom::fill(&mut random).unwrap();
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let directory = std::env::temp_dir().join(format!("remora-acl-open-{suffix}"));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let path = directory.join("secret");
+        std::fs::write(&path, b"test-only").unwrap();
+        let held = File::open(&path).unwrap();
+        let uid = geteuid().as_raw();
+        let bytes = acl(&[
+            (1, 4, ACL_UNDEFINED_ID),
+            (2, 4, uid),
+            (4, 0, ACL_UNDEFINED_ID),
+            (16, 4, ACL_UNDEFINED_ID),
+            (32, 0, ACL_UNDEFINED_ID),
+        ]);
+        rustix::fs::fsetxattr(
+            &held,
+            c"system.posix_acl_access",
+            &bytes,
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+        std::fs::rename(&path, directory.join("held")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(private_file_allowed(
+            &held,
+            &held.metadata().unwrap(),
+            FileAccess::ClientToken
+        ));
+        assert!(!private_file_allowed(
+            &File::open(&path).unwrap(),
+            &std::fs::metadata(&path).unwrap(),
+            FileAccess::ClientToken
+        ));
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 128,
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0xAC1),
+            failure_persistence: None,
+            .. proptest::test_runner::Config::default()
+        })]
+        #[test]
+        fn private_acl_arbitrary_bytes_never_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..1024)) {
+            let _ = client_acl_allowed(0, 0o440, 1000, &bytes);
+        }
     }
 }

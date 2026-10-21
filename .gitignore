@@ -47,3 +47,4 @@ __pycache__/
 /benchmarks/results/
 /docs/validation/interop-results/
 /docs/validation/wireguard-results/
+.specify/bugs/
