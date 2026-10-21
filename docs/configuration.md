@@ -147,10 +147,64 @@ for working commands.
 
 Config files are at most 256 KiB, credentials 4 MiB and each PEM input 1 MiB.
 All inputs must be regular files; symlinks are rejected at **every path
-component**. The client token must be owned by the process user with no
-group/world permissions. Server keys and credentials may instead be root-owned,
-provided the service can read them and they have no group/world permissions.
-Mode `0600` is usual. CA bundles and certificate chains are public material;
+component**. Without an extended POSIX access ACL, the client token must be
+owned by the process user with no group/world permissions. Server keys and
+credentials may instead be root-owned under the same mode restriction and must
+be readable by the service. Modes `0400` and `0600` are usual.
+
+Linux POSIX access ACLs are supported for all three private inputs. The owner
+must be the process UID or root. Effective access by every group, unrelated
+named user, and `other` must be zero; named root and the process UID are trusted.
+The ACL mask limits named-user and group entries, so a nonzero group mode field
+can be safe. A root-owned file delegated to a non-root process must grant that
+UID **read only**, after applying the mask. This includes the client token;
+root ownership alone does not authorize an ordinary client token.
+
+For example, a root-owned credential with the following ACL has mode `0440`
+and is accepted for a service running as the indicated UID:
+
+```text
+user::r--
+user:<service UID>:r--
+group::---
+mask::r--
+other::---
+```
+
+This supports the ACL form of systemd `LoadCredential=` without copying a
+credential to change its permissions. Point the TOML file fields at the
+credential files visible **inside the service**, then run `check-config` with
+the same service identity and credential setup. Neither a `/run/credentials/`
+path nor `$CREDENTIALS_DIRECTORY` bypasses validation. Plain group-readable
+`0440`/`0640` files still fail. Do not `chmod` a credential to work around an
+ACL refusal: changing mode can change its ACL mask.
+
+ACL inspection uses the opened file descriptor and fails closed on read/parse
+errors. An absent ACL or Linux's explicit unsupported-POSIX-ACL result uses
+the strict ordinary-file rules. Extended ACLs require readable kernel procfs
+metadata at `/proc/sys/kernel/overflowuid`; an owner matching that overflow UID
+or an unrepresentable named UID/GID is rejected to avoid ambiguous ownership.
+The supported model is Linux POSIX access ACLs, not NFSv4 ACLs. See
+[ADR 0029](adr/0029-private-file-acls.md) for bounds and namespace assumptions.
+
+For a disposable systemd integration check, run the following as the non-root
+service user, with system-manager authorization available to `sudo -n`:
+
+```bash
+mkdir -p benchmarks/results
+python3 scripts/validate/systemd_credentials.py \
+  --binary target/release/remora \
+  --output benchmarks/results/systemd-credentials-fixed --sudo
+```
+
+The runner uses generated test secrets and a bounded transient service. It
+requires actual root-owned `0440` credentials with a named ACL for that user;
+an ownership fallback is reported as failure of this specific gate. Results
+include systemd/kernel versions and executable provenance, without secret
+contents. Use a fresh output directory for every run. To check a pre-fix binary,
+provide its path and `--expect rejected`. This does not modify the real service.
+
+CA bundles and certificate chains are public material;
 protect their integrity and directories. Use atomic replacement and restart
 for renewal or revocation. There is no live reload.
 

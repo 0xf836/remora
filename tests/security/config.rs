@@ -13,6 +13,230 @@ fn invalid(f: &Fixtures, file: &str) -> remora::config::ConfigError {
         .err()
         .expect("configuration must fail closed")
 }
+
+fn set_access_acl(path: &std::path::Path, users: &[(u32, u16)], group: u16, mask: u16, other: u16) {
+    set_access_acl_with_groups(path, users, &[], group, mask, other);
+}
+
+fn set_access_acl_with_groups(
+    path: &std::path::Path,
+    users: &[(u32, u16)],
+    groups: &[(u32, u16)],
+    group: u16,
+    mask: u16,
+    other: u16,
+) {
+    let mut entries = vec![(1_u16, 4_u16, u32::MAX)];
+    // Preserve supplied qualifier order, including kernel-valid descending IDs.
+    entries.extend(
+        users
+            .iter()
+            .map(|&(uid, permissions)| (2, permissions, uid)),
+    );
+    entries.push((4, group, u32::MAX));
+    entries.extend(
+        groups
+            .iter()
+            .map(|&(gid, permissions)| (8, permissions, gid)),
+    );
+    entries.extend([(16, mask, u32::MAX), (32, other, u32::MAX)]);
+    let mut bytes = 2_u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in entries {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend(permissions.to_le_bytes());
+        bytes.extend(id.to_le_bytes());
+    }
+    let file = fs::File::open(path).unwrap();
+    rustix::fs::fsetxattr(
+        &file,
+        c"system.posix_acl_access",
+        &bytes,
+        rustix::fs::XattrFlags::empty(),
+    )
+    .expect("private-file ACL tests require a Linux POSIX-ACL-capable temporary filesystem");
+}
+
+#[test]
+fn private_acl_loader_accepts_unsorted_kernel_user_and_group_ids() {
+    let f = Fixtures::new();
+    let uid = rustix::process::geteuid().as_raw();
+    let foreign = uid.checked_add(2).unwrap();
+    let users = [(foreign, 0), (uid + 1, 0), (uid, 4)];
+    let gid = rustix::process::getegid().as_raw();
+    let groups = [(gid.checked_add(2).unwrap(), 0), (gid + 1, 0)];
+    for (file, config) in [
+        ("client.token", "client.toml"),
+        ("server-key.pem", "server.toml"),
+        ("credentials.toml", "server.toml"),
+    ] {
+        set_access_acl_with_groups(&f.file(file), &users, &groups, 0, 4, 0);
+        let held = fs::File::open(f.file(file)).unwrap();
+        let mut bytes = [0; 1024];
+        let length =
+            rustix::fs::fgetxattr(&held, c"system.posix_acl_access", &mut bytes[..]).unwrap();
+        let (records, remainder) = bytes[4..length].as_chunks::<8>();
+        assert!(remainder.is_empty());
+        for (tag, expected) in [
+            (2_u16, users.iter().map(|&(id, _)| id).collect::<Vec<_>>()),
+            (8_u16, groups.iter().map(|&(id, _)| id).collect()),
+        ] {
+            let exported: Vec<_> = records
+                .iter()
+                .filter(|record| u16::from_le_bytes([record[0], record[1]]) == tag)
+                .map(|record| u32::from_le_bytes([record[4], record[5], record[6], record[7]]))
+                .collect();
+            assert_eq!(
+                exported, expected,
+                "the real kernel xattr must retain the unsorted test IDs"
+            );
+        }
+        ValidatedConfig::load(&f.file(config)).unwrap();
+        set_access_acl_with_groups(
+            &f.file(file),
+            &[(foreign, 4), (uid + 1, 0), (uid, 4)],
+            &groups,
+            0,
+            4,
+            0,
+        );
+        assert_eq!(invalid(&f, config).reason, ConfigReason::Permissions);
+        set_access_acl_with_groups(
+            &f.file(file),
+            &users,
+            &[(gid + 2, 4), (gid + 1, 0)],
+            0,
+            4,
+            0,
+        );
+        assert_eq!(invalid(&f, config).reason, ConfigReason::Permissions);
+        rustix::fs::fremovexattr(&held, c"system.posix_acl_access").unwrap();
+        fs::set_permissions(f.file(file), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+#[test]
+fn private_acl_files_allow_safe_masks_and_reject_effective_group_or_other_access() {
+    let f = Fixtures::new();
+    let uid = rustix::process::geteuid().as_raw();
+    for (file, config) in [
+        ("client.token", "client.toml"),
+        ("server-key.pem", "server.toml"),
+        ("credentials.toml", "server.toml"),
+    ] {
+        for mode in [0o400, 0o600] {
+            fs::set_permissions(f.file(file), fs::Permissions::from_mode(mode)).unwrap();
+            ValidatedConfig::load(&f.file(config)).unwrap();
+        }
+        set_access_acl(&f.file(file), &[(uid, 4)], 0, 4, 0);
+        assert_eq!(fs::metadata(f.file(file)).unwrap().mode() & 0o777, 0o440);
+        ValidatedConfig::load(&f.file(config)).unwrap();
+        for (group, other) in [(4, 0), (2, 0), (1, 0), (0, 4), (0, 2), (0, 1)] {
+            set_access_acl(&f.file(file), &[(uid, 4)], group, 7, other);
+            let error = invalid(&f, config);
+            assert_eq!(error.reason, ConfigReason::Permissions);
+            assert!(!format!("{error:?}").contains("system.posix_acl_access"));
+        }
+        // Real kernel mask semantics: the group entry is present but ineffective.
+        set_access_acl(&f.file(file), &[(uid, 4)], 7, 0, 0);
+        ValidatedConfig::load(&f.file(config)).unwrap();
+        set_access_acl(&f.file(file), &[(uid, 4)], 7, 4, 0);
+        assert_eq!(invalid(&f, config).reason, ConfigReason::Permissions);
+        rustix::fs::fremovexattr(
+            fs::File::open(f.file(file)).unwrap(),
+            c"system.posix_acl_access",
+        )
+        .unwrap();
+        fs::set_permissions(f.file(file), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "requires root, a POSIX-ACL-capable /tmp and the ability to spawn UID 65533"]
+fn root_owned_acl_secrets_delegate_read_to_an_unprivileged_process() {
+    use std::os::unix::process::CommandExt;
+    assert_eq!(
+        rustix::process::geteuid().as_raw(),
+        0,
+        "run this isolated test as root"
+    );
+    let f = Fixtures::new();
+    // Only disposable fixtures are exposed. Secure open holds RDONLY directory
+    // descriptors, so both read and search permissions are required here.
+    fs::set_permissions(
+        f.path().parent().unwrap(),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::set_permissions(f.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    for file in ["client.toml", "server.toml", "server.pem", "ca.pem"] {
+        fs::set_permissions(f.file(file), fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let service_uid = 65533;
+    let foreign_uid = 65532;
+    // The service UID need not be able to traverse the developer's home.
+    fs::copy(env!("CARGO_BIN_EXE_remora"), f.file("remora")).unwrap();
+    fs::set_permissions(f.file("remora"), fs::Permissions::from_mode(0o755)).unwrap();
+    for file in ["client.token", "server-key.pem", "credentials.toml"] {
+        assert_eq!(fs::metadata(f.file(file)).unwrap().uid(), 0);
+        set_access_acl(&f.file(file), &[(service_uid, 4)], 0, 4, 0);
+    }
+    let check = |config: &str, succeeds: bool, field: &str| {
+        let output = Command::new(f.file("remora"))
+            .args(["check-config", "--config"])
+            .arg(f.file(config))
+            .uid(service_uid)
+            .gid(service_uid)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if succeeds { 0 } else { 2 }),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if !succeeds {
+            assert_eq!(
+                String::from_utf8(output.stderr).unwrap().trim(),
+                format!("invalid configuration: {field} (Permissions)")
+            );
+        }
+    };
+    check("client.toml", true, "token_file");
+    check("server.toml", true, "private_key_file");
+    for (file, config, field) in [
+        ("client.token", "client.toml", "token_file"),
+        ("server-key.pem", "server.toml", "private_key_file"),
+        ("credentials.toml", "server.toml", "credentials_file"),
+    ] {
+        assert_eq!(fs::metadata(f.file(file)).unwrap().mode() & 0o777, 0o440);
+        for permissions in [1, 2, 4] {
+            set_access_acl(
+                &f.file(file),
+                &[(service_uid, 4), (foreign_uid, permissions)],
+                0,
+                7,
+                0,
+            );
+            check(config, false, field);
+        }
+        set_access_acl(&f.file(file), &[(service_uid, 4)], 4, 4, 0);
+        check(config, false, field);
+        for permissions in [5, 6, 7] {
+            set_access_acl(&f.file(file), &[(service_uid, permissions)], 0, 7, 0);
+            check(config, false, field);
+        }
+        set_access_acl(&f.file(file), &[(service_uid, 4)], 0, 4, 0);
+        check(config, true, field);
+        set_access_acl(
+            &f.file(file),
+            &[(service_uid, 4), (foreign_uid, 0)],
+            0,
+            4,
+            0,
+        );
+        check(config, true, field);
+    }
+}
 #[test]
 fn socket_buffer_defaults_and_explicit_legacy_values_are_preserved() {
     let f = Fixtures::new();
