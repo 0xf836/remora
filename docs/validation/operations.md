@@ -67,19 +67,6 @@ both roles/families, including monitored unauthorized targets. Held authenticate
 setup terminated on both SIGINT and SIGTERM, each with listener release; the
 reported local stop observations were 5 ms, not a performance benchmark.
 
-```bash
-(cd tools/interop && go build -mod=readonly -o /tmp/remora-phase7-interop . && go vet ./...)
-cargo test --locked --all-features --test protocol \
-  --config 'env.REMORA_INTEROP_BIN="/tmp/remora-phase7-interop"' \
-  --config 'env.REMORA_INTEROP_OUTPUT="/home/lesnick/projects/remora/benchmarks/results/phase7-interop-20261013"' \
-  interop_cases::independent_go_roles_preserve_bytes_and_deny_monitored_negatives \
-  -- --ignored --exact --nocapture
-cargo test --locked --all-features --test e2e \
-  --config 'env.REMORA_INTEROP_BIN="/tmp/remora-phase7-interop"' \
-  shutdown::both_signals_cancel_awaiting_acceptance_setup_with_independent_peer \
-  -- --ignored --exact --nocapture
-```
-
 ## Clean install and collected failure matrix
 
 The runner refuses root and an existing output path, copies the exact release
