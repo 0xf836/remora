@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/0xf836/remora/compare/v0.1.0...v0.2.0) (2026-10-21)
+
+
+### Features
+
+* **specify:** add bug triage extension ([c335271](https://github.com/0xf836/remora/commit/c335271429ebcad3dbca2eeff77db9f3611cb44e))
+* **specify:** add bug triage extension ([2e2f436](https://github.com/0xf836/remora/commit/2e2f436a913b69e548e31f41bf498bf77c036d36))
+
+
+### Bug Fixes
+
+* **config:** accept safe systemd credential ACLs ([0b8c55a](https://github.com/0xf836/remora/commit/0b8c55a04679c76354254dbbd0b0cab32a02179c))
+
 ## 0.1.0 (2026-10-18)
 
 
