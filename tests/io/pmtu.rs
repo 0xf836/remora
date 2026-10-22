@@ -180,6 +180,87 @@ fn native_path_reduction_purges_only_oversized_uncommitted_messages() {
     assert!(!pair.client.is_stopped());
 }
 
+#[test]
+fn selected_large_profile_revalidates_without_changing_the_backend() {
+    let mut pair = crate::common::quic::Pair::with_config(true, |f| {
+        for name in ["client.toml", "server.toml"] {
+            let file = f.file(name);
+            let text = std::fs::read_to_string(&file).unwrap();
+            std::fs::write(
+                file,
+                text + "\n[transport]\nouter_udp_max_bytes=1452\napplication_max_bytes=1400\n",
+            )
+            .unwrap();
+        }
+    });
+    let (stream, _) = pair.requests();
+    let wait_large = |p: &mut crate::common::quic::Pair| {
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while p.client.payload_ceiling(stream) < 1400 || p.server.payload_ceiling(stream) < 1400 {
+            assert!(
+                Instant::now() < deadline,
+                "discovery did not reach selected profile"
+            );
+            p.pump();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(p.client.quic.pmtu(), Some(1452));
+        assert_eq!(p.server.quic.pmtu(), Some(1452));
+        assert_eq!(
+            p.client
+                .operational_stats()
+                .application_payload_lower_bound_min,
+            1400
+        );
+    };
+    wait_large(&mut pair);
+    let mut scratch = [0; 1452];
+    let now = Instant::now();
+    pair.client
+        .enqueue(stream, &[42; 1312], now, now, &mut scratch)
+        .unwrap();
+    pair.client
+        .enqueue(stream, &[], now, now, &mut scratch)
+        .unwrap();
+    pair.client.quic.revalidate_pmtu();
+    assert!(pair.client.payload_ceiling(stream) < 1312);
+    assert!(
+        pair.client
+            .operational_stats()
+            .application_payload_lower_bound_min
+            < 1312
+    );
+    assert_eq!(
+        pair.client
+            .enqueue(stream, &[43; 1312], now, now, &mut scratch),
+        Err(TransportError::Pmtu)
+    );
+    pair.client.generate(&pair.pool, now, 4).unwrap();
+    assert_eq!(pair.client.take_pmtu_drops(), 1);
+    assert!(!pair.client.is_stopped());
+    // The committed output must reach its original peer; do not silently
+    // bypass it while waiting for discovery to recover.
+    while let Some(packet) = pair.client.output.pop_front() {
+        let mut bytes = packet.bytes().to_vec();
+        let from = packet.from();
+        let to = packet.to();
+        pair.server
+            .receive(&mut bytes, quiche::RecvInfo { from, to }, now)
+            .unwrap();
+    }
+    wait_large(&mut pair);
+    assert_eq!(
+        pair.client.enqueue(
+            stream,
+            &[44; 1401],
+            Instant::now(),
+            Instant::now(),
+            &mut scratch
+        ),
+        Err(TransportError::Oversized)
+    );
+}
+
 proptest! {
     #[test]
     fn arbitrary_error_ancillary_is_bounded_and_panic_free(bytes in prop::collection::vec(any::<u8>(),0..1024), ipv6 in any::<bool>()) {

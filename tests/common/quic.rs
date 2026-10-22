@@ -15,10 +15,15 @@ pub struct Pair {
     #[allow(dead_code)] // Used when this shared harness is included by lifecycle tests.
     pub pool: BufferPool,
     pub fixture: Fixtures,
+    pub outer_caps: [usize; 2],
 }
 impl Pair {
     pub fn new(capabilities: bool) -> Self {
+        Self::with_config(capabilities, |_| {})
+    }
+    pub fn with_config(capabilities: bool, change: impl FnOnce(&Fixtures)) -> Self {
         let fixture = Fixtures::new();
+        change(&fixture);
         let client = ValidatedConfig::load(&fixture.file("client.toml")).unwrap();
         let server = ValidatedConfig::load(&fixture.file("server.toml")).unwrap();
         let mut cc = transport::config(&client).unwrap();
@@ -38,7 +43,12 @@ impl Pair {
             &mut cc,
         )
         .unwrap();
-        let mut buffer = [0; 1350];
+        let outer_caps = [
+            client.transport().outer_udp_max_bytes,
+            server.transport().outer_udp_max_bytes,
+        ];
+        let largest = *outer_caps.iter().max().unwrap();
+        let mut buffer = vec![0; largest];
         let (n, _) = c.send(&mut buffer).unwrap();
         let header = quiche::Header::from_slice(&mut buffer[..n], 16).unwrap();
         let mut q = quiche::accept_with_buf_factory::<TrackedFactory>(
@@ -54,8 +64,9 @@ impl Pair {
         Self {
             client: Connection::new(c, Generation(1), false, &client, Instant::now()),
             server: Connection::new(q, Generation(2), true, &server, Instant::now()),
-            pool: BufferPool::new(1350, 1350 * 128).unwrap(),
+            pool: BufferPool::new(largest, largest * 128).unwrap(),
             fixture,
+            outer_caps,
         }
     }
     pub fn pump(&mut self) {
@@ -72,10 +83,14 @@ impl Pair {
             {
                 from.quic.on_timeout();
             }
-            let mut buffer = [0; 1350];
+            let mut buffer = vec![0; self.outer_caps[direction]];
             for _ in 0..32 {
                 match from.quic.send(&mut buffer) {
                     Ok((n, info)) => {
+                        assert!(
+                            n <= self.outer_caps[1 - direction],
+                            "output exceeds advertised peer cap"
+                        );
                         to.receive(
                             &mut buffer[..n],
                             quiche::RecvInfo {

@@ -7,6 +7,70 @@ use std::{
     time::{Duration, Instant},
 };
 #[test]
+fn repeated_size_details_are_bounded_and_survive_event_suppression() {
+    use remora::{buffers::Direction, diagnostics::SizeDetails};
+    let now = Instant::now();
+    let (mut d, r) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+    let session = d.next_id().unwrap();
+    let connection = d.next_id().unwrap();
+    for _ in 0..50 {
+        let _ = d.event(now, Event::failure(Level::Warn, Failure::Transport, 0));
+    }
+    for size in 1312..1412 {
+        d.size_failure(
+            now,
+            Some(connection),
+            session,
+            2,
+            SizeDetails {
+                direction: Direction::ToTarget,
+                datagram_bytes: size,
+                application_cap_bytes: 1400,
+                outgoing_ceiling_bytes: 1158,
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(d.pending_failures(), 1);
+    d.snapshot(now, Snapshot::default()).unwrap();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    for _ in 0..51 {
+        r.write_one(&mut out, &mut err).unwrap();
+        if !out.is_empty() {
+            break;
+        }
+    }
+    let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let failure = &value["failures"][0];
+    assert_eq!(failure["repeats"], 100);
+    assert_eq!(
+        failure["connection"],
+        serde_json::to_value(connection).unwrap()
+    );
+    assert_eq!(failure["size"]["direction"], "to_target");
+    assert_eq!(failure["size"]["datagram_bytes"], 1411);
+    assert_eq!(failure["size"]["application_cap_bytes"], 1400);
+    assert_eq!(failure["size"]["outgoing_ceiling_bytes"], 1158);
+    assert_eq!(value["coverage_lost"], 0);
+    assert!(out.len() <= MAX_RECORD_BYTES);
+    d.failure(
+        now,
+        Some(connection),
+        Some(session),
+        Failure::Size,
+        3,
+        false,
+    )
+    .unwrap();
+    d.snapshot(now + Duration::from_secs(1), Snapshot::default())
+        .unwrap();
+    out.clear();
+    r.write_one(&mut out, &mut err).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert!(value["failures"][0].get("size").is_none());
+}
+#[test]
 fn terminal_correlation_survives_event_suppression_cleanup_and_old_ack() {
     let now = Instant::now();
     let (mut d, r) = Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
@@ -64,13 +128,17 @@ fn full_status_ring_is_bounded_and_overflow_is_explicit() {
     for _ in 0..256 {
         let conn = d.next_id().unwrap();
         let id = d.next_id().unwrap();
-        d.failure(
+        d.size_failure(
             now,
             Some(conn),
-            Some(id),
-            Failure::InvalidConfiguration,
+            id,
             u64::MAX,
-            true,
+            remora::diagnostics::SizeDetails {
+                direction: remora::buffers::Direction::ToClient,
+                datagram_bytes: usize::MAX,
+                application_cap_bytes: usize::MAX,
+                outgoing_ceiling_bytes: usize::MAX,
+            },
         )
         .unwrap();
     }

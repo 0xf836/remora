@@ -120,8 +120,8 @@ settings!(IoSettings {
 settings!(TransportSettings {
     cc: CongestionControl = CongestionControl::Cubic,
     pacing: Pacing = Pacing::Timerfd,
-    outer_udp_max_bytes: usize = 1350,
-    application_max_bytes: usize = 1200,
+    outer_udp_max_bytes: usize = 1452,
+    application_max_bytes: usize = 1400,
     idle_timeout_ms: u64 = 5000,
 });
 settings!(RecoverySettings {

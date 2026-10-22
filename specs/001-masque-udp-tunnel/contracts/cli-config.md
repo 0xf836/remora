@@ -138,8 +138,8 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | io.relay_socket_buffer_bytes | 131072 | Requested RX/TX buffers for client application listener and server relay sockets; report effective values/clamps; explicit 65536 retains the former default |
 | transport.cc | cubic | cubic, bbr2_gcongestion, reno; no generic bbr alias exposed |
 | transport.pacing | timerfd | Mandatory user-space deadlines; no off mode |
-| transport.outer_udp_max_bytes | 1350 | >=1200; PMTU probes and peer/path limits still apply |
-| transport.application_max_bytes | 1200 | Actual limit may be smaller; empty payload supported |
+| transport.outer_udp_max_bytes | 1452 | >=1200; PMTU probes and peer/path limits still apply |
+| transport.application_max_bytes | 1400 | Actual limit may be smaller; empty payload supported |
 | transport.idle_timeout_ms | 5000 | Finite liveness profile; keepalive when active flows otherwise idle |
 | recovery.keepalive_interval_ms | 2000 | Active-flow otherwise-idle QUIC probe, normally paced |
 | recovery.peer_progress_timeout_ms | 10000 | Watchdog based on authenticated peer progress, separate from quiche idle rules |

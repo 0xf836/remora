@@ -57,7 +57,7 @@ fn collected_auth_policy_size_and_resource_faults_keep_opaque_correlation() {
         if case >= 2 {
             t.ready(&sender, b"PRIVATE_RESPONSE_SENTINEL");
             if case == 2 {
-                sender.send_to(&[17; 1201], t.listen).unwrap();
+                sender.send_to(&[17; 1401], t.listen).unwrap();
                 let mut buf = [0; 2048];
                 assert!(t.target.recv_from(&mut buf).is_err());
             } else {
@@ -202,7 +202,7 @@ fn oversized_destination_reply_keeps_established_session_correlation() {
     let mut t = Tunnel::start(false, |_| {});
     let sender = t.sender();
     let relay = t.ready(&sender, b"warmup");
-    t.target.send_to(&[17; 1201], relay).unwrap();
+    t.target.send_to(&[17; 1401], relay).unwrap();
     let mut buf = [0; 2048];
     assert!(sender.recv_from(&mut buf).is_err());
     // Verify the unreliable drop neither closes the association nor replays it.

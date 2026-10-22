@@ -65,6 +65,7 @@ cannot guarantee correlation delivery.
 | kernel_rx_overflow | SO_RXQ_OVFL cumulative deltas with wrap handling; per socket, no fabricated session attribution |
 | quic_packets_lost/retransmitted/PTO | Outer QUIC transport observations/estimates, never equated with inner UDP loss |
 | rtt/rttvar/cwnd/path_payload_limit | Current path stats sampled <=once/5 seconds; peer path ids bounded |
+| application_payload_lower_bound_min | Conservative local-send application bound across sampled connections, reserving an eight-byte association ID and Context ID; zero when unavailable or no samples; excludes peer application cap and target leg |
 | queue packets/bytes/age and pool capacities | Retained memory/accounting, high-water marks, pressure and expiration |
 | syscall/batch/offload counters | Partial progress, EAGAIN, logical segments and per-offload requested off/auto, effective off/on, fixed reason configured_off/not_implemented/capability_unavailable/path_ineligible/enabled; socket/path availability is separate from per-packet eligibility |
 | pacing_lateness / emitted burst size | Fixed histogram; no per-packet logs |
@@ -182,6 +183,15 @@ bursts count accepted logical outer prefixes. Active-path QUIC samples describe
 currently live connections, including their retransmit/PTO counts, with a
 five-second packet-work sample interval; no endpoint identifiers are serialized.
 The cumulative process lost-packet estimate remains separate.
+
+Local outgoing size failures may attach numeric `size` details: `direction`,
+`datagram_bytes`, `application_cap_bytes`, `outgoing_ceiling_bytes`. The last
+field is the exact stream admission limit at rejection, unlike the conservative
+periodic lower bound. Existing connection/session IDs correlate these details.
+Repeat failures replace metadata in the same bounded ring entry; ordinary
+events use the existing rate limit. Generic later failures clear old size
+details. No application bytes, addresses, WG parsing or end-to-end MTU/readiness
+claim is introduced. Incoming truncation cannot supply an exact original size.
 
 FD/admission/pool and individual Session queue peaks are exact local ledger
 maxima. `queued_packets_observed_peak`/`queued_bytes_observed_peak` are sampled

@@ -66,6 +66,10 @@ Source: [Linux UDP options](https://man7.org/linux/man-pages/man7/udp.7.html).
 
 ## Decision 7: Explicit congestion control and two-leg size handling
 
+Update2026-10-23: [ADR0031](../../docs/adr/0031-default-size-profile.md)
+changes the default ceiling to1452 and application cap to1400 without changing
+the quiche dependency. The initial1350 decision below is historical.
+
 **Decision:** CUBIC default, optional explicit `bbr2_gcongestion`, Reno for diagnostic comparisons. Keep outer congestion control and pacing enabled. Enable quiche PMTU discovery up to a configured outer ceiling (initial 1350-byte UDP payload); enforce no introduced IP fragmentation on outer and destination sockets using IPv4/IPv6 PMTU socket policy. Initial outer size is conservative; re-query datagram capacity on path events and before enqueueing. Collect destination PMTU/error-queue updates separately. Outer ECN remains Not-ECT.
 
 **Rationale:** 0.30.0 exposes Reno/CUBIC/Bbr2Gcongestion; historical BBR variants must not be promised. A 1200-byte application payload is larger than a 1200-byte outer UDP payload after encryption/framing. quiche's datagram capacity already excludes its QUIC overhead: subtract only HTTP association/context varints. A relay socket's MTU can further reduce the payload ceiling; EMSGSIZE drops/counts the original datagram. RecvInfo has no ECN API, so reading TOS alone is not QUIC ECN validation.

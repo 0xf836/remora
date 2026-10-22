@@ -111,7 +111,7 @@ def case(binary, output, name):
                     for size in [0, 1, 128, 512, 1200]:
                         exercise(sender, target, listen, b"x" * size)
                 elif name == "size":
-                    sender.sendto(b"x" * 1201, listen)
+                    sender.sendto(b"x" * 1401, listen)
                     try:
                         target.recvfrom(65536)
                         raise RuntimeError("oversize packet reached target")

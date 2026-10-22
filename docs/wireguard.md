@@ -17,7 +17,7 @@ Change the existing client's WireGuard peer endpoint to the local Remora port:
 ```ini
 [Interface]
 # Keep your existing keys and addresses.
-MTU = 1120
+MTU = 1280
 
 [Peer]
 # Keep your existing server public key and AllowedIPs.
@@ -30,15 +30,87 @@ file. Remora supplies no keys, interfaces or routes. `PersistentKeepalive` is
 optional WireGuard behavior and is separate from Remora's QUIC keepalive.
 The server-side WireGuard endpoint must already be reachable from Remora.
 
-`1120` is a conservative initial interface MTU for the current 1200-byte
-Remora payload profile, also used by the local validation setup. WireGuard
-data adds a 16-byte transport header and 16-byte authentication tag, and may
-pad the inner packet to a 16-byte boundary: 1120 leaves room within 1200.
-The UDP/IP headers outside WireGuard are not part of the payload that Remora
-carries. See the [WireGuard transport format](https://www.wireguard.com/protocol/#subsequent-messages-exchange-of-data-packets). A smaller effective tunnel/path ceiling can require a lower MTU;
-verify your route and application packets rather than treating 1120 as a
-universal guarantee. IPv6 inner traffic also has its own minimum-MTU
-requirements; this starting profile is for the documented IPv4 inner setup.
+`1280` is the starting WireGuard interface MTU for Remora's default
+1452-byte outer / 1400-byte application profile. WireGuard adds a 16-byte
+transport header and 16-byte authentication tag; an inner 1280-byte packet
+therefore needs **1312 bytes** of Remora application capacity. These selected
+WG MTUs are multiples of 16. The UDP/IP headers outside WireGuard are not part
+of the application payload Remora carries. See the
+[WireGuard transport format](https://www.wireguard.com/protocol/#subsequent-messages-exchange-of-data-packets).
+Path discovery and the target route can impose smaller limits. The selected
+MTU permits the IPv6 minimum inner size but is not, by itself, qualification
+of inner-IPv6 WireGuard traffic. Historical local validation used WG1120.
+
+## Choosing a size profile
+
+Remora's defaults are **1452 bytes outer UDP payload / 1400 bytes application
+payload**, with WG MTU 1280 as the starting example. Configure **both Remora
+roles** consistently, and set the chosen interface MTU on **both WireGuard
+peers**. These sizes are not a measured optimum.
+Remora does not configure WireGuard or negotiate its MTU.
+
+| When to choose it | `outer_udp_max_bytes` | `application_max_bytes` | WireGuard MTU | Why and what to verify |
+|---|---:|---:|---:|---|
+| Default profile / inner MTU 1280 | 1452 | 1400 | 1280 | Leaves encapsulation room while permitting the IPv6 minimum inner MTU. Verify **1312-byte** application datagrams both ways after setup and recovery. This alone is not IPv6 WireGuard qualification. |
+| Existing profile or rollback | 1350 | 1200 | 1120 | Retains the documented inner-IPv4 setup. Full-size WG data needs 1152 bytes of application capacity. Historical duration evidence below applies to this profile. |
+| Tune a verified path near MTU 1500 | 1452 | 1400 | 1360 | Fewer packets for bulk traffic, with less path headroom. Verify **1392-byte** application datagrams both ways and compare throughput, loss and CPU before adopting it; no measured speedup is claimed. |
+
+The following explicit section selects the new defaults on both roles, including
+existing files that still contain older overrides:
+
+```toml
+[transport]
+outer_udp_max_bytes = 1452
+application_max_bytes = 1400
+```
+
+Use `MTU = 1280` for the default row, or `MTU = 1360` for tuning. Run
+`remora check-config --config PATH` for each role, then restart the configured
+processes. For rollback, explicitly set 1350/1200 on both roles and restore WG
+MTU 1120 on both peers. Old historical results do not qualify a new binary.
+
+The outer value is a UDP payload ceiling, **not an IP-interface MTU or an
+initial verified packet size**. WireGuard data adds 32 bytes; all three selected
+WG MTUs are multiples of 16. QUIC/MASQUE needs additional space outside that
+application payload. With Remora's 16-byte connection IDs, the pinned backend's
+conservative budget is 42–49 bytes depending on the association ID. A peer with
+different connection IDs can have a different budget. Raising the application
+cap alone cannot make WG MTU 1280 fit under the old outer ceiling 1350.
+
+Path discovery can initially allow less, and revalidation can reset the
+verified outer size to 1200. Larger WG data is dropped until sufficient
+capacity is confirmed; smaller handshake/keepalive packets may still work.
+An outer IPv6 path with IP MTU 1280 cannot carry a complete inner WG1280 packet
+through this unfragmented profile. Remora does not lower the WG MTU, fragment,
+replay or move oversized data to a reliable stream.
+
+The pinned quiche has a known limitation: its PMTU probes can exceed a smaller
+peer's advertised outer UDP cap. Matching caps on the two Remora roles avoids
+that particular conflict; it does not prove that the network path fits. Do not
+roll out a larger profile on only one end or assume that an independent peer
+supports it. The dependency and existing fork pin remain unchanged; see
+[ADR 0031](adr/0031-default-size-profile.md).
+
+Check `quic.application_payload_lower_bound_min` in each role's status: it is a
+sampled, conservative **local-send** lower bound across connections, allowing
+the longest association ID. Client status concerns sending toward the server;
+server status concerns sending toward the client. Zero means no positive
+conservative bound is reported, including when no connection was sampled; it
+does not prove that all payloads are unusable. A value at least 1312 confirms
+enough local capacity for WG1280 across association-ID widths. A lower value
+does not rule out sufficient capacity for a particular shorter ID. Neither
+establishes delivery: the remote application cap and the server-to-target route
+are independent. A `size/2` rejection can
+also include the actual per-stream ceiling and rejected byte count; see
+[troubleshooting](troubleshooting.md).
+
+Finally, send actual full-size inner IP packets and check both directions,
+including after reconnect. For example, ICMPv4 payload 1252 bytes gives a
+1280-byte IP packet without IP options; ICMPv6 payload 1232 gives 1280 without
+extension headers. Small pings, fresh handshakes and a successful offline config
+check do not establish the chosen MTU. This repository's additional large-size
+UDP checks establish opaque payload delivery, not a new full WireGuard/WAN or
+inner-IPv6 qualification.
 
 For a full-tunnel WireGuard configuration, keep the Remora proxy's transport
 route **outside WireGuard** or the tunnel will try to carry its own connection.
@@ -69,8 +141,8 @@ No `wg show ... dump` output should be collected because it exposes private
 material; use the specific `latest-handshakes` and `transfer` views instead.
 
 Choose the WireGuard application MTU from the effective Remora payload ceiling
-and WireGuard encapsulation overhead on the actual route. Remora's initial
-1200-byte application limit is not a WireGuard interface-MTU guarantee, and
+and WireGuard encapsulation overhead on the actual route. Remora's default
+1400-byte application limit is not a WireGuard interface-MTU guarantee, and
 path limits may be smaller. Verify handshake freshness and independent
 bidirectional application data for 30 minutes, correlate increasing peer
 counters with both Remora directions, and preserve byte/boundary and timeout
@@ -151,9 +223,9 @@ historical evidence for its own binary.
 This is a functional duration workload: IPv4 inner/outer path, fixture WG MTU
 **1120**, 64/128/512/1000-byte traffic payloads and 10 packets/s per channel per
 direction. Fixture QUIC idle timeouts are 15000 ms for WG and 5000 ms for the
-generic path; offloads and runtime qlog tracing are disabled. These explicit
-fixture overrides are not a change to Remora's 1200-byte default application
-ceiling or the production session idle default of 120000 ms.
+generic path; offloads and runtime qlog tracing are disabled. The historical fixture used a 1200-byte application ceiling; those
+results remain bound to that binary/profile and do not qualify the new 1400-byte
+default. The production session idle default remains 120000 ms.
 
 The test does not establish high-rate WireGuard capacity, WAN reliability,
 IPv6 WireGuard qualification, a universal safe WG MTU or native ARM64 behavior.
