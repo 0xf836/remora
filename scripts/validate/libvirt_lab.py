@@ -374,11 +374,11 @@ class Lab:
                 text = re.sub(r'proxy = ".*"', f'proxy = "https://remora.test:{outer}"', text)
                 text = re.sub(r'target = ".*"', f'target = "127.0.0.1:{target}"', text)
                 idle = 15000 if channel == "wg" else 5000
-                write(f / "client.toml", text + f"\n[transport]\nidle_timeout_ms = {idle}\n")
+                write(f / "client.toml", text + f"\n[transport]\nidle_timeout_ms = {idle}\nouter_udp_max_bytes = 1350\napplication_max_bytes = 1200\n")
                 text = (f / "server.toml").read_text()
                 text = re.sub(r'listen = \[.*\]', f'listen = ["{self.m["domains"]["b"]["ip"]}:{outer}"]', text)
                 text = re.sub(r'proxy = ".*"', f'proxy = "https://remora.test:{outer}"', text)
-                write(f / "server.toml", text + f"\n[transport]\nidle_timeout_ms = {idle}\n")
+                write(f / "server.toml", text + f"\n[transport]\nidle_timeout_ms = {idle}\nouter_udp_max_bytes = 1350\napplication_max_bytes = 1200\n")
             for role in "ab":
                 mode = "client" if role == "a" else "server"
                 archive = io.BytesIO()

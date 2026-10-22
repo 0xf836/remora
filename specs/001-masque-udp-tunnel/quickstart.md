@@ -96,8 +96,8 @@ pairs stay distinct. No application forwarding precedes acceptance; the server
 uses a conservative ACK-backed response commitment boundary.
 
 UDP datagram bytes/boundaries, including empty messages, are preserved within
-the current capacity. The default application limit is 1200 bytes and outer
-cap 1350; actual path/native framing limits can be smaller. There is no private
+the current capacity. The default application limit is 1400 bytes and outer
+cap 1452; actual path/native framing limits can be smaller. There is no private
 fragmentation or reliable payload fallback. Capsules are parsed for control
 conformance, not used as a reliable application carrier. Queue pressure,
 oversize, expiry and unavailable-state drops have fixed directional counters.

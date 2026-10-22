@@ -92,6 +92,17 @@ reasons. Availability never implies every packet is eligible. An auto mode with
 | `transport/<numeric>` / `malformed/<numeric>` | QUIC/H3/parse/close category; use the [diagnostics contract](../specs/001-masque-udp-tunnel/contracts/diagnostics.md) for the fixed code space |
 | `stopped/0` | Owned socket/Session cleanup completed; check writer/collection outcome separately |
 
+For local outgoing `size/1` or `size/2`, `failures[].size` and an admitted
+ordinary failure event may include `direction`, `datagram_bytes`,
+`application_cap_bytes` and `outgoing_ceiling_bytes`. The ceiling is the actual
+per-stream admission value at that observation; repeated failures retain the
+latest details in one bounded correlated entry. Missing details do not imply a
+size is supported. Truncated receives cannot report the original packet size.
+Periodic `quic.application_payload_lower_bound_min` is instead a conservative
+sampled local-send lower bound across connections and all association-ID widths.
+Neither field proves peer acceptance or target reachability. See the
+[profile choices and known peer-probing limitation](wireguard.md#choosing-a-size-profile).
+
 Native transport categories 0..22, H3 wire errors and local 1001/1002/1003
 codes do not include a peer's close reason. No arbitrary strings become reason
 labels. Connection-wide faults identify each affected live Session plus the

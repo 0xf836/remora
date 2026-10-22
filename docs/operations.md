@@ -157,7 +157,7 @@ count/byte limits. Admission exhaustion produces 503; packet pressure drops
 the exact unaccepted datagram with fixed directional counters. These are
 bounds, not a throughput or Internet admission guarantee.
 
-Application payload maximum defaults to 1200 bytes, outer cap to 1350. The
+Application payload maximum defaults to 1400 bytes, outer cap to 1452. The
 actual supported payload can be smaller because of current QUIC DATAGRAM
 capacity, framing, verified outer PMTU or the destination path. Outer probes
 are distinct from application loss. Oversize messages are never truncated,
@@ -165,8 +165,15 @@ privately fragmented, reliably forwarded or retried onto a new association.
 A local receive truncation is reported as `size/3` and `socket_truncated`; it
 cannot recover omitted bytes or claim an exact original length. Adjust the
 application's datagram size/MTU with actual path evidence. For independently
-managed WireGuard, use the [WireGuard guide](wireguard.md); 1200-byte payload
+managed WireGuard, use the [WireGuard guide](wireguard.md); 1400-byte payload
 capacity is not a universal safe WireGuard interface MTU.
+
+Use the [size-profile table](wireguard.md#choosing-a-size-profile) for matching
+endpoint settings, the WG1280 starting profile, WG1360 tuning and rollback. QUIC status includes
+`application_payload_lower_bound_min`: the sampled conservative local-send
+application bound across connections, with the longest association ID reserved.
+It excludes the remote application cap and destination route. Check both roles
+and actual full-size bidirectional traffic; setup/revalidation can lower it.
 
 Valid UDP activity in either direction retains a Session for the default
 120000 ms. QUIC keepalives do not reset application inactivity. A shorter

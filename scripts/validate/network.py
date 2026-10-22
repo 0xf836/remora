@@ -195,6 +195,10 @@ def characterize(network, out):
                     f'connect_address = "10.203.0.2:{ports["proxy"]}"',
                 )
             )
+            # Preserve the historical impaired-path 1200/1201 size boundary.
+            for config in (client, server):
+                config.write_text(config.read_text() +
+                    "\n[transport]\nouter_udp_max_bytes=1350\napplication_max_bytes=1200\n")
             endpoint = Owned(
                 ns(
                     network.server,

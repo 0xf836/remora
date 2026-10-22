@@ -241,8 +241,8 @@ checked before startup. Timeouts must be positive and representable.
 | io.relay_socket_buffer_bytes | No | 131072 | Requested RX/TX buffers for client application listener and server relay sockets; report effective values/clamps; explicit 65536 retains the former default |
 | transport.cc | No | cubic | cubic, bbr2_gcongestion, reno; no generic bbr alias exposed |
 | transport.pacing | No | timerfd | User-space deadlines; no off mode |
-| transport.outer_udp_max_bytes | No | 1350 | >=1200; PMTU probes and peer/path limits still apply |
-| transport.application_max_bytes | No | 1200 | Actual limit may be smaller; empty payload supported |
+| transport.outer_udp_max_bytes | No | 1452 | >=1200; PMTU probes and peer/path limits still apply |
+| transport.application_max_bytes | No | 1400 | Actual limit may be smaller; empty payload supported |
 | transport.idle_timeout_ms | No | 5000 | Finite liveness profile; keepalive when active flows otherwise idle |
 | recovery.keepalive_interval_ms | No | 2000 | Active-flow otherwise-idle QUIC probe, normally paced |
 | recovery.peer_progress_timeout_ms | No | 10000 | Watchdog based on authenticated peer progress, separate from quiche idle rules |
@@ -252,6 +252,12 @@ checked before startup. Timeouts must be positive and representable.
 | diagnostics.snapshot_interval_ms | No | 1000 | Minimum 1000; bounded stdout NDJSON snapshots |
 | diagnostics.qlog_directory | No | absent | Disabled by default; qlog build feature plus fresh empty owner-0700 directory; filtered NDJSON only, never raw H3 |
 
+
+For operator-selected transport/WireGuard sizes, use the
+[size-profile table](wireguard.md#choosing-a-size-profile). Defaults are now
+1452/1400. Configure both endpoints consistently and validate the path.
+Existing explicit 1350/1200 values retain the previous profile. The pinned backend's smaller-peer probing
+limitation is documented there; raising a cap does not fix it.
 
 Additional coupled constraints:
 

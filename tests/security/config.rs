@@ -465,6 +465,11 @@ fn defaults_offloads_and_checked_numeric_fd_budgets() {
     let f = Fixtures::new();
     let original = fs::read_to_string(f.file("client.toml")).unwrap();
     let config = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+    assert_eq!(config.transport().outer_udp_max_bytes, 1452);
+    assert_eq!(config.transport().application_max_bytes, 1400);
+    let server = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+    assert_eq!(server.transport().outer_udp_max_bytes, 1452);
+    assert_eq!(server.transport().application_max_bytes, 1400);
     assert_eq!(config.limits().application_pool_bytes, 8 * 1024 * 1024);
     assert_eq!(config.limits().ciphertext_pool_bytes, 4 * 1024 * 1024);
     assert_eq!(config.limits().scratch_pool_bytes, 2 * 1024 * 1024);

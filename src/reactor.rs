@@ -1860,15 +1860,21 @@ impl<'a> Runner<'a> {
         if bytes.len() > ceiling {
             let session_id = s.id;
             let connection_id = self.connections.get(&s.connection.0).map(|c| c.id);
-            self.failure(
-                Failure::Size,
+            let _ = self.diagnostics.size_failure(
+                now,
+                connection_id,
+                session_id,
                 if bytes.len() > self.cfg.transport().application_max_bytes {
                     1
                 } else {
                     2
                 },
-                Some(session_id),
-                connection_id,
+                crate::diagnostics::SizeDetails {
+                    direction,
+                    datagram_bytes: bytes.len(),
+                    application_cap_bytes: self.cfg.transport().application_max_bytes,
+                    outgoing_ceiling_bytes: ceiling,
+                },
             );
             self.drop_packet(
                 if bytes.len() > self.cfg.transport().application_max_bytes {
@@ -3290,6 +3296,14 @@ impl<'a> Runner<'a> {
             total.sampled_connections += v.sampled_connections;
             total.rtt_max_us = total.rtt_max_us.max(v.rtt_max_us);
             total.rttvar_max_us = total.rttvar_max_us.max(v.rttvar_max_us);
+            total.application_payload_lower_bound_min =
+                if total.sampled_connections == v.sampled_connections {
+                    v.application_payload_lower_bound_min
+                } else {
+                    total
+                        .application_payload_lower_bound_min
+                        .min(v.application_payload_lower_bound_min)
+                };
             if v.path_payload_limit_min != 0 {
                 total.path_payload_limit_min = if total.path_payload_limit_min == 0 {
                     v.path_payload_limit_min

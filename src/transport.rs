@@ -276,6 +276,10 @@ impl Connection {
     pub fn operational_stats(&self) -> crate::diagnostics::QuicSummary {
         let mut result = crate::diagnostics::QuicSummary {
             sampled_connections: 1,
+            application_payload_lower_bound_min: self
+                .native_datagram_ceiling()
+                .saturating_sub(9)
+                .min(self.application_max),
             ..Default::default()
         };
         for p in self.quic.path_stats().filter(|p| p.active) {

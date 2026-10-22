@@ -1176,3 +1176,20 @@ commit, publication or deployment is claimed.
 ## Phase 13: Release automation
 
 - [X] T091 Add maintainer-controlled Release Please automation for the single production Rust package: first v0.1.0, Conventional Commit versioning, a separate release PR, exact-source x86_64 qlog artifacts, checksums/build metadata and recoverable draft publication. Preserve existing history/evidence and handwritten changelog notes; update all Remora lockfile entries on subsequent versions. Verify config generation, packaging failure modes, workflow syntax and the pinned container build; document GitHub setup and the first PR/merge/release procedure (ADR 0028). Local implementation verification does not claim a remote workflow run, tag or published release.
+
+## Phase 14: Explicit operator size profiles
+
+- [X] T092 Preserve defaults 1350/1200 and the existing quiche fork/pin while documenting opt-in matched 1452/1400/WG1280 and WG1360 tuning profiles, path/migration/rollback prerequisites and the unresolved smaller-peer probe limitation (ADR 0030). Add bounded correlated local size-rejection details and a precisely named sampled conservative outgoing application lower bound. Preserve default boundary tests; verify selected-profile delivery, native revalidation/purge/recovery and diagnostic bounds on the unchanged backend. Obtain follow-up independent read-only review and record local evidence without implying new full WireGuard/inner-IPv6/WAN or performance qualification.
+
+
+**T092 completed (2026-10-22):** Final independent read-only review: APPROVE.
+The reviewer repeated five targeted diagnostic/native/E2E tests successfully.
+See [local evidence](../../docs/validation/size-profiles.md) for the full
+implementer checks, unchanged dependency/defaults and qualification limits.
+
+- [X] T093 Apply the owner's 2026-10-23 default-size decision: 1452 outer / 1400 application and WG1280 primary example, preserving the quiche pin. Update active contracts/docs and migration/rollback guidance (ADR 0031); preserve old test/VM profiles explicitly. Verify default 1400/1401 and explicit legacy 1200/1201 boundaries, large opaque UDP in both outer families, existing PMTU/diagnostic behavior and locked checks. Keep historical and new-binary evidence distinct.
+
+**T093 completed (2026-10-23):** Pinned-toolchain locked format/lint/Rust/Python
+checks and release builds pass. New-default opaque UDP boundaries pass over
+outer IPv4/IPv6; independent-Go, full WG/WAN and performance qualification
+were not rerun. See [current local evidence](../../docs/validation/default-size-profile.md).

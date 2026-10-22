@@ -135,7 +135,7 @@ credential revocation.
 ### Datagram handling
 
 UDP delivery remains best effort. Packets received during setup or recovery
-are dropped rather than replayed. The default payload limit is 1200 bytes;
+are dropped rather than replayed. The default payload limit is 1400 bytes (outer UDP cap 1452);
 the effective limit depends on the path. Oversized packets are dropped and
 counted, without truncation or a reliable transport fallback.
 

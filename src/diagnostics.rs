@@ -197,6 +197,8 @@ pub struct Event {
     pub direction: Option<Direction>,
     pub drop_reason: Option<DropReason>,
     pub offload_reason: Option<OffloadReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<SizeDetails>,
 }
 impl Event {
     pub fn failure(level: Level, failure: Failure, numeric_code: u64) -> Self {
@@ -210,6 +212,7 @@ impl Event {
             direction: None,
             drop_reason: None,
             offload_reason: None,
+            size: None,
         }
     }
 }
@@ -340,6 +343,8 @@ pub struct QuicSummary {
     pub rttvar_max_us: u64,
     pub cwnd_total_bytes: usize,
     pub path_payload_limit_min: usize,
+    /// Conservative local-send application ceiling, allowing any association ID.
+    pub application_payload_lower_bound_min: usize,
     pub retransmitted_packets: usize,
     pub pto_count: usize,
     pub overflow: bool,
@@ -516,6 +521,16 @@ pub struct FailureSummary {
     repeats: u64,
     #[serde(rename = "ms")]
     monotonic_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<SizeDetails>,
+}
+/// Numeric metadata only; never retains an application packet or address.
+#[derive(Clone, Copy, Serialize)]
+pub struct SizeDetails {
+    pub direction: Direction,
+    pub datagram_bytes: usize,
+    pub application_cap_bytes: usize,
+    pub outgoing_ceiling_bytes: usize,
 }
 const _: () = assert!(std::mem::size_of::<FailureSummary>() <= 256);
 #[derive(Serialize)]
@@ -1021,6 +1036,7 @@ impl Diagnostics {
         {
             entry.sequence = sequence;
             entry.numeric_code = code;
+            entry.size = None;
             entry.repeats = entry
                 .repeats
                 .checked_add(1)
@@ -1055,7 +1071,35 @@ impl Diagnostics {
                 .unwrap_or_default()
                 .as_millis()
                 .min(u64::MAX as u128) as u64,
+            size: None,
         });
+        Ok(())
+    }
+    /// Reuse the bounded failure ring and ordinary event rate limit. Repeats
+    /// retain the most recent size observation for this connection/session.
+    pub fn size_failure(
+        &mut self,
+        now: Instant,
+        connection: Option<OpaqueId>,
+        session: OpaqueId,
+        code: u64,
+        details: SizeDetails,
+    ) -> Result<(), DiagnosticError> {
+        self.failure(now, connection, Some(session), Failure::Size, code, false)?;
+        if let Some(entry) = self.failures.iter_mut().find(|e| {
+            !e.terminal
+                && e.connection_id == connection
+                && e.session_id == Some(session)
+                && e.failure == Failure::Size
+        }) {
+            entry.size = Some(details);
+        }
+        let mut event = Event::failure(Level::Warn, Failure::Size, code);
+        event.connection_id = connection;
+        event.session_id = Some(session);
+        event.direction = Some(details.direction);
+        event.size = Some(details);
+        self.event(now, event)?;
         Ok(())
     }
     pub fn finish_session(&mut self, session: OpaqueId) -> Result<(), DiagnosticError> {

@@ -156,7 +156,7 @@ fn ipv4_ipv6_empty_boundary_two_sender_isolation_and_shutdown() {
                 assert_eq!(&bytes[..n], reply);
             }
         }
-        a.send_to(&[0; 1201], t.listen).unwrap();
+        a.send_to(&[0; 1401], t.listen).unwrap();
         let mut bytes = [0; 65536];
         assert!(t.target.recv_from(&mut bytes).is_err());
         // Snapshot includes setup loss, and never includes application bytes or tuples.
