@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/0xf836/remora/compare/v0.2.0...v0.3.0) (2026-10-23)
+
+
+### Features
+
+* **logging:** add quiet, actionable operator logs ([a5bdff4](https://github.com/0xf836/remora/commit/a5bdff43371c04a6bca40fdc12eb4e7d4511313e))
+* **logging:** add quiet, actionable operator logs ([5836c4d](https://github.com/0xf836/remora/commit/5836c4d3bc7f1173816ae71682fe0cb8f9550eae))
+* **mtu:** default to 1452/1400 with a WG1280 example ([a115de3](https://github.com/0xf836/remora/commit/a115de3959b7b4de183d7d0869fa8d117162aaf5))
+* **mtu:** default to 1452/1400 with a WG1280 example ([6321dea](https://github.com/0xf836/remora/commit/6321dea3d18ed3c88032c180c9a3d6bb78c73228))
+
+
+### Bug Fixes
+
+* **fuzz:** resolve operator diagnostics module in source adapter ([49d980b](https://github.com/0xf836/remora/commit/49d980b294dab04913130d139e07ee49e349b00f))
+
 ## [0.2.0](https://github.com/0xf836/remora/compare/v0.1.0...v0.2.0) (2026-10-21)
 
 
