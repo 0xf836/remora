@@ -1193,3 +1193,39 @@ implementer checks, unchanged dependency/defaults and qualification limits.
 checks and release builds pass. New-default opaque UDP boundaries pass over
 outer IPv4/IPv6; independent-Go, full WG/WAN and performance qualification
 were not rerun. See [current local evidence](../../docs/validation/default-size-profile.md).
+
+
+- [X] T094 Implement the owner's operator logging plan (ADR 0032): explicit legacy
+  JSON profile in machine consumers before human defaults; useful safe messages
+  and levels; one mapping outage/accepted-recovery notice, first-size warning,
+  real journal framing, no incident engine/reminders/files. Preserve diagnostic
+  schema/ACK/coverage/shutdown in JSON mode. Cover idle/flood/retry/acceptance,
+  permanent refusal, malformed config, privacy, bounded output and parser failure;
+  run native/static/Python checks and a short real benchmark collector smoke.
+  Record limitations without claiming live deployment or new performance evidence.
+
+
+**T094 completed (2026-10-23):** 227 native Rust checks and 113 Python checks pass,
+with three documented ignored prerequisites. Default/qlog release builds, format,
+Clippy, static unit verification and a real legacy collector smoke pass. Operator
+mode is explicitly not full diagnostic capture. No incident subsystem, file
+backend, new dependency or forwarding/retry-policy change was added. See
+[local evidence](../../docs/validation/operator-logs.md); no new performance,
+live service or independent implementation-review claim.
+
+
+- [X] T095 Address independent logging implementation review: stable JSON fatal
+  identity through actual executable/collector; truthful graceful GOAWAY versus
+  actual connection-loss notices; one transient client CONNECT/setup warning and
+  accepted recovery without hiding partial service; central byte/record reserve
+  covering qlog. Cover these paths and run a real blocked-collector smoke through
+  the existing diagnostic-regression row validator. Preserve protocol/retry policy,
+  diagnostic schema/budgets and privacy; record remaining evidence boundaries.
+
+**T095 completed (2026-10-23):** 231 native Rust checks pass with test cases
+serialized (`--test-threads=1`), three prerequisite-dependent cases remain
+ignored, and 114 Python checks pass. Default/qlog release builds, format, Clippy
+and whitespace checks pass. A real blocked-collector run is accepted by the
+unchanged diagnostic-regression row validator. Parallel fixture failures remain
+unattributed, not claimed fixed; see the [validation report](../../docs/validation/operator-logs.md).
+No full performance matrix, live deployment or independent re-review is claimed.

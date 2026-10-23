@@ -22,6 +22,10 @@ Application <-> Remora client <== HTTP/3 + QUIC ==> Remora server <-> UDP servic
 - Supports IPv4 and IPv6, structured JSON diagnostics, and optional filtered qlog
   tracing.
 
+Service logs default to readable text at `info`, without periodic metric dumps.
+For explicit JSON diagnostics and collector migration, see
+[logging and systemd](docs/operations.md#logging-and-systemd-journal).
+
 ## Build from source
 
 Requires Linux 6.1+ (x86_64, glibc). Install the

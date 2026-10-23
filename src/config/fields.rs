@@ -123,6 +123,8 @@ pub(super) fn validate_document_fields(root: &toml::Table) -> Result<(), ConfigE
     });
     table!(root, "diagnostics", {
         level: Level => false, "expected error, warn, info, debug or trace";
+        format: LogFormat => false, "expected json or text";
+        snapshots: bool => false, "expected true or false; full status requires format=json";
         snapshot_interval_ms: u64 => false, "expected a nonnegative integer";
         qlog_directory: PathBuf => false, "expected a file path string";
     });

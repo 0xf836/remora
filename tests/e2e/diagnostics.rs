@@ -10,6 +10,276 @@ pub fn snapshots(t: &Tunnel, role: &str) -> Vec<serde_json::Value> {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
 }
+
+#[test]
+fn operator_profile_is_idle_silent_warns_once_on_size_and_preserves_forwarding() {
+    let mut t = Tunnel::start(false, |f| {
+        for role in ["client", "server"] {
+            let file = format!("{role}.toml");
+            fs::write(f.file(&file), f.without_diagnostics(&file)).unwrap();
+        }
+    });
+    let sender = t.sender();
+    t.ready(&sender, b"PRIVATE_PAYLOAD_SENTINEL");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !fs::read_to_string(t.fixtures.file("client.err"))
+        .unwrap()
+        .contains("UDP tunnel accepted by the server")
+    {
+        assert!(Instant::now() < deadline, "accepted message not written");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let initial = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+    assert!(initial.contains("Secure connection established"));
+    assert!(initial.contains("UDP tunnel accepted by the server"));
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(
+        initial,
+        fs::read_to_string(t.fixtures.file("client.err")).unwrap()
+    );
+    for _ in 0..100 {
+        sender.send_to(&[17; 1401], t.listen).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let text = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+        if text.contains("UDP datagram dropped because it exceeds") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "missing useful size warning: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    t.ready(&sender, b"STILL_PRIVATE_AFTER_FAILURE");
+    t.stop();
+    let token = fs::read_to_string(t.fixtures.file("client.token")).unwrap();
+    for role in ["client", "server"] {
+        assert_eq!(
+            fs::read_to_string(t.fixtures.file(&format!("{role}.out"))).unwrap(),
+            ""
+        );
+        let text = fs::read_to_string(t.fixtures.file(&format!("{role}.err"))).unwrap();
+        assert!(text.contains("Remora stopped"));
+        for forbidden in [
+            "histograms",
+            "PRIVATE",
+            "epoch=",
+            "failures=",
+            "sequence=",
+            "remora.test",
+            token.trim(),
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "unexpected private/machine field: {forbidden}"
+            );
+        }
+        assert!(
+            text.lines().count() <= 6,
+            "unexpected operator noise: {text}"
+        );
+        assert!(text.lines().all(|line| line.len() < 1024));
+        if role == "client" {
+            assert_eq!(text.matches("WARN").count(), 1);
+        }
+    }
+}
+
+#[test]
+fn operator_auth_failure_explains_exit_without_spamming_the_server() {
+    let mut t = Tunnel::start(false, |f| {
+        for role in ["client", "server"] {
+            let file = format!("{role}.toml");
+            fs::write(f.file(&file), f.without_diagnostics(&file)).unwrap();
+        }
+        fs::write(f.file("client.token"), "0".repeat(64)).unwrap();
+    });
+    let sender = t.sender();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        sender.send_to(b"PRIVATE_REJECTED", t.listen).unwrap();
+        let text = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+        if text.contains("HTTP 401") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "missing authentication rejection: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(
+        t.client.finish(Duration::from_secs(5)).unwrap().code(),
+        Some(1)
+    );
+    let error = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+    assert!(
+        error.contains("HTTP 401") && error.contains("client token") && error.contains("Exiting")
+    );
+    assert_eq!(error.matches("ERROR").count(), 1);
+    t.server.signal(rustix::process::Signal::TERM).unwrap();
+    assert!(t.server.finish(Duration::from_secs(5)).unwrap().success());
+    let server = fs::read_to_string(t.fixtures.file("server.err")).unwrap();
+    assert!(!server.contains("WARN") && !server.contains("ERROR"));
+}
+
+#[test]
+fn operator_retries_are_silent_and_recovery_requires_tunnel_acceptance() {
+    use crate::common::ChildGuard;
+    use std::process::Command;
+    let mut t = Tunnel::start(false, |f| {
+        for role in ["client", "server"] {
+            let file = format!("{role}.toml");
+            fs::write(f.file(&file), f.without_diagnostics(&file)
+                + "\n[transport]\nidle_timeout_ms=1000\n[recovery]\nkeepalive_interval_ms=200\npeer_progress_timeout_ms=1500\nsetup_timeout_ms=500\nretry_initial_ms=100\nretry_max_ms=200\n").unwrap();
+        }
+    });
+    let sender = t.sender();
+    t.ready(&sender, b"before-outage");
+    t.server.signal(rustix::process::Signal::KILL).unwrap();
+    assert!(!t.server.finish(Duration::from_secs(5)).unwrap().success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let text = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+        if text.contains("Connection to the server lost") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "missing outage notice: {text}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Several failed setup attempts, without reminding the operator about each.
+    std::thread::sleep(Duration::from_millis(1600));
+    let down = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+    assert_eq!(down.matches("Connection to the server lost").count(), 1);
+    assert!(!down.contains("re-established") && !down.contains("Still reconnecting"));
+    t.server = ChildGuard::spawn_logged(
+        Command::new(env!("CARGO_BIN_EXE_remora"))
+            .args(["server", "--config"])
+            .arg(t.fixtures.file("server.toml")),
+        &t.fixtures.file("server-after.out"),
+        &t.fixtures.file("server-after.err"),
+    )
+    .unwrap();
+    // A successful handshake alone must not announce restored UDP forwarding.
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(
+        !fs::read_to_string(t.fixtures.file("client.err"))
+            .unwrap()
+            .contains("re-established")
+    );
+    t.ready(&sender, b"fresh-after-outage");
+    t.stop();
+    let text = fs::read_to_string(t.fixtures.file("client.err")).unwrap();
+    assert_eq!(text.matches("UDP tunnel re-established").count(), 1);
+    assert_eq!(text.matches("Connection to the server lost").count(), 1);
+    assert!(!text.contains("Still reconnecting") && !text.contains("attempts"));
+}
+
+#[test]
+fn blocked_operator_stderr_does_not_hang_shutdown_or_packet_forwarding() {
+    use crate::common::ChildGuard;
+    use std::{
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        process::{Command, Stdio},
+    };
+    let mut t = Tunnel::start(false, |f| {
+        for role in ["client", "server"] {
+            let file = format!("{role}.toml");
+            fs::write(
+                f.file(&file),
+                f.without_diagnostics(&file) + "\n[diagnostics]\nlevel='debug'\n",
+            )
+            .unwrap();
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fs::read_to_string(t.fixtures.file("client.err"))
+        .unwrap()
+        .contains("Remora")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "client did not register signals and start"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    t.client.signal(rustix::process::Signal::TERM).unwrap();
+    assert!(t.client.finish(Duration::from_secs(5)).unwrap().success());
+    let (_unread, writer) = UnixStream::pair().unwrap();
+    socket2::SockRef::from(&writer)
+        .set_send_buffer_size(1024)
+        .unwrap();
+    t.client = ChildGuard::spawn_with_io(
+        Command::new(env!("CARGO_BIN_EXE_remora"))
+            .args(["client", "--config"])
+            .arg(t.fixtures.file("client.toml")),
+        Stdio::null(),
+        Stdio::from(OwnedFd::from(writer)),
+    )
+    .unwrap();
+    let sender = t.sender();
+    t.ready(&sender, b"before-blocked-output");
+    for _ in 0..400 {
+        sender.send_to(&[17; 1401], t.listen).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    t.ready(&sender, b"forwarding-with-unread-output");
+    let started = Instant::now();
+    t.client.signal(rustix::process::Signal::TERM).unwrap();
+    assert_eq!(
+        t.client.finish(Duration::from_secs(5)).unwrap().code(),
+        Some(1)
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    t.server.signal(rustix::process::Signal::TERM).unwrap();
+    assert!(t.server.finish(Duration::from_secs(5)).unwrap().success());
+}
+
+#[test]
+fn blocked_json_capture_preserves_the_executable_runtime_failure_marker() {
+    use crate::common::ChildGuard;
+    use std::{
+        os::{fd::OwnedFd, unix::net::UnixStream},
+        process::{Command, Stdio},
+    };
+    let mut t = Tunnel::start(false, |_| {});
+    t.ready(&t.sender(), b"before-replacing-collector");
+    t.client.signal(rustix::process::Signal::TERM).unwrap();
+    assert!(t.client.finish(Duration::from_secs(5)).unwrap().success());
+    let (_unread, writer) = UnixStream::pair().unwrap();
+    socket2::SockRef::from(&writer)
+        .set_send_buffer_size(1024)
+        .unwrap();
+    let error_file = t.fixtures.file("blocked-json.err");
+    t.client = ChildGuard::spawn_with_io(
+        Command::new(env!("CARGO_BIN_EXE_remora"))
+            .args(["client", "--config"])
+            .arg(t.fixtures.file("client.toml")),
+        Stdio::from(OwnedFd::from(writer)),
+        fs::File::create(&error_file).unwrap().into(),
+    )
+    .unwrap();
+    t.ready(&t.sender(), b"forwarding-with-blocked-json-collector");
+    std::thread::sleep(Duration::from_millis(1100));
+    t.client.signal(rustix::process::Signal::TERM).unwrap();
+    assert_eq!(
+        t.client.finish(Duration::from_secs(5)).unwrap().code(),
+        Some(1)
+    );
+    let text = fs::read_to_string(error_file).unwrap();
+    assert_eq!(
+        text.lines()
+            .filter(|line| line.starts_with("runtime failed: "))
+            .collect::<Vec<_>>(),
+        ["runtime failed: DiagnosticCollectionIncomplete"]
+    );
+    assert!(!text.contains("ERROR") && !text.contains("could not be completely"));
+    t.server.signal(rustix::process::Signal::TERM).unwrap();
+    assert!(t.server.finish(Duration::from_secs(5)).unwrap().success());
+}
+
 pub fn assert_class(t: &Tunnel, role: &str, class: &str, code: u64) {
     let records = snapshots(t, role);
     assert!(records.iter().all(|s| s["coverage_lost"] == 0
@@ -35,8 +305,8 @@ fn collected_auth_policy_size_and_resource_faults_keep_opaque_correlation() {
         let mut t = Tunnel::start(false, |f| {
             for role in ["client", "server"] {
                 let p = f.file(&format!("{role}.toml"));
-                let mut text = fs::read_to_string(&p).unwrap();
-                text.push_str("\n[diagnostics]\nlevel = \"error\"\nsnapshot_interval_ms = 10000\n");
+                let mut text = f.without_diagnostics(&format!("{role}.toml"));
+                text.push_str("\n[diagnostics]\nformat = \"json\"\nsnapshots = true\nlevel = \"error\"\nsnapshot_interval_ms = 10000\n");
                 if case == 3 && role == "server" {
                     text.push_str("\n[limits]\nmax_sessions_per_identity = 1\n");
                 }
@@ -159,8 +429,8 @@ fn real_quiche_qlog_is_filtered_at_every_level_without_keylogs_or_raw_traces() {
                     .create(f.file(&format!("qlog-{role}")))
                     .unwrap();
                 let p = f.file(&format!("{role}.toml"));
-                let text = fs::read_to_string(&p).unwrap();
-                fs::write(p, format!("{text}\n[diagnostics]\nlevel = \"{level}\"\nqlog_directory = \"qlog-{role}\"\n")).unwrap();
+                let text = f.without_diagnostics(&format!("{role}.toml"));
+                fs::write(p, format!("{text}\n[diagnostics]\nformat = \"json\"\nsnapshots = true\nlevel = \"{level}\"\nqlog_directory = \"qlog-{role}\"\n")).unwrap();
             }
         });
         t.ready(&t.sender(), b"QLOG_PAYLOAD_SENTINEL");

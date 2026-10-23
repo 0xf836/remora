@@ -91,6 +91,7 @@ choices!(Offload { Off => "off", Auto => "auto" });
 choices!(CongestionControl { Cubic => "cubic", Bbr2Gcongestion => "bbr2_gcongestion", Reno => "reno" });
 choices!(Pacing { Timerfd => "timerfd" });
 choices!(Level { Error => "error", Warn => "warn", Info => "info", Debug => "debug", Trace => "trace" });
+choices!(LogFormat { Json => "json", Text => "text" });
 settings!(Limits {
     max_connections: usize = 64,
     max_sessions: usize = 128,
@@ -133,6 +134,7 @@ settings!(RecoverySettings {
 });
 settings!(DiagnosticSettings {
     level: Level = Level::Info, snapshot_interval_ms: u64 = 1000,
+    format: LogFormat = LogFormat::Text, snapshots: bool = false,
     qlog_directory: Option<PathBuf> = None,
 });
 #[derive(Deserialize)]
@@ -1118,6 +1120,13 @@ fn validate_budgets(doc: &Document, listeners: usize) -> Result<usize, ConfigErr
             "recovery.retry_max_ms",
             ConfigReason::Range,
             "must be at most 2000 ms",
+        ));
+    }
+    if doc.diagnostics.format == LogFormat::Text && doc.diagnostics.snapshots {
+        return Err(with_hint(
+            "diagnostics.snapshots",
+            ConfigReason::Range,
+            "periodic metrics require diagnostics.format=json; operator text has no status stream",
         ));
     }
     if doc.diagnostics.snapshot_interval_ms < 1000 {

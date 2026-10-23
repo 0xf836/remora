@@ -1,6 +1,10 @@
 # Diagnosing Remora
 
-Collect stdout status and stderr events for both roles. Each schema-1 record
+For normal systemd use, select the [quiet text profile](operations.md#logging-and-systemd-journal).
+For machine-readable diagnostic capture, set `diagnostics.format="json"` and
+`diagnostics.snapshots=true`, then collect stdout status and stderr events for
+both roles. `diagnostics.level` alone does not suppress status/metrics.
+Each schema-1 JSON record
 contains UTC time, a process epoch and monotonic sequence. Connection/Session
 identifiers are opaque and valid only within that epoch. They are correlation
 fields, not user labels. Never request payloads, headers or credential contents
@@ -26,6 +30,9 @@ For `bind` failures on UDP/443, check both port occupancy and the service's
 `CAP_NET_BIND_SERVICE`; see [port 443](operations.md#listening-on-udp443).
 
 ## Read the boundaries correctly
+
+The fields below belong to the explicitly selected JSON diagnostic profile.
+The default text journal is an operational summary, not a complete audit.
 
 | Field | What it establishes |
 |---|---|
@@ -74,7 +81,7 @@ reasons. Availability never implies every packet is eligible. An auto mode with
 | Observation | Operator action |
 |---|---|
 | Invalid config, exit 2 | Fix the named schema/field/range/file/permissions; re-run check-config |
-| Runtime `Bind`, exit 1 | Check role listener ownership/port conflicts; validation performs no bind |
+| Listener bind failure, exit 1 | Check role listener ownership/port conflicts; validation performs no bind |
 | `trust/0` | Check CA bundle, DNS SAN identity, certificate validity and numeric dial destination; do not weaken verification |
 | `authentication/401` | Check privately provisioned token and canonical-text digest; controlled restart after correction |
 | `authorization/403` | Check exact host/port and every DNS answer's numeric address permission |
@@ -111,6 +118,9 @@ opaque request correlation ID; pre-session TLS trust errors identify only the
 connection. No affected Session is invented before its creation.
 
 ## Assess collection coverage
+
+These correlation/ACK/coverage guarantees apply to `format="json"` capture, not
+the default operator profile. Select it explicitly before a diagnostic run.
 
 Ordinary events have a 20/s bucket with burst 40. Filtered verbosity or suppressed
 events do not remove status summaries. Each summary carries class/code,

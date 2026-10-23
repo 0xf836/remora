@@ -8,3 +8,9 @@ proxy = "https://remora.example.com"
 certificate_file = "server.pem"
 private_key_file = "server-key.pem"
 credentials_file = "credentials.toml"
+
+# Quiet, readable service logs. Use format="json", snapshots=true for metrics.
+[diagnostics]
+level = "info"
+format = "text"
+snapshots = false

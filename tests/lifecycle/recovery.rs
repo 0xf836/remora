@@ -610,13 +610,23 @@ fn permanent_rejection_cancels_queued_and_awaiting_setup_but_keeps_accepted_traf
 
 #[test]
 fn wire_goaway_keeps_lower_flow_and_places_new_request_on_fresh_verified_connection() {
+    wire_goaway_case(false, false);
+    for actual_loss in [false, true] {
+        wire_goaway_case(true, actual_loss);
+    }
+}
+fn wire_goaway_case(operator: bool, actual_loss: bool) {
     runtime().block_on(async {
         let f = Fixtures::new();
         let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
         let server_cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
         let resolver = SystemResolver::new(1).unwrap();
         let now = Instant::now();
-        let (diag, _rx) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+        let (mut diag, rx) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+        if operator {
+            diag.set_output(crate::config::LogFormat::Text, false);
+            diag.set_level(crate::config::Level::Info);
+        }
         let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
         let mut p = Pair::new(true);
         let (a, b) = p.requests();
@@ -814,6 +824,21 @@ fn wire_goaway_keeps_lower_flow_and_places_new_request_on_fresh_verified_connect
         );
         assert_eq!(r.snapshot.counters.quic_dgram_enqueued, 0);
         assert_eq!(r.sessions[&fresh_session].queue.used().count, 0);
+        if operator {
+            let mut err = Vec::new();
+            while rx.write_one(&mut std::io::sink(), &mut err).unwrap() {}
+            let text = String::from_utf8(err).unwrap();
+            assert!(!text.contains("Connection to the server lost") && !text.contains("re-established"), "graceful GOAWAY invented an outage: {text}");
+            // Actual loss of the old draining connection must still be visible,
+            // even though the replacement is now primary and carries a new flow.
+            if !actual_loss { r.close_session(lower, 0x100); }
+            r.remove_connection(old, Instant::now()).unwrap();
+            assert_eq!(r.sessions[&fresh_session].state, State::Active);
+            let mut err = Vec::new();
+            while rx.write_one(&mut std::io::sink(), &mut err).unwrap() {}
+            let text = String::from_utf8(err).unwrap();
+            assert_eq!(text.contains("Connection to the server lost"), actual_loss, "{text}");
+        }
     });
 }
 
@@ -896,5 +921,127 @@ fn proxy_round_falls_back_then_resolves_again_and_stop_rejects_late_completion()
         assert!(r.primary.is_none());
         assert!(r.connections.is_empty());
         assert!(r.proxy_candidates.is_empty());
+    });
+}
+
+#[test]
+fn operator_transient_connect_refusal_and_timeout_are_visible_once_until_acceptance() {
+    use crate::config::{Level, LogFormat};
+    runtime().block_on(async {
+        for previously_accepted in [false, true] {
+            for code in [0, 502, 503, 504] {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let now = Instant::now();
+                let (mut diag, rx) =
+                    Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+                diag.set_output(LogFormat::Text, false);
+                diag.set_level(Level::Info);
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut p = Pair::new(true);
+                let (a, b) = p.requests();
+                let request = masque::request_headers(
+                    "remora.test",
+                    "/.well-known/masque/udp/127.0.0.1/53/",
+                    &[b'0'; 64],
+                );
+                let c = p
+                    .client
+                    .h3
+                    .as_mut()
+                    .unwrap()
+                    .send_request(&mut p.client.quic, &request, false)
+                    .unwrap();
+                let connection = r.primary.unwrap();
+                r.connections.get_mut(&connection).unwrap().transport = p.client;
+                r.client_state(ClientState::Active, now).unwrap();
+                let local = r
+                    .listener
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .0
+                    .borrow()
+                    .local_addr();
+                let lower = if previously_accepted {
+                    let id = r
+                        .create_session(
+                            connection,
+                            a,
+                            Some(("127.0.0.1:42101".parse().unwrap(), local)),
+                            now,
+                        )
+                        .unwrap();
+                    r.sessions.get_mut(&id).unwrap().state = State::AwaitingAcceptance;
+                    r.headers(connection, a, masque::response_headers(200), true, now)
+                        .unwrap();
+                    Some(id)
+                } else {
+                    None
+                };
+                let failed = r
+                    .create_session(
+                        connection,
+                        b,
+                        Some(("127.0.0.1:42102".parse().unwrap(), local)),
+                        now,
+                    )
+                    .unwrap();
+                r.sessions.get_mut(&failed).unwrap().state = State::AwaitingAcceptance;
+                let at = now + Duration::from_millis(cfg.recovery().setup_timeout_ms + 1);
+                if code == 0 {
+                    r.expire_sessions(at);
+                } else {
+                    r.headers(connection, b, masque::response_headers(code), false, now)
+                        .unwrap();
+                }
+                assert!(!r.sessions.contains_key(&failed));
+                assert_eq!(r.snapshot.recovery.client_state, Some(ClientState::Active));
+                assert!(!r.outage_announced);
+                assert!(r.setup_unavailable);
+                // Repeat observations must not create recurring operator warnings.
+                for _ in 0..100 {
+                    r.announce_setup_failure(at, Failure::SetupTimeout, 0);
+                }
+                let renewed = r
+                    .create_session(
+                        connection,
+                        c,
+                        Some(("127.0.0.1:42103".parse().unwrap(), local)),
+                        at,
+                    )
+                    .unwrap();
+                r.sessions.get_mut(&renewed).unwrap().state = State::AwaitingAcceptance;
+                r.headers(connection, c, masque::response_headers(200), true, at)
+                    .unwrap();
+                assert!(!r.setup_unavailable);
+                if let Some(lower) = lower {
+                    assert_eq!(r.sessions[&lower].state, State::Active);
+                }
+                let mut err = Vec::new();
+                while rx.write_one(&mut std::io::sink(), &mut err).unwrap() {}
+                let text = String::from_utf8(err).unwrap();
+                assert_eq!(text.matches("WARN").count(), 1, "{text}");
+                assert!(
+                    !text.contains("Connection to the server lost")
+                        && !text.contains("re-established")
+                );
+                if previously_accepted {
+                    assert!(text.contains("already accepted tunnels may continue"));
+                    assert!(text.contains("A new UDP tunnel was accepted after setup failures"));
+                } else {
+                    assert!(
+                        text.contains("UDP tunnel setup failed")
+                            && text.contains("UDP tunnel accepted by the server")
+                    );
+                }
+                if code != 0 {
+                    assert!(text.contains(&format!("HTTP {code}")));
+                } else {
+                    assert!(text.contains("deadline"));
+                }
+            }
+        }
     });
 }

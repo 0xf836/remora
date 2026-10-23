@@ -1,11 +1,19 @@
 use remora::config::{RoleConfig, ValidatedConfig};
 use std::{path::Path, process::ExitCode, time::Duration};
 
+fn report_error(message: impl std::fmt::Display) {
+    use std::io::Write;
+    let mut out = std::io::stderr().lock();
+    let journal = remora::diagnostics::operator::is_journal(std::io::stderr());
+    let _ = remora::diagnostics::operator::prefix(&mut out, remora::config::Level::Error, journal);
+    let _ = writeln!(out, "{message}");
+}
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!(
-            "Remora — UDP tunneling over HTTP/3\n\nUsage: remora <COMMAND> --config PATH\n\nCommands:\n  client        Forward a local UDP listener through a MASQUE proxy\n  server        Accept authenticated CONNECT-UDP requests\n  check-config  Validate configuration and files without network access\n\nOptions:\n  -h, --help     Show help (also available for each command)\n  --version      Show version and build information\n\nExamples:\n  remora server --config server.toml\n  remora client --config client.toml"
+            "Remora — UDP tunneling over HTTP/3\n\nUsage: remora <COMMAND> --config PATH\n\nCommands:\n  client        Forward a local UDP listener through a MASQUE proxy\n  server        Accept authenticated CONNECT-UDP requests\n  check-config  Validate configuration and files without network access\n\nOptions:\n  -h, --help     Show help (also available for each command)\n  --version      Show version and build information\n\nLogging: configure [diagnostics] level, format and snapshots in TOML.\nRUST_LOG is not used; see docs/operations.md.\n\nExamples:\n  remora server --config server.toml\n  remora client --config client.toml"
         );
         return ExitCode::SUCCESS;
     }
@@ -24,7 +32,7 @@ fn main() -> ExitCode {
             }
         };
         println!(
-            "{description}\n\nUsage: remora {command} --config PATH\n\nOptions:\n  --config PATH  TOML configuration file (required)\n  -h, --help     Show this help"
+            "{description}\n\nUsage: remora {command} --config PATH\n\nOptions:\n  --config PATH  TOML configuration file (required)\n  -h, --help     Show this help\n\nLogging: configure [diagnostics] level, format and snapshots in TOML.\nDefaults: level=info, format=text, snapshots=false (quiet service logs).\nRUST_LOG is not used."
         );
         return ExitCode::SUCCESS;
     }
@@ -43,13 +51,13 @@ fn main() -> ExitCode {
             .iter()
             .any(|c| args[0] == *c)
     {
-        eprintln!("invalid command; use remora --help");
+        report_error("invalid command; use remora --help");
         return ExitCode::from(2);
     }
     let settings = match ValidatedConfig::load(Path::new(&args[2])) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{e}");
+            report_error(e);
             return ExitCode::from(2);
         }
     };
@@ -65,7 +73,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if (args[0] == "client") != matches!(settings.role(), RoleConfig::Client(_)) {
-        eprintln!("invalid configuration: command role mismatch");
+        report_error("invalid configuration: command role mismatch");
         return ExitCode::from(2);
     }
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -74,7 +82,7 @@ fn main() -> ExitCode {
     {
         Ok(r) => r,
         Err(_) => {
-            eprintln!("runtime initialization failed");
+            report_error("runtime initialization failed");
             return ExitCode::FAILURE;
         }
     };
@@ -86,8 +94,21 @@ fn main() -> ExitCode {
     runtime.shutdown_timeout(Duration::ZERO);
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // The bounded writer already failed to finish on this same stderr.
+        // A synchronous fallback write could hang shutdown indefinitely.
+        Err(remora::reactor::RuntimeError::DiagnosticCollectionIncomplete)
+            if settings.diagnostics().format == remora::config::LogFormat::Text =>
+        {
+            ExitCode::FAILURE
+        }
         Err(e) => {
-            eprintln!("{e}");
+            if settings.diagnostics().format == remora::config::LogFormat::Json {
+                // Legacy collectors match this fixed marker and typed identity,
+                // not localized/human prose. Never prefix it with journal framing.
+                eprintln!("runtime failed: {e:?}");
+            } else {
+                report_error(e);
+            }
             ExitCode::FAILURE
         }
     }

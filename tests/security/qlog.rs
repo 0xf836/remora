@@ -16,6 +16,45 @@ fn directory(f: &Fixtures) -> std::path::PathBuf {
     p
 }
 #[test]
+fn operator_qlog_saturation_leaves_space_for_important_human_output() {
+    use remora::{
+        config::{Level, LogFormat},
+        diagnostics::{Event, EventName},
+    };
+    let f = Fixtures::new();
+    let path = directory(&f);
+    let now = Instant::now();
+    let (mut d, receiver) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+    d.set_output(LogFormat::Text, false);
+    let pool = Pool::new(&path, d.queue().clone(), now).unwrap();
+    let mut filter = pool.activate().unwrap();
+    filter.ingest(HEADER, now);
+    for _ in 0..800 {
+        filter.ingest(EVENT, now);
+    }
+    assert!(
+        filter.disabled(),
+        "queue capacity must stop optional tracing"
+    );
+    assert!(pool.report().accepted_events > 0);
+    assert!(d.queue().retained_records() <= 752);
+    assert!(
+        d.event(
+            now,
+            Event::lifecycle(EventName::ConnectionLost, Level::Warn)
+        )
+        .unwrap()
+    );
+    let mut err = Vec::new();
+    while receiver.write_one(&mut io::sink(), &mut err).unwrap() {}
+    assert!(
+        String::from_utf8(err)
+            .unwrap()
+            .contains("Connection to the server lost")
+    );
+    assert_eq!(d.queue().retained_bytes(), 0);
+}
+#[test]
 fn every_partial_boundary_reconstructs_only_permitted_fields_before_disk() {
     let f = Fixtures::new();
     let path = directory(&f);
