@@ -9,6 +9,43 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def machine_diagnostics(text, level="info", interval=1000, extra=""):
+    """Pin the collector schema, never inherit operator logging defaults."""
+    base = text.replace('[diagnostics]\nformat = "json"\nsnapshots = true\n', '')
+    return base + (f'\n[diagnostics]\nformat = "json"\nsnapshots = true\n'
+                   f'level = "{level}"\nsnapshot_interval_ms = {interval}\n' + extra)
+
+
+def last_snapshot(path, allow_incomplete=False):
+    """Missing/wrong-format status is invalid evidence, never zero metrics."""
+    records = []
+    for line in path.read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            if allow_incomplete:
+                continue
+            raise RuntimeError("collector expected schema-1 JSON snapshots") from None
+        if (not isinstance(record, dict) or record.get("schema_version") != 1
+                or record.get("event") != "snapshot"
+                or not isinstance(record.get("counters"), dict)
+                or not isinstance(record.get("failures"), list)
+                or any(type(record.get(key)) is not int for key in
+                       ["coverage_lost", "status_write_failures", "diagnostics_dropped"])
+                or type(record.get("counter_overflow")) is not bool):
+            raise RuntimeError("collector received an invalid or incomplete snapshot schema")
+        records.append(record)
+    if not records and not allow_incomplete:
+        raise RuntimeError("collector received no diagnostic snapshots; check the JSON profile")
+    return records[-1] if records else {}
+
+
+def runtime_failures(path):
+    """Legacy executable markers, not English operator-message parsing."""
+    return [line.removeprefix("runtime failed: ") for line in path.read_text().splitlines()
+            if line.startswith("runtime failed: ")]
+
+
 def install_termination_handler():
     """Let existing finally blocks reap owned groups on timed/caller stops."""
     def interrupted(signum, frame):
@@ -362,8 +399,8 @@ def main():
                                     qlog.mkdir(mode=0o700)
                                     extra = f'qlog_directory = "{qlog.resolve()}"\n'
                                 level = "info" if profile["diagnostics"] == "filtered-qlog" else profile["diagnostics"]
-                                with (f / f"{role}.toml").open("a") as config:
-                                    config.write(f'\n[diagnostics]\nlevel = "{level}"\nsnapshot_interval_ms = 1000\n' + extra)
+                                config = f / f"{role}.toml"
+                                config.write_text(machine_diagnostics(config.read_text(), level, extra=extra))
                         ports = json.loads((f / "ports.json").read_text())
                         address = lambda key: f"127.0.0.1:{ports[key]}"
                         if mode == "tunnel":
@@ -636,7 +673,10 @@ def main():
                                 try: records.append(json.loads(line))
                                 except json.JSONDecodeError:
                                     if not profile.get("blocked_sink"): raise
-                            diagnostic_last[role] = records[-1] if records else {}
+                            diagnostic_last[role] = (
+                                last_snapshot(run / f"{role}.stdout.ndjson", profile.get("blocked_sink", False))
+                                if mode == "tunnel" else (records[-1] if records else {})
+                            )
                             if profile.get("blocked_sink"):
                                 diagnostic_last[role]["collection_incomplete"] = True
                         qlog_files = {role: [p.stat().st_size for p in (run / f"{role}-qlog").glob("*.ndjson")] for role in ["client", "server"]}
@@ -684,9 +724,7 @@ def main():
                             "diagnostic_last": diagnostic_last,
                             "role_exit_codes": exits,
                             "role_runtime_failures": {
-                                role: [line.removeprefix("runtime failed: ") for line in
-                                    (run / f"{role}.stderr.ndjson").read_text().splitlines()
-                                    if line.startswith("runtime failed: ")]
+                                role: runtime_failures(run / f"{role}.stderr.ndjson")
                                 for role in ["client", "server"]
                             },
                             "stop_seconds": stops,

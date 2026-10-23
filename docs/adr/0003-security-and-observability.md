@@ -31,3 +31,9 @@ Permanent client rejection is one fixed-size admission latch per immutable liste
 A stolen token grants its allowed destinations until revocation; TLS and protected files are mandatory. Credential provisioning/permission errors fail closed. The native dependency graph and unsafe socket code require review; no current audit is inferred from a version pin. Apply quiche patched resource-limit releases, cap stream/header/windows and drain path events. Negative tests monitor forbidden targets for zero traffic, not just HTTP status. CI/release audit actual Rust/Go locks and preserve unresolved risks explicitly.
 
 Evidence: [security/diagnostic research](../../specs/001-masque-udp-tunnel/research.md), [config contract](../../specs/001-masque-udp-tunnel/contracts/cli-config.md), [diagnostics contract](../../specs/001-masque-udp-tunnel/contracts/diagnostics.md), [TLS configuration](https://docs.rs/quiche/0.30.0/quiche/struct.Config.html), [Bearer security](https://www.rfc-editor.org/rfc/rfc6750.html).
+
+
+Operator-output amendment: [ADR 0032](0032-operator-log-output.md) makes bounded
+full correlation an explicitly selected JSON diagnostic profile. Default human
+logs are not a complete per-request audit. This changes default output policy,
+not authentication, authorization, privacy or JSON collection guarantees above.

@@ -2,7 +2,7 @@
 use crate::{
     buffers::{Budget, Direction, Generations, Pools, ResourceBudgets, SessionQueue},
     config::{RoleConfig, ValidatedConfig},
-    diagnostics::{Diagnostics, Event, Failure, Role, Snapshot},
+    diagnostics::{Diagnostics, Event, EventName, Failure, Role, Snapshot},
     masque::{self, CapsuleParser, Response, WireError},
     policy::{self, PolicyError, SetupKey, SystemResolver},
     session::{
@@ -94,12 +94,14 @@ impl OwnedConnection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeError {
     Bind,
+    BindErrno(i32),
     Socket,
     SocketErrno(i32),
     Transport,
     TransportCode(u64),
     Capability,
     Trust,
+    TunnelRejected(u16),
     Resource,
     Diagnostics,
     DiagnosticCollectionIncomplete,
@@ -107,7 +109,76 @@ pub enum RuntimeError {
 }
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "runtime failed: {self:?}")
+        match self {
+            Self::Bind | Self::BindErrno(_) => {
+                write!(f, "Cannot bind the configured UDP listener: ")?;
+                match self {
+                    Self::BindErrno(98) => write!(
+                        f,
+                        "address already in use (EADDRINUSE, 98). Check other listeners."
+                    ),
+                    Self::BindErrno(13) => write!(
+                        f,
+                        "permission denied (EACCES, 13). Check service permissions and CAP_NET_BIND_SERVICE."
+                    ),
+                    Self::BindErrno(99) => write!(
+                        f,
+                        "address not available (EADDRNOTAVAIL, 99). Check the listener address and host interfaces."
+                    ),
+                    Self::BindErrno(code) => write!(
+                        f,
+                        "socket error (errno {code}). Check listener configuration."
+                    ),
+                    _ => write!(f, "invalid listener configuration."),
+                }
+            }
+            Self::Trust => write!(
+                f,
+                "Cannot establish a trusted TLS connection. Check server identity, certificate chain, CA file and system clock. Exiting."
+            ),
+            Self::TunnelRejected(code) => write!(
+                f,
+                "Cannot open UDP tunnel: server rejected the request (HTTP {code}). {} Exiting.",
+                match code {
+                    401 => "Check the client token and server credentials.",
+                    403 => "Check the server destination allowlist.",
+                    404 => "Check the proxy origin and MASQUE path.",
+                    501 => "Check peer CONNECT-UDP capability support.",
+                    _ => "Check request and server configuration.",
+                }
+            ),
+            Self::Capability => write!(
+                f,
+                "Peer does not support the required CONNECT-UDP capabilities. Exiting."
+            ),
+            Self::SocketErrno(code) => {
+                write!(f, "UDP socket operation failed (errno {code}). Exiting.")
+            }
+            Self::Socket => write!(
+                f,
+                "Cannot initialize or service a UDP socket. Check host resources and socket support. Exiting."
+            ),
+            Self::Resource => write!(
+                f,
+                "Cannot reserve the required process resources. Check configured limits and host resources. Exiting."
+            ),
+            Self::DiagnosticCollectionIncomplete => write!(
+                f,
+                "Diagnostic output could not be completely written before shutdown. Check collector availability; diagnostic coverage is incomplete."
+            ),
+            Self::Diagnostics => write!(
+                f,
+                "Cannot initialize diagnostic output. Check host resources. Exiting."
+            ),
+            Self::Signal => write!(f, "Cannot register shutdown signal handlers. Exiting."),
+            Self::TransportCode(code) => {
+                write!(f, "QUIC or HTTP/3 operation failed (code {code}). Exiting.")
+            }
+            Self::Transport => write!(
+                f,
+                "Cannot initialize or continue the QUIC/HTTP/3 transport. Exiting."
+            ),
+        }
     }
 }
 impl std::error::Error for RuntimeError {}
@@ -115,6 +186,11 @@ impl std::error::Error for RuntimeError {}
 enum OutputError {
     Transport(TransportError),
     Socket(RuntimeError),
+}
+#[derive(Clone, Copy)]
+enum ReconnectCause {
+    Failure,
+    Draining,
 }
 struct SourceBucket {
     last: Instant,
@@ -154,6 +230,9 @@ struct Runner<'a> {
     qlog: Option<crate::diagnostics::qlog::Pool>,
     stopping: bool,
     ever_active: bool,
+    outage_announced: bool,
+    setup_unavailable: bool,
+    transport_announced: bool,
     primary: Option<u64>,
     reconnect: RetrySchedule,
     setup_retry: RetrySchedule,
@@ -250,7 +329,9 @@ impl<'a> Runner<'a> {
                 for bind in &s.listen {
                     outer.push(
                         PollSocket::register(
-                            Udp::bind(*bind, cfg.io(), false).map_err(|_| RuntimeError::Bind)?,
+                            Udp::bind(*bind, cfg.io(), false).map_err(|e| {
+                                RuntimeError::BindErrno(e.raw_os_error().unwrap_or(0))
+                            })?,
                         )
                         .map_err(|_| RuntimeError::Socket)?,
                     );
@@ -259,7 +340,8 @@ impl<'a> Runner<'a> {
             RoleConfig::Client(c) => {
                 listener = Some(
                     PollSocket::register(
-                        Udp::bind(c.listen, cfg.io(), true).map_err(|_| RuntimeError::Bind)?,
+                        Udp::bind(c.listen, cfg.io(), true)
+                            .map_err(|e| RuntimeError::BindErrno(e.raw_os_error().unwrap_or(0)))?,
                     )
                     .map_err(|_| RuntimeError::Socket)?,
                 );
@@ -312,6 +394,9 @@ impl<'a> Runner<'a> {
             qlog,
             stopping: false,
             ever_active: false,
+            outage_announced: false,
+            setup_unavailable: false,
+            transport_announced: false,
             primary: None,
             reconnect: RetrySchedule::new(
                 cfg.recovery().retry_initial_ms,
@@ -358,6 +443,10 @@ impl<'a> Runner<'a> {
         resource(runner.sessions.try_reserve(cfg.limits().max_sessions))?;
         resource(runner.senders.try_reserve(cfg.limits().max_sessions))?;
         resource(runner.pending.try_reserve(cfg.limits().max_pending_setup))?;
+        runner.diagnostics.operator_event(
+            now,
+            Event::lifecycle(EventName::ProcessStarted, crate::config::Level::Info),
+        );
         if !runner.server {
             resource(runner.outer.try_reserve(cfg.limits().max_connections))?;
             runner.client_state(ClientState::Starting, now)?;
@@ -366,7 +455,7 @@ impl<'a> Runner<'a> {
                 if error == RuntimeError::Diagnostics {
                     return Err(error);
                 }
-                runner.schedule_reconnect(now)?;
+                runner.schedule_reconnect(now, ReconnectCause::Failure)?;
             }
         }
         Ok(runner)
@@ -404,6 +493,16 @@ impl<'a> Runner<'a> {
         event.event = name;
         event.failure = None;
         event.numeric_code = None;
+        if self.diagnostics.is_operator() {
+            event.level = crate::config::Level::Debug;
+            if state == ClientState::Active && !self.transport_announced {
+                self.transport_announced = true;
+                self.diagnostics.operator_event(
+                    now,
+                    Event::lifecycle(EventName::TransportReady, crate::config::Level::Info),
+                );
+            }
+        }
         let _ = self.diagnostics.event(now, event);
         Ok(())
     }
@@ -421,13 +520,55 @@ impl<'a> Runner<'a> {
         }
         Err(RuntimeError::Resource)
     }
-    fn schedule_reconnect(&mut self, now: Instant) -> Result<(), RuntimeError> {
+    fn announce_connection_failure(&mut self, now: Instant, lost: bool) {
+        if self.server || self.stopping || !self.latch.may_setup() || self.outage_announced {
+            return;
+        }
+        self.outage_announced = true;
+        self.diagnostics.operator_event(
+            now,
+            Event::lifecycle(
+                if lost {
+                    EventName::ConnectionLost
+                } else {
+                    EventName::ConnectionUnavailable
+                },
+                crate::config::Level::Warn,
+            ),
+        );
+    }
+    fn announce_setup_failure(&mut self, now: Instant, reason: Failure, code: u64) {
+        if self.server
+            || self.stopping
+            || !self.latch.may_setup()
+            || self.setup_unavailable
+            || self.outage_announced
+        {
+            return;
+        }
+        self.setup_unavailable = true;
+        let mut event = Event::failure(crate::config::Level::Warn, reason, code);
+        event.event = if self.ever_active {
+            EventName::NewTunnelSetupUnavailable
+        } else {
+            EventName::TunnelSetupUnavailable
+        };
+        self.diagnostics.operator_event(now, event);
+    }
+    fn schedule_reconnect(
+        &mut self,
+        now: Instant,
+        cause: ReconnectCause,
+    ) -> Result<(), RuntimeError> {
         if self.server || self.stopping || !self.latch.may_setup() {
             return Ok(());
         }
         if self.reconnect.deadline().is_none() {
             let jitter = Self::jitter(self.reconnect.jitter_ceiling_ms())?;
             self.reconnect.schedule(now, jitter);
+        }
+        if matches!(cause, ReconnectCause::Failure) {
+            self.announce_connection_failure(now, false);
         }
         self.client_state(ClientState::Recovering, now)
     }
@@ -475,7 +616,7 @@ impl<'a> Runner<'a> {
                         return Err(error);
                     }
                     self.failure(Failure::Socket, 0, None, None);
-                    self.schedule_reconnect(now)?;
+                    self.schedule_reconnect(now, ReconnectCause::Failure)?;
                 }
             }
             Err(error) => {
@@ -489,7 +630,7 @@ impl<'a> Runner<'a> {
                     None,
                     None,
                 );
-                self.schedule_reconnect(now)?;
+                self.schedule_reconnect(now, ReconnectCause::Failure)?;
             }
         }
         Ok(())
@@ -601,7 +742,7 @@ impl<'a> Runner<'a> {
                     return Err(error);
                 }
                 self.failure(Failure::Socket, 0, None, None);
-                self.schedule_reconnect(now)?;
+                self.schedule_reconnect(now, ReconnectCause::Failure)?;
             }
             return Ok(true);
         }
@@ -613,6 +754,11 @@ impl<'a> Runner<'a> {
         reason: Failure,
         code: u64,
     ) -> Result<(), RuntimeError> {
+        if self.latch.may_setup() && self.ever_active {
+            let mut event = Event::failure(crate::config::Level::Error, reason, code);
+            event.event = EventName::NewTunnelsBlocked;
+            self.diagnostics.operator_event(now, event);
+        }
         self.latch.reject();
         self.proxy_lookup = None;
         self.proxy_candidates.clear();
@@ -641,6 +787,20 @@ impl<'a> Runner<'a> {
         self.client_state(ClientState::Rejected, now)
     }
     fn remove_connection(&mut self, id: u64, now: Instant) -> Result<(), RuntimeError> {
+        // A draining, non-primary connection can still carry accepted streams.
+        // Losing it is real loss even when its replacement is already ready.
+        if (self.primary == Some(id)
+            && self
+                .connections
+                .get(&id)
+                .is_some_and(|c| c.transport.h3.is_some()))
+            || self
+                .sessions
+                .values()
+                .any(|s| s.connection.0 == id && s.state == State::Active)
+        {
+            self.announce_connection_failure(now, true);
+        }
         let affected: Vec<_> = self
             .sessions
             .iter()
@@ -674,7 +834,7 @@ impl<'a> Runner<'a> {
         }
         if self.primary == Some(id) {
             self.primary = None;
-            self.schedule_reconnect(now)?;
+            self.schedule_reconnect(now, ReconnectCause::Failure)?;
         }
         Ok(())
     }
@@ -1561,6 +1721,24 @@ impl<'a> Runner<'a> {
                 Ok(Response::Accepted) => {
                     if let Some(s) = self.sessions.get_mut(&id) {
                         if s.state == State::AwaitingAcceptance {
+                            if !self.ever_active || self.outage_announced || self.setup_unavailable
+                            {
+                                self.diagnostics.operator_event(
+                                    now,
+                                    Event::lifecycle(
+                                        if self.ever_active && self.outage_announced {
+                                            EventName::TunnelRestored
+                                        } else if self.ever_active {
+                                            EventName::TunnelSetupRestored
+                                        } else {
+                                            EventName::TunnelAccepted
+                                        },
+                                        crate::config::Level::Info,
+                                    ),
+                                );
+                                self.outage_announced = false;
+                                self.setup_unavailable = false;
+                            }
                             self.ever_active = true;
                             self.setup_retry.reset();
                             s.state = State::Active;
@@ -1590,6 +1768,9 @@ impl<'a> Runner<'a> {
                         let jitter = Self::jitter(self.setup_retry.jitter_ceiling_ms())?;
                         self.setup_retry.schedule(now, jitter);
                     }
+                    if !permanent {
+                        self.announce_setup_failure(now, reason, u64::from(code));
+                    }
                     self.failure(
                         reason,
                         u64::from(code),
@@ -1603,7 +1784,7 @@ impl<'a> Runner<'a> {
                     }
                     self.close_session(id, 0x10b);
                     if permanent && !self.ever_active {
-                        return Err(RuntimeError::Transport);
+                        return Err(RuntimeError::TunnelRejected(code));
                     }
                 }
                 Err(_) => {
@@ -2319,7 +2500,7 @@ impl<'a> Runner<'a> {
                         }
                         if self.primary == Some(connection) {
                             self.primary = None;
-                            self.schedule_reconnect(now)?;
+                            self.schedule_reconnect(now, ReconnectCause::Draining)?;
                         }
                     }
                 }
@@ -3457,6 +3638,7 @@ impl<'a> Runner<'a> {
                 .get(&id)
                 .is_some_and(|s| s.state != State::Active)
             {
+                self.announce_setup_failure(now, Failure::SetupTimeout, 0);
                 self.failure(
                     Failure::SetupTimeout,
                     0,
@@ -3922,6 +4104,11 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
     )
     .map_err(|_| RuntimeError::Diagnostics)?;
     diagnostics.set_level(settings.diagnostics().level);
+    diagnostics.set_output(
+        settings.diagnostics().format,
+        settings.diagnostics().snapshots,
+    );
+    diagnostics.set_journal(crate::diagnostics::operator::is_journal(io::stderr()));
     let writer = receiver
         .spawn(io::stdout(), io::stderr())
         .map_err(|_| RuntimeError::Diagnostics)?;
@@ -3951,6 +4138,10 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
     runner.snapshot.sessions_active = 0;
     runner.snapshot.connections_active = 0;
     if runner.stop_started.is_some() {
+        runner.diagnostics.operator_event(
+            now,
+            Event::lifecycle(EventName::ProcessStopped, crate::config::Level::Info),
+        );
         // A routine stop is a fixed terminal status, independent of ordinary
         // event suppression/cadence. Publish released-resource state even when
         // stopped before the first periodic snapshot.
@@ -3972,6 +4163,63 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn operator_two_minutes_of_retry_transitions_emit_one_outage_and_one_permanent_refusal() {
+        use super::*;
+        use crate::{
+            common::Fixtures,
+            config::{Level, LogFormat},
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (mut diagnostics, receiver) =
+                Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+            diagnostics.set_output(LogFormat::Text, false);
+            diagnostics.set_level(Level::Info);
+            let mut runner = Runner::new(&cfg, &resolver, diagnostics).unwrap();
+            // Synthetic accepted-mapping state; no wall-clock outage wait.
+            runner.ever_active = true;
+            runner.announce_connection_failure(now, true);
+            for second in 1..=120 {
+                let at = now + Duration::from_secs(second);
+                runner.client_state(ClientState::Handshaking, at).unwrap();
+                runner
+                    .schedule_reconnect(at, ReconnectCause::Failure)
+                    .unwrap();
+            }
+            runner
+                .permanent_client_failure(
+                    now + Duration::from_secs(121),
+                    Failure::Authentication,
+                    401,
+                )
+                .unwrap();
+            runner
+                .permanent_client_failure(
+                    now + Duration::from_secs(122),
+                    Failure::Authentication,
+                    401,
+                )
+                .unwrap();
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            while receiver.write_one(&mut out, &mut err).unwrap() {}
+            let text = String::from_utf8(err).unwrap();
+            assert_eq!(text.matches("Connection to the server lost").count(), 1);
+            assert_eq!(text.matches("New tunnel setup is blocked").count(), 1);
+            assert!(text.contains("already accepted tunnels may continue"));
+            assert!(!text.contains("re-established") && !text.contains("attempts"));
+            assert!(out.is_empty());
+            assert_eq!(runner.diagnostics.pending_failures(), 0);
+        });
+    }
     #[test]
     fn timer_rearm_after_cached_readiness_wakes_without_network_input() {
         let runtime = tokio::runtime::Builder::new_current_thread()

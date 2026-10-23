@@ -195,3 +195,17 @@ reactor ownership, packet queues, pacing or the UDP syscall boundary. Public
 operator reference/TLS/WireGuard guides replace qualification-only setup gaps.
 Validate parser negatives, DNS lifecycle, certificate SAN failures, E2E forwarding,
 configuration rejection cases, independent interop and applicable performance comparison.
+
+
+## Operator logging amendment — 2026-10-23
+
+ADR 0032 selects human info/text/no-snapshot defaults and an explicitly selected
+legacy JSON/status profile for measurement and complete bounded correlation.
+Preserve schema-1 counters/ACK/final collection in machine mode; migrate fixtures
+and readers before default changes. Reuse Event, bounded OutputQueue and writer;
+add only a small typed-message renderer/journal adapter, process-local display
+flags, a size warn-once flag and bounded important-event admission. No incident
+engine, periodic reminders, per-peer map, file backend or rotation. Acceptance
+means confirmed CONNECT acceptance, not transport readiness. Update spec/contracts
+and tests together; native smoke proves parser/collector compatibility, not a new
+throughput baseline or performance qualification.

@@ -1,8 +1,12 @@
 //! Privacy-safe records and finite nonblocking handoff. There is deliberately
 //! no global tracing subscriber or arbitrary-string logging API. Terminal
-//! summaries use acknowledged batches; qlog persists only reconstructed metadata.
+//! summaries in the JSON profile use acknowledged batches; qlog persists only reconstructed metadata.
+pub mod operator;
 pub mod qlog;
-use crate::{buffers::Direction, config::Level};
+use crate::{
+    buffers::Direction,
+    config::{Level, LogFormat},
+};
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -26,6 +30,8 @@ pub const STORAGE_BYTES: usize = 512 * 1024;
 pub const TOTAL_BYTES: usize = OUTPUT_BYTES + FILTER_BYTES + STORAGE_BYTES;
 const EVENT_BYTES: usize = OUTPUT_BYTES - STATUS_BYTES;
 const EVENT_RECORDS: usize = OUTPUT_RECORDS - STATUS_RECORDS;
+const OPERATOR_RESERVED_RECORDS: usize = 16;
+const OPERATOR_RESERVED_BYTES: usize = OPERATOR_RESERVED_RECORDS * operator::MAX_LINE_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiagnosticError {
@@ -125,6 +131,17 @@ pub enum EventName {
     Stopped,
     Failure,
     OffloadState,
+    ProcessStarted,
+    ProcessStopped,
+    TransportReady,
+    TunnelAccepted,
+    TunnelRestored,
+    ConnectionLost,
+    ConnectionUnavailable,
+    NewTunnelsBlocked,
+    TunnelSetupUnavailable,
+    NewTunnelSetupUnavailable,
+    TunnelSetupRestored,
 }
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -201,6 +218,14 @@ pub struct Event {
     pub size: Option<SizeDetails>,
 }
 impl Event {
+    pub fn lifecycle(event: EventName, level: Level) -> Self {
+        Self {
+            event,
+            failure: None,
+            numeric_code: None,
+            ..Self::failure(level, Failure::Transport, 0)
+        }
+    }
     pub fn failure(level: Level, failure: Failure, numeric_code: u64) -> Self {
         Self {
             event: EventName::Failure,
@@ -584,6 +609,7 @@ impl EventBucket {
     }
 }
 struct Shared {
+    operator_reserve: AtomicBool,
     event_bytes: AtomicUsize,
     status_bytes: AtomicUsize,
     event_records: AtomicUsize,
@@ -649,6 +675,7 @@ pub struct OutputReceiver {
 impl OutputQueue {
     pub fn new() -> (Self, OutputReceiver) {
         let shared = Arc::new(Shared {
+            operator_reserve: AtomicBool::new(false),
             event_bytes: AtomicUsize::new(0),
             status_bytes: AtomicUsize::new(0),
             event_records: AtomicUsize::new(0),
@@ -685,6 +712,7 @@ impl OutputQueue {
             + self.shared.status_records.load(Ordering::Acquire)
     }
     // Private: accepting arbitrary JSON/text here would bypass the safe schema.
+    #[cfg(test)]
     fn enqueue<T: Serialize>(&self, status: bool, value: &T) -> Result<(), DiagnosticError> {
         let result = self.enqueue_inner(status, value, 0);
         if result.is_err() {
@@ -692,6 +720,7 @@ impl OutputQueue {
         }
         result
     }
+    #[cfg(test)]
     fn enqueue_inner<T: Serialize>(
         &self,
         status: bool,
@@ -707,17 +736,28 @@ impl OutputQueue {
         value: &T,
         acknowledgement: u64,
     ) -> Result<OutputRecord, DiagnosticError> {
+        self.prepare_with(status, acknowledgement, false, |out| {
+            serde_json::to_writer(out, value).map_err(|_| DiagnosticError::Format)
+        })
+    }
+    fn prepare_with(
+        &self,
+        status: bool,
+        acknowledgement: u64,
+        important: bool,
+        render: impl FnOnce(&mut dyn Write) -> Result<(), DiagnosticError>,
+    ) -> Result<OutputRecord, DiagnosticError> {
         // Fixed stack formatting is <=64 KiB. There is no unbounded to_string
         // intermediate. Metadata plus one writer record and future status
         // formatting consume the separate 512 KiB storage reservation.
         let mut scratch = [0u8; MAX_RECORD_BYTES];
         let mut cursor = io::Cursor::new(&mut scratch[..]);
-        serde_json::to_writer(&mut cursor, value).map_err(|_| DiagnosticError::Format)?;
+        render(&mut cursor)?;
         cursor
             .write_all(b"\n")
             .map_err(|_| DiagnosticError::Format)?;
         let length = cursor.position() as usize;
-        let (counter, cap, records, record_cap) = if status {
+        let (counter, mut cap, records, mut record_cap) = if status {
             (
                 &self.shared.status_bytes,
                 STATUS_BYTES,
@@ -732,6 +772,12 @@ impl OutputQueue {
                 EVENT_RECORDS,
             )
         };
+        // Enforce reserve centrally, including filtered_qlog's direct prepare
+        // path. Counts/bytes still share the original finite event budget.
+        if !status && !important && self.shared.operator_reserve.load(Ordering::Acquire) {
+            cap -= OPERATOR_RESERVED_BYTES;
+            record_cap -= OPERATOR_RESERVED_RECORDS;
+        }
         records
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 n.checked_add(1).filter(|next| *next <= record_cap)
@@ -926,6 +972,12 @@ pub struct Diagnostics {
     in_flight: Option<(u64, u64, u64)>,
     started: Instant,
     minimum_level: Level,
+    format: LogFormat,
+    snapshots: bool,
+    reported_health: (u64, u64, u64, bool),
+    important_bucket: EventBucket,
+    journal: bool,
+    size_warned: bool,
 }
 impl Diagnostics {
     pub fn new(
@@ -955,12 +1007,42 @@ impl Diagnostics {
                 in_flight: None,
                 started: now,
                 minimum_level: Level::Trace,
+                format: LogFormat::Json,
+                snapshots: true,
+                reported_health: (0, 0, 0, false),
+                important_bucket: EventBucket::new(now),
+                journal: false,
+                size_warned: false,
             },
             receiver,
         ))
     }
     pub fn set_level(&mut self, level: Level) {
         self.minimum_level = level;
+    }
+    /// Select operator text or the legacy diagnostic JSON/status profile.
+    /// Configure before emitting records; operator mode does not collect status.
+    pub fn set_output(&mut self, format: LogFormat, snapshots: bool) {
+        self.format = format;
+        self.snapshots = snapshots;
+        self.queue
+            .shared
+            .operator_reserve
+            .store(format == LogFormat::Text, Ordering::Release);
+    }
+    pub fn set_journal(&mut self, journal: bool) {
+        self.journal = journal;
+    }
+    pub fn is_operator(&self) -> bool {
+        self.format == LogFormat::Text
+    }
+    pub fn operator_event(&mut self, now: Instant, event: Event) {
+        if self.is_operator() {
+            // Owner callbacks may carry a cached visit timestamp older than a
+            // preceding notice. Never turn that into a silently lost transition;
+            // clamping admission does not alter any protocol/retry deadline.
+            let _ = self.event(now.max(self.important_bucket.last), event);
+        }
     }
     pub fn next_id(&mut self) -> Result<OpaqueId, DiagnosticError> {
         self.ids.next_id()
@@ -988,7 +1070,7 @@ impl Diagnostics {
             body,
         })
     }
-    pub fn event(&mut self, now: Instant, event: Event) -> Result<bool, DiagnosticError> {
+    pub fn event(&mut self, now: Instant, mut event: Event) -> Result<bool, DiagnosticError> {
         fn rank(level: Level) -> u8 {
             match level {
                 Level::Error => 0,
@@ -998,15 +1080,55 @@ impl Diagnostics {
                 Level::Trace => 4,
             }
         }
+        let first_size_warning = self.is_operator()
+            && event.event == EventName::Failure
+            && event.failure == Some(Failure::Size)
+            && !self.size_warned;
+        if self.is_operator() && event.event == EventName::Failure {
+            event.level = if first_size_warning {
+                Level::Warn
+            } else {
+                Level::Debug
+            };
+        }
         if rank(event.level) > rank(self.minimum_level) {
             return Ok(false);
         }
-        if !self.bucket.admit(now)? {
+        let important = self.is_operator() && rank(event.level) <= rank(Level::Info);
+        // Separate admission protects against DEBUG token exhaustion. Queue
+        // record/byte headroom is enforced centrally for DEBUG and qlog alike.
+        let bucket = if important {
+            &mut self.important_bucket
+        } else {
+            &mut self.bucket
+        };
+        if !bucket.admit(now)? {
             increment(&self.queue.shared.dropped, &self.queue.shared);
             return Ok(false);
         }
         let record = self.envelope(event)?;
-        self.queue.enqueue(false, &record)?;
+        let prepared = if self.is_operator() {
+            self.queue.prepare_with(false, 0, important, |out| {
+                operator::render(
+                    out,
+                    &record.timestamp,
+                    record.role,
+                    &record.body,
+                    self.journal,
+                )
+                .map_err(|_| DiagnosticError::Format)
+            })
+        } else {
+            self.queue.prepare(false, &record, 0)
+        };
+        let result = prepared.and_then(|record| self.queue.publish(record));
+        if result.is_err() {
+            increment(&self.queue.shared.dropped, &self.queue.shared);
+        }
+        result?;
+        if first_size_warning {
+            self.size_warned = true;
+        }
         Ok(true)
     }
     /// Independent of ordinary log admission. No arbitrary input is retained.
@@ -1019,6 +1141,9 @@ impl Diagnostics {
         code: u64,
         terminal: bool,
     ) -> Result<(), DiagnosticError> {
+        if self.is_operator() {
+            return Ok(());
+        }
         let counter = &mut self.failure_totals.counts[class as usize];
         *counter = counter.checked_add(1).ok_or(DiagnosticError::Arithmetic)?;
         self.failure_sequence = self
@@ -1156,6 +1281,9 @@ impl Diagnostics {
         counters: Snapshot,
         final_status: bool,
     ) -> Result<bool, DiagnosticError> {
+        if self.is_operator() {
+            return Ok(false);
+        }
         self.acknowledge();
         if self.in_flight.is_some() {
             return Ok(false);
@@ -1170,6 +1298,30 @@ impl Diagnostics {
             return Ok(false);
         }
         if final_status && self.failures.is_empty() {
+            return Ok(false);
+        }
+        let counter_overflow = self.queue.shared.overflow.load(Ordering::Relaxed)
+            || counters.recovery.counter_overflow
+            || counters.quic.overflow
+            || counters.qlog.overflow
+            || counters.profile.factory.overflowed
+            || counters.profile.io.overflowed
+            || counters.histograms.application_queue_age_us.overflow
+            || counters.histograms.ciphertext_age_us.overflow
+            || counters.histograms.pacing_lateness_us.overflow
+            || counters.histograms.emitted_burst_datagrams.overflow
+            || counters.histograms.recovery_duration_us.overflow;
+        let health = (
+            self.queue.dropped(),
+            self.queue.shared.write_failures.load(Ordering::Relaxed),
+            self.coverage_lost,
+            counter_overflow,
+        );
+        if !final_status
+            && !self.snapshots
+            && self.failures.is_empty()
+            && health == self.reported_health
+        {
             return Ok(false);
         }
         self.sequence = self
@@ -1189,17 +1341,7 @@ impl Diagnostics {
                 counters,
                 diagnostics_dropped: self.queue.dropped(),
                 status_write_failures: self.queue.shared.write_failures.load(Ordering::Relaxed),
-                counter_overflow: self.queue.shared.overflow.load(Ordering::Relaxed)
-                    || counters.recovery.counter_overflow
-                    || counters.quic.overflow
-                    || counters.qlog.overflow
-                    || counters.profile.factory.overflowed
-                    || counters.profile.io.overflowed
-                    || counters.histograms.application_queue_age_us.overflow
-                    || counters.histograms.ciphertext_age_us.overflow
-                    || counters.histograms.pacing_lateness_us.overflow
-                    || counters.histograms.emitted_burst_datagrams.overflow
-                    || counters.histograms.recovery_duration_us.overflow,
+                counter_overflow,
                 failures: &entries[begin..end],
                 failure_totals: self.failure_totals,
                 chunk_index: index,
@@ -1239,6 +1381,7 @@ impl Diagnostics {
             }
         }
         self.last_snapshot = Some(now);
+        self.reported_health = health;
         Ok(true)
     }
 }
@@ -1246,6 +1389,31 @@ impl Diagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operator_byte_reserve_is_enforced_below_qlog_and_debug_admission() {
+        let now = Instant::now();
+        let (mut d, receiver) =
+            Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+        d.set_output(LogFormat::Text, false);
+        let chunk = "x".repeat(60000);
+        while d.queue.enqueue(false, &chunk).is_ok() {}
+        assert!(d.queue.retained_bytes() <= EVENT_BYTES - OPERATOR_RESERVED_BYTES);
+        assert!(
+            d.event(
+                now,
+                Event::lifecycle(EventName::ConnectionLost, Level::Warn)
+            )
+            .unwrap()
+        );
+        let mut err = Vec::new();
+        while receiver.write_one(&mut io::sink(), &mut err).unwrap() {}
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("Connection to the server lost")
+        );
+        assert_eq!(d.queue.retained_bytes(), 0);
+    }
     #[test]
     fn tiny_records_exhaust_counts_with_status_reservation_and_inflight_ownership() {
         let (queue, receiver) = OutputQueue::new();

@@ -8,3 +8,9 @@ proxy = "https://remora.example.com"
 target = "127.0.0.1:51820"
 ca_file = "ca.pem"
 token_file = "client.token"
+
+# Quiet, readable service logs. Use format="json", snapshots=true for metrics.
+[diagnostics]
+level = "info"
+format = "text"
+snapshots = false

@@ -271,6 +271,97 @@ reported separately from process RSS, and larger buffers do not guarantee WAN
 loss tolerance or tail latency. Application/native/ciphertext count and residence
 limits are unchanged; kernel waiting precedes the application residence clock.
 
+## Logging and systemd journal
+
+The default **operator profile** writes readable single-line messages to stderr.
+Stdout is empty during normal client/server operation. It reports startup,
+transport readiness, tunnel acceptance, connection loss, accepted recovery and
+shutdown. Healthy steady state is silent: no retry reminders, attempt totals,
+periodic metrics or JSON failure arrays. Graceful GOAWAY replacement/retirement is not an outage. Temporary client
+CONNECT refusal or setup timeout is reported once, even with live transport.
+A later accepted request reports renewed setup without claiming other accepted
+flows had failed. A transport handshake alone does not
+announce a restored UDP tunnel, and acceptance does not prove destination response.
+
+```toml
+[diagnostics]
+level = "info"
+format = "text"
+snapshots = false
+```
+
+These are also the defaults when the table is omitted. `warn` hides routine
+startup/acceptance/recovery/stop notices; `error` hides warnings too. Final CLI
+configuration/runtime errors are always reported. `RUST_LOG` is not used.
+Settings are startup-only: validate with `check-config`, then restart the unit.
+
+| Level | Operator output |
+|---|---|
+| error | Permanent client refusal affecting new setup after prior acceptance; startup/final failures explain whether the process exits |
+| warn | One connection-unavailable/lost or client setup-failure notice until acceptance; first observed datagram-size failure per process |
+| info | Startup/listener readiness, first secure transport, first accepted tunnel, accepted recovery, orderly resource cleanup |
+| debug | Individual retries/state transitions, safe refusal/socket/resource/size details and short process-local correlation IDs |
+| trace | Includes debug; currently no additional raw transport stream |
+
+Repeated size warnings are shown once per process, not once per client or
+interval; later details require debug/diagnostic collection. Public-server
+request refusals and packet/resource faults do not generate per-packet WARN.
+Ordinary operator messages are not a complete per-session audit. No correlation
+ring is collected in text mode and it cannot establish SC-010 completeness.
+
+systemd receives real syslog priorities when `JOURNAL_STREAM` matches the actual
+stderr descriptor. The application omits its duplicate timestamp in that case;
+`journalctl` supplies unit/time/process context and its own coloring. For example:
+
+```sh
+journalctl -u remora-server.service -n 50
+journalctl -u remora-server.service -p warning
+```
+
+No ANSI escapes are emitted. Without a matching journal stream, output has a UTC
+timestamp and severity. Human lines are <=1024 bytes. They share the existing
+bounded nonblocking writer. DEBUG has a separate admission bucket and leaves
+16 record slots and 16 KiB for operational messages, including against qlog; each bucket permits 20/s, burst 40.
+Rapid flapping can still hit these finite limits. Blocked/broken output cannot
+guarantee delivery; shutdown retains a bounded writer wait. No incident history,
+per-peer suppression map, reminders, file backend or rotation is added.
+
+### Machine diagnostics and upgrade migration
+
+Existing collectors/benchmarks must explicitly select the **legacy diagnostic
+profile**, including periodic snapshots when their measurements need them:
+
+```toml
+[diagnostics]
+level = "info"
+format = "json"
+snapshots = true
+snapshot_interval_ms = 1000
+```
+
+It preserves schema-1 NDJSON events on stderr, full status/metrics on stdout,
+mandatory correlated failures independently of ordinary `level`, bounded ring,
+coverage counters, ACK/retry and final shutdown collection. `snapshots=false`
+in JSON disables healthy periodic dumps, not pending failure status. An interval
+>=1000 ms applies to JSON status, not operator state-transition messages.
+Text plus `snapshots=true` is rejected, not silently ignored.
+Runtime failures retain the fixed machine marker `runtime failed: <typed error>`
+on stderr in JSON mode; collectors do not parse human descriptions.
+
+**Compatibility change:** omitted fields now select text/no snapshots. Before
+upgrading automated consumers, pin `format="json"` and `snapshots=true`; do not
+parse human messages. The repository's generated test fixtures and measurement
+runners pin the machine contract. Missing/invalid snapshots invalidate normal
+benchmark collection instead of producing empty metrics. Historic results retain
+their original binaries/profiles; parser compatibility is not a new performance
+qualification.
+
+Profiles are alternatives, not simultaneous outputs. For diagnostic capture,
+redirect both JSON streams to an explicitly managed collector. systemd collects
+both streams into the same journal if used unchanged; selecting JSON in the unit
+will therefore restore verbose status output. Configure collector retention
+externally. Remora does not create diagnostic files or manage journal retention.
+
 ## Optional filtered qlog
 
 Build `cargo build --locked --release --features qlog` and supply a **fresh empty,
@@ -283,6 +374,8 @@ and manage archived retention yourself. Parent paths and the host are trusted.
 ```toml
 [diagnostics]
 level = "info"
+format = "json"
+snapshots = true
 snapshot_interval_ms = 1000
 qlog_directory = "qlog-this-start"
 ```

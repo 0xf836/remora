@@ -249,7 +249,9 @@ checked before startup. Timeouts must be positive and representable.
 | recovery.setup_timeout_ms | No | 5000 | Bounded proxy DNS, handshake and request setup |
 | recovery.retry_initial_ms / retry_max_ms | No | 100 / 2000 | Validate 100 <= initial <= max <=2000; scheduling floor plus uniform capped exponential jitter, total delay <=max; <=10 attempts/s/process, one handshake in flight |
 | diagnostics.level | No | info | error/warn/info/debug/trace; same redaction at every level |
-| diagnostics.snapshot_interval_ms | No | 1000 | Minimum 1000; bounded stdout NDJSON snapshots |
+| diagnostics.format | No | text | text: human operator profile; json: legacy structured diagnostics |
+| diagnostics.snapshots | No | false | JSON only: true enables periodic metrics; false retains mandatory failure status in JSON. Text has no status stream |
+| diagnostics.snapshot_interval_ms | No | 1000 | Minimum 1000; JSON status cadence; operator lifecycle events do not wait for this interval |
 | diagnostics.qlog_directory | No | absent | Disabled by default; qlog build feature plus fresh empty owner-0700 directory; filtered NDJSON only, never raw H3 |
 
 

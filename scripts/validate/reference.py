@@ -14,7 +14,7 @@ import re
 import subprocess
 import tempfile
 import time
-from benchmark import ROOT, Owned, resource, sha, wait_udp_bound, write
+from benchmark import ROOT, Owned, resource, sha, wait_udp_bound, write, last_snapshot, machine_diagnostics
 from quiche_inputs import input_hashes
 
 
@@ -332,7 +332,7 @@ def _run_once(
                         f'connect_address = "{proxy}"',
                     )
                 text += f'\n[io]\nmode = "{profile["io"]}"\nbatch_max = {profile["batch_max"]}\n\n[transport]\ncc = "{profile["cc"]}"\n\n[limits]\nmax_sessions = 32\nmax_sessions_per_identity = 32\nmax_sessions_per_connection = 32\n'
-                path.write_text(text)
+                path.write_text(machine_diagnostics(text))
             tool = str(ROOT / "tools/traffic/target/release/remora-traffic")
             binary_path = Path(remora_binary).resolve() if remora_binary is not None else ROOT / "target/release/remora"
             binary = str(binary_path)
@@ -487,9 +487,9 @@ def _run_once(
                 for name in roles
             }
             diagnostics = {
-                role: json.loads(
+                role: (last_snapshot(out / f"{role}.stdout.ndjson") if mode == "tunnel" else json.loads(
                     (out / f"{role}.stdout.ndjson").read_text().strip().splitlines()[-1]
-                )
+                ))
                 for role in ["server", "client"]
             }
 

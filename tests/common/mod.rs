@@ -81,12 +81,19 @@ impl ChildGuard {
         })
     }
     pub fn spawn_logged(command: &mut Command, stdout: &Path, stderr: &Path) -> io::Result<Self> {
+        Self::spawn_with_io(
+            command,
+            fs::File::create(stdout)?.into(),
+            fs::File::create(stderr)?.into(),
+        )
+    }
+    pub fn spawn_with_io(command: &mut Command, stdout: Stdio, stderr: Stdio) -> io::Result<Self> {
         use std::os::unix::process::CommandExt;
         let child = command
             .process_group(0)
             .stdin(Stdio::null())
-            .stdout(fs::File::create(stdout)?)
-            .stderr(fs::File::create(stderr)?)
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()?;
         Ok(Self {
             child,
@@ -175,6 +182,12 @@ pub struct Fixtures {
     owned_root: PathBuf,
 }
 impl Fixtures {
+    /// Remove only the generated machine profile when a case tests another one.
+    pub fn without_diagnostics(&self, file: &str) -> String {
+        fs::read_to_string(self.file(file))
+            .unwrap()
+            .replace("[diagnostics]\nformat = \"json\"\nsnapshots = true\n", "")
+    }
     pub fn new() -> Self {
         let mut random = [0; 16];
         getrandom::fill(&mut random).unwrap();

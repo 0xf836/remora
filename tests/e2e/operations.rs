@@ -53,7 +53,20 @@ fn occupied_port_is_runtime_failure_after_successful_candidate_validation() {
         .output()
         .unwrap();
     assert_eq!(result.status.code(), Some(1));
-    assert!(String::from_utf8(result.stderr).unwrap().contains("Bind"));
+    assert!(
+        String::from_utf8(result.stderr)
+            .unwrap()
+            .contains("runtime failed: BindErrno(98)")
+    );
+    fs::write(f.file("client.toml"), f.without_diagnostics("client.toml")).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_remora"))
+        .args(["client", "--config"])
+        .arg(f.file("client.toml"))
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    let human = String::from_utf8(result.stderr).unwrap();
+    assert!(human.contains("ERROR") && human.contains("address already in use"));
 }
 fn restart(t: &mut Tunnel, delayed_server: bool) {
     for role in ["server", "client"] {

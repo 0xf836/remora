@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
-from benchmark import ROOT, Owned, sha, wait_udp_bound
+from benchmark import ROOT, Owned, sha, wait_udp_bound, machine_diagnostics
 
 
 def snapshots(path):
@@ -77,7 +77,7 @@ def case(binary, output, name):
         for role in ["client", "server"]:
             p = fixture / f"{role}.toml"
             # All failures before cadence must survive through terminal cleanup.
-            p.write_text(p.read_text() + '\n[diagnostics]\nlevel = "error"\nsnapshot_interval_ms = 10000\n')
+            p.write_text(machine_diagnostics(p.read_text(), "error", 10000))
             checked = subprocess.run([str(binary), "check-config", "--config", str(p)], capture_output=True, timeout=5)
             if checked.returncode:
                 raise RuntimeError("private candidate check-config failed")

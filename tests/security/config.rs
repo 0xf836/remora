@@ -14,6 +14,42 @@ fn invalid(f: &Fixtures, file: &str) -> remora::config::ConfigError {
         .expect("configuration must fail closed")
 }
 
+#[test]
+fn logging_controls_validate_without_echoing_invalid_values() {
+    use remora::config::{Level, LogFormat};
+    let f = Fixtures::new();
+    let path = f.file("client.toml");
+    let base = f.without_diagnostics("client.toml");
+    fs::write(&path, &base).unwrap();
+    let defaults = ValidatedConfig::load(&path).unwrap();
+    assert_eq!(defaults.diagnostics().format, LogFormat::Text);
+    assert!(!defaults.diagnostics().snapshots);
+    fs::write(
+        &path,
+        format!("{base}\n[diagnostics]\nlevel='warn'\nformat='text'\nsnapshots=false\n"),
+    )
+    .unwrap();
+    let quiet = ValidatedConfig::load(&path).unwrap();
+    assert_eq!(quiet.diagnostics().format, LogFormat::Text);
+    assert_eq!(quiet.diagnostics().level, Level::Warn);
+    assert!(!quiet.diagnostics().snapshots);
+    fs::write(&path, format!("{base}\n[diagnostics]\nsnapshots=true\n")).unwrap();
+    assert_eq!(invalid(&f, "client.toml").field(), "diagnostics.snapshots");
+    for (setting, field) in [
+        ("format='PRIVATE_INVALID_SENTINEL'", "diagnostics.format"),
+        (
+            "snapshots='PRIVATE_INVALID_SENTINEL'",
+            "diagnostics.snapshots",
+        ),
+        ("level='PRIVATE_INVALID_SENTINEL'", "diagnostics.level"),
+    ] {
+        fs::write(&path, format!("{base}\n[diagnostics]\n{setting}\n")).unwrap();
+        let error = invalid(&f, "client.toml");
+        assert_eq!(error.field(), field);
+        assert!(!error.to_string().contains("PRIVATE_INVALID_SENTINEL"));
+    }
+}
+
 fn set_access_acl(path: &std::path::Path, users: &[(u32, u16)], group: u16, mask: u16, other: u16) {
     set_access_acl_with_groups(path, users, &[], group, mask, other);
 }
@@ -788,7 +824,7 @@ fn prohibited_target_addresses_report_the_public_field_without_echoing_values() 
         assert!(output.stdout.is_empty());
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),
-            format!("{message}\n")
+            format!("ERROR {message}\n")
         );
     }
 }

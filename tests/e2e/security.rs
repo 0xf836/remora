@@ -101,10 +101,14 @@ fn healthy_collector_gets_terminal_failure_on_shutdown_before_long_snapshot_cade
     let mut t = Tunnel::start(false, |f| {
         fs::write(f.file("client.token"), "0".repeat(64)).unwrap();
         for file in ["client.toml", "server.toml"] {
-            let mut text = fs::read_to_string(f.file(file)).unwrap();
+            let mut text = if file == "server.toml" {
+                f.without_diagnostics(file)
+            } else {
+                fs::read_to_string(f.file(file)).unwrap()
+            };
             text.push_str("\n[transport]\nidle_timeout_ms = 30000\n");
             if file == "server.toml" {
-                text.push_str("\n[diagnostics]\nlevel = \"error\"\nsnapshot_interval_ms = 10000\n");
+                text.push_str("\n[diagnostics]\nformat = \"json\"\nsnapshots = true\nlevel = \"error\"\nsnapshot_interval_ms = 10000\n");
             }
             fs::write(f.file(file), text).unwrap();
         }

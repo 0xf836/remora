@@ -58,7 +58,11 @@ host = "{host}"
 port = {target_port}
 addresses = ["{host}/{prefix}"]
 ''')
+    # Test/measurement consumers require the full legacy NDJSON contract,
+    # independently of the application's operator-oriented defaults.
+    diagnostics = '[diagnostics]\nformat = "json"\nsnapshots = true\n'
     (root / "client.toml").write_text(f'''schema_version = 1
+{diagnostics}
 [client]
 listen = "{bracketed}:{client_port}"
 allow_non_loopback = false
@@ -69,6 +73,7 @@ token_file = "client.token"
 target = "{bracketed}:{target_port}"
 ''')
     (root / "server.toml").write_text(f'''schema_version = 1
+{diagnostics}
 [server]
 listen = ["{bracketed}:{proxy_port}"]
 proxy = "https://remora.test:{proxy_port}"

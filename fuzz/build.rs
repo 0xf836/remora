@@ -26,14 +26,15 @@ fn main() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    replace_once(
-        &mut diag,
-        "pub mod qlog;",
-        &format!(
-            "#[path = {:?}] pub mod qlog;",
-            root.join("../src/diagnostics/qlog.rs")
-        ),
-    );
+    for module in ["operator", "qlog"] {
+        let path = root.join(format!("../src/diagnostics/{module}.rs"));
+        println!("cargo:rerun-if-changed={}", path.display());
+        replace_once(
+            &mut diag,
+            &format!("pub mod {module};"),
+            &format!("#[path = {path:?}] pub mod {module};"),
+        );
+    }
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("diagnostics.rs"),
         diag,

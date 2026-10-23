@@ -392,6 +392,20 @@ and payload delivery does not waive required control handling or standards-defin
   clean-install walkthrough allows an operator to establish an authorized bidirectional session
   without modifying either application or requiring elevated runtime privileges.
 
+## Operator logging profile amendment (2026-10-23)
+
+The owner approved a quiet human default and explicit machine diagnostic profile
+(ADR 0032). FR-021/022 structured counters/correlation and R5/SC-010 collection
+completeness are available through explicitly enabled JSON diagnostics, not a
+claim made by the operator journal. Default operator logs show actionable
+process/mapping state changes and safe reasons, not every rejected request.
+They use fixed-size suppression state and finite output, without incident
+history or periodic retry reminders. All privacy and forwarding requirements
+remain unchanged. Diagnostic acceptance scenarios above and below explicitly
+select the JSON profile and functioning collector; disabled capture is not
+complete collection and cannot pass SC-010. See the diagnostics contract for
+limits, default migration and writer-versus-downstream retention boundaries.
+
 ## Assumptions
 
 - The initial users are Linux operators comfortable with noninteractive command-line tools and
@@ -436,7 +450,7 @@ and payload delivery does not waive required control handling or standards-defin
   any limits of its chosen strategy; no absolute provenance guarantee for indistinguishable
   external packets is claimed. This limitation does not waive cross-client routing isolation,
   credential/target checks, or rejection of identifiable prior-session traffic.
-- Diagnostic acceptance uses a functioning collector and injected failure workload within
+- Diagnostic acceptance explicitly selects format=json and uses a functioning collector and injected failure workload within
   documented bounded status capacity, including ordinary log suppression and session cleanup
   before a snapshot. Every injected failure must remain correlated; status overflow or failed
   collection MUST be reported as failed/invalid coverage, not a passing SC-010 result. Separate

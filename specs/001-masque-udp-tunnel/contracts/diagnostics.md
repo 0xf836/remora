@@ -4,6 +4,54 @@ Version: 1. Requirements FR-021/022/023/027/028. Records contain observable oper
 
 ## Streams and schema
 
+### Operator versus diagnostic profiles (ADR 0032)
+
+The default `diagnostics.format="text"`, `level="info"`, `snapshots=false`
+profile emits human operational messages on stderr and no stdout status. It is
+not a complete audit: no correlated failure ring is collected and SC-010
+completeness cannot be claimed. Expected steady state is silent. Client retry
+transitions are DEBUG; one mapping-wide outage notice remains latched until an
+accepted UDP tunnel. Graceful GOAWAY replacement/empty retirement is not an
+outage. One separate fixed client-setup flag covers transient CONNECT refusal
+or setup timeout while transport remains ready; successful acceptance clears
+it and describes renewed setup without claiming accepted sibling flows failed.
+First acceptance differs from recovery. A transport-ready
+event never claims tunnel acceptance or destination responsiveness. New-setup
+permanent rejection distinguishes retained accepted flows from process exit.
+
+High-frequency per-packet/per-request faults use DEBUG and existing counters.
+Only the first size failure per process is promoted to WARN, with no timers,
+per-peer keys, retained suppressed messages or periodic reminders. Human records
+are <=1024 bytes. Existing finite output capacity remains; ordinary debug events
+leave 16 queue record slots and 16 KiB for important events, enforced centrally
+for all low-priority producers including qlog. Text uses separate 20/s burst-40
+admission for operational events and debug detail. There is no unbounded history,
+file backend, rotation or new queue. Logging remains best effort under rapid
+flapping, overload or failed collectors. Short debug IDs are process-local;
+standalone logs have UTC time, journal output relies on invocation/PID/time
+context. JOURNAL_STREAM must match the actual stderr descriptor before priority
+prefixing and removing the duplicate timestamp. JSON is never journal-prefixed.
+JSON runtime failures preserve the legacy
+`runtime failed: <typed error>` marker on stderr; human prose is not a machine
+error identifier.
+
+Explicit `format="json"`, `snapshots=true`, interval >=1000 ms selects the legacy
+machine profile described in the rest of this contract: schema, fields and
+meanings, streams, status reservations, ACK/retry, coverage and shutdown rules
+remain in force. In JSON only, `snapshots=false` disables healthy dumps but not
+pending failures or changed diagnostic health. Text plus snapshots=true is an
+invalid configuration. Qlog filtering is unchanged and activation remains explicit.
+
+This is a deliberate default change: all machine consumers must pin JSON and
+snapshots, not infer format from a TTY. Generated runner fixtures do so explicitly;
+normal benchmark parsing rejects absent/malformed snapshots. Profiles are
+alternatives, not simultaneous sinks; an external collector owns JSON retention.
+A journal collecting both JSON streams is verbose by design. Diagnostic acceptance
+and all completeness statements below require explicit JSON capture. Writer ACK
+means completed application write/flush, not proof of downstream journal retention.
+
+### Legacy machine streams and schema
+
 stderr: NDJSON structured tracing events. stdout: NDJSON aggregate/status snapshots at most once/second during packet processing; the bounded shutdown-only terminal drain described below may bypass periodic cadence. Both use schema_version=1, UTC timestamp, monotonic sequence, role, process_epoch and a fixed event name. Privacy-safe opaque connection/session ids are randomly scoped to process lifetime; no tokens/digests, arbitrary header values, payload bytes, local source tuples or target names. Human errors retain safe reason/field names rather than serialized config/peer text. Any exported peer error text is replaced by numeric code and fixed reason enum.
 
 Example snapshot shape (numeric values illustrative, not measured):
