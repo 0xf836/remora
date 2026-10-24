@@ -120,6 +120,7 @@ settings!(IoSettings {
 });
 settings!(TransportSettings {
     cc: CongestionControl = CongestionControl::Cubic,
+    hystart: bool = true,
     pacing: Pacing = Pacing::Timerfd,
     outer_udp_max_bytes: usize = 1452,
     application_max_bytes: usize = 1400,

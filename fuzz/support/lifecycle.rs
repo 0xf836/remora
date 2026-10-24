@@ -24,6 +24,7 @@ fn install(r: &mut Runner<'_>, transport: Connection) {
             receive_density: ReceiveDensity::default(),
             enqueue_pending: false,
             output_pending: false,
+            pressure_retry: None,
         },
     );
 }

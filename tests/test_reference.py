@@ -16,6 +16,19 @@ from benchmark import Owned
 
 
 class ReferenceMethod(unittest.TestCase):
+    def test_socket_override_cannot_silently_mismatch_baseline_or_accept_invalid_size(self):
+        class Network:
+            def ensure_alive(self):
+                pass
+
+        for mode, value in [('baseline', 1048576), ('tunnel', True), ('tunnel', 0), ('tunnel', 2**31)]:
+            with self.subTest(mode=mode, value=value), tempfile.TemporaryDirectory() as temp, patch.object(reference, 'check_budget'):
+                out = Path(temp) / 'must-not-be-created'
+                profile = dict(self.profile, outer_socket_buffer_bytes=value)
+                with self.assertRaises(ValueError):
+                    reference._run_once(Network(), out, profile, mode, 32, 1200, 'simultaneous', 91136, 3, 60, {})
+                self.assertFalse(out.exists())
+
     def test_socket_request_metadata_tracks_changed_shared_defaults(self):
         source = """settings!(IoSettings {
             outer_socket_buffer_bytes: usize = 2_000_000,

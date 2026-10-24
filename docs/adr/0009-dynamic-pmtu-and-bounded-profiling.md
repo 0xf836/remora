@@ -53,9 +53,14 @@ add fixed schema-1 numeric fields. Optional outer offloads remain governed by
 ADR-0002. Release/ARM64 qualification is separate from native incremental tests.
 
 The native burst characterization exposed synchronous ENOBUFS (errno 105)
-from runner-owned netem queue pressure. Preserve the association: drop only the
-unaccepted outer FIFO front, count `outer_send_pressure`, and allow QUIC control
-recovery. It is not a PMTU observation or fabricated Session application loss.
+from runner-owned netem queue pressure. ADR 0033 supersedes immediate outer
+FIFO-front discard with connection-local 1-ms retries, bounded by a 5-ms window
+anchored to the first failure of the same ciphertext generation/sequence.
+`outer_send_pressure` counts failed submissions; `outer_send_pressure_dropped`
+counts exact unaccepted fronts discarded when that window ends. Original
+ciphertext expiry can terminate earlier and is never renewed. Accepted prefixes
+are never replayed; POLLOUT alone cannot defeat backoff. These events are not
+PMTU observations or fabricated per-Session application loss.
 Relay ENOBUFS drops the exact application packet with `socket_error` without
 closing its Session. EAGAIN continues to retain its original suffix/deadline;
 hard errors retain numeric errno in the connection failure record. Adapter

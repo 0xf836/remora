@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "frozen_before_these_candidate_measurements": true,
+  "scope": "Prospective selected-profile194ms delta only; binary/original32-profile code regression retained separately",
+  "repetitions": 3,
+  "warmup_seconds": 3,
+  "drain_ms": 500,
+  "wall_budget_seconds": 3600,
+  "workloads": [
+    [
+      "capacity",
+      32,
+      1200,
+      91136,
+      60
+    ],
+    [
+      "resource",
+      32,
+      1200,
+      52160,
+      60
+    ]
+  ],
+  "core_profile": {
+    "session_queue_packets": 32,
+    "session_queue_bytes": 65536,
+    "application_residence_ms": 20
+  },
+  "selected_profile": {
+    "session_queue_packets": 8192,
+    "session_queue_bytes": 8388608,
+    "application_residence_ms": 194
+  },
+  "baseline_loss_max_percent": 0.1,
+  "added_loss_max_pp": 0.1,
+  "paired_added_loss_max_pp": 0.1,
+  "paired_delivery_min_ratio": 0.99,
+  "paired_added_rtt_p95_max_ms": 1,
+  "paired_cpu_max_ratio": 1.05,
+  "paired_cpu_absolute_margin": 0.01,
+  "paired_rss_max_ratio": 1.1,
+  "paired_rss_margin_bytes": 1048576,
+  "capacity_ratio_min": 0.8,
+  "subcapacity_added_rtt_p95_max_ms": 5,
+  "resource_delivery_mbit_s_each_min": 500,
+  "role_cpu_cores_max": 2,
+  "role_rss_bytes_max": 134217728,
+  "method": "Three fresh direct/candidate194 pairs perworkload, alternatingorder. Allprevious numericalbounds apply; capacity additionally>=800Mbps sufficient against1Gbitupperbound. No repeatofunchangedHEAD/code checks.",
+  "warmup_boundary": "This existing-performance comparison explicitly uses the historical three-second loaded warmup. It cannot establish WAN cold-start acceptance.",
+  "paired_cpu_informational": true,
+  "authorization": "2026-10-24 user accepted observed roughly0.05\u20130.06core increase and requested returning to loss/speed/delay work",
+  "historical_boundary": "Only194ms profile pairs are new; previous unchanged-binary code regression remains separately validated with explicit user CPU tradeoff.",
+  "capacity_absolute_mbit_s_min": 800
+}

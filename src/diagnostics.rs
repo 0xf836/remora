@@ -372,6 +372,15 @@ pub struct QuicSummary {
     pub application_payload_lower_bound_min: usize,
     pub retransmitted_packets: usize,
     pub pto_count: usize,
+    /// Active-connection estimates, not endpoint delivery or cumulative totals.
+    pub spurious_lost_packets: usize,
+    pub delivery_rate_total_bytes_per_second: u64,
+    /// Sampled active paths only. A HyStart label can also accompany loss
+    /// during conservative slow start; correlate it with loss/ENOBUFS.
+    pub startup_exit_hystart_paths: usize,
+    pub startup_exit_loss_paths: usize,
+    pub startup_exit_other_paths: usize,
+    pub startup_exit_cwnd_min_bytes: usize,
     pub overflow: bool,
 }
 #[derive(Default, Clone, Copy, Serialize)]
@@ -415,6 +424,7 @@ pub struct Counters {
     pub kernel_rx_overflow: u64,
     pub outer_pmtu_errors: u64,
     pub outer_send_pressure: u64,
+    pub outer_send_pressure_dropped: u64,
     pub outer_async_errors: u64,
     pub destination_pmtu_updates: u64,
     pub outer_quic_lost_packets: u64,

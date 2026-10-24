@@ -60,6 +60,10 @@ pub struct Collection {
     pub corrupt: u64,
     pub wrong_direction: u64,
     pub overflow: u64,
+    pub one_way_delay_min_us: Option<u64>,
+    pub one_way_delay_max_us: u64,
+    pub latency_samples: u64,
+    pub clock_errors: u64,
     #[serde(skip)]
     seen: Vec<u64>,
     #[serde(skip)]
@@ -87,23 +91,90 @@ impl Collection {
             corrupt: 0,
             wrong_direction: 0,
             overflow: 0,
+            one_way_delay_min_us: None,
+            one_way_delay_max_us: 0,
+            latency_samples: 0,
+            clock_errors: 0,
             seen: Vec::new(),
             highest: None,
             sequence_limit: limit,
         })
     }
     pub fn observe(&mut self, bytes: &[u8], session: u64, direction: u8) {
+        let _ = self.observe_checked(bytes, session, direction);
+    }
+    /// Shared-clock test tooling only. Production payloads are never timestamped.
+    pub fn observe_at(&mut self, bytes: &[u8], session: u64, direction: u8, received_us: u64) {
+        if let Some(header) = self.observe_checked(bytes, session, direction) {
+            if let Some(delay) = received_us.checked_sub(header.stamp) {
+                self.latency_samples += 1;
+                self.one_way_delay_min_us = Some(
+                    self.one_way_delay_min_us
+                        .map_or(delay, |old| old.min(delay)),
+                );
+                self.one_way_delay_max_us = self.one_way_delay_max_us.max(delay);
+            } else {
+                self.clock_errors += 1;
+            }
+        }
+    }
+    /// Unique deliveries grouped by original offered sequence slots, including
+    /// delayed/reordered packets received during drain in their original slot.
+    pub fn sequence_seconds(&self, rate: u64, seconds: usize) -> Result<Vec<u64>, &'static str> {
+        if seconds > 1800 {
+            return Err("bounded interval exceeded");
+        }
+        let mut counts = vec![0; seconds];
+        if rate == 0 {
+            return Ok(counts);
+        }
+        for (word_index, &word) in self.seen.iter().enumerate() {
+            let mut remaining = word;
+            while remaining != 0 {
+                let seq = word_index as u64 * 64 + u64::from(remaining.trailing_zeros());
+                if let Some(slot) = counts.get_mut((seq / rate) as usize) {
+                    *slot += 1;
+                }
+                remaining &= remaining - 1;
+            }
+        }
+        Ok(counts)
+    }
+    pub fn sequence_intervals(&self, rates: &[u64]) -> Result<Vec<u64>, &'static str> {
+        if rates.len() > 1800 {
+            return Err("bounded interval exceeded");
+        }
+        let mut total = 0u64;
+        let mut ends = Vec::new();
+        for &rate in rates {
+            total = total.checked_add(rate).ok_or("interval overflow")?;
+            ends.push(total);
+        }
+        let mut counts = vec![0; rates.len()];
+        for (word_index, &word) in self.seen.iter().enumerate() {
+            let mut remaining = word;
+            while remaining != 0 {
+                let seq = word_index as u64 * 64 + u64::from(remaining.trailing_zeros());
+                if let Some(slot) = counts.get_mut(ends.partition_point(|end| *end <= seq)) {
+                    *slot += 1;
+                }
+                remaining &= remaining - 1;
+            }
+        }
+        Ok(counts)
+    }
+    fn observe_checked(&mut self, bytes: &[u8], session: u64, direction: u8) -> Option<Header> {
         let Ok(header) = decode(bytes) else {
             self.corrupt += 1;
-            return;
+            return None;
         };
         if header.session != session || header.direction != direction {
             self.wrong_direction += 1;
-            return;
+            return None;
         }
         if header.sequence >= self.sequence_limit {
             self.overflow += 1;
-            return;
+            return None;
         }
         let word = (header.sequence / 64) as usize;
         if word >= self.seen.len() {
@@ -113,14 +184,14 @@ impl Collection {
                 .is_err()
             {
                 self.overflow += 1;
-                return;
+                return None;
             }
             self.seen.resize(word + 1, 0);
         }
         let bit = 1u64 << (header.sequence % 64);
         if self.seen[word] & bit != 0 {
             self.duplicates += 1;
-            return;
+            return None;
         }
         self.seen[word] |= bit;
         if self.highest.is_some_and(|h| header.sequence < h) {
@@ -132,5 +203,6 @@ impl Collection {
         );
         self.unique += 1;
         self.bytes += bytes.len() as u64;
+        Some(header)
     }
 }

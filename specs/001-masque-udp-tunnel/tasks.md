@@ -1229,3 +1229,38 @@ and whitespace checks pass. A real blocked-collector run is accepted by the
 unchanged diagnostic-regression row validator. Parallel fixture failures remain
 unattributed, not claimed fixed; see the [validation report](../../docs/validation/operator-logs.md).
 No full performance matrix, live deployment or independent re-review is claimed.
+
+## Phase 15: WAN datagram loss remediation (laboratory increment complete)
+
+- [X] T096 Correct selective native outgoing expiry, refresh deadlines after every mutation, and hand expiry counts to the owner exactly once across generation/error/stop. Retain failing-before regressions, lifecycle and native verification (ADR 0033).
+- [X] T097 Stop immediate application continuations when native transport input is full; prove ACK/timer/pacing progress and original queue expiry remain armed without busy spinning. Verify resource/fairness/lifecycle regressions.
+- [X] T098 Add bounded, fresh QUIC estimates and reproducible WAN experiments with independent offered/received accounting, original-sequence steady windows, arrival recovery, shared-clock age checks, actual fault counts and explicit WireGuard readiness. Missing evidence must not pass.
+- [X] T099 Compare the same executable under CUBIC/BBR2 and bounded queue/residence variants against the frozen WAN policy, including 55/60/100 ms, both sizes/directions, rate transitions, five-packet loss, ACK disturbance and owner pauses. Keep defaults unchanged until all required gates pass.
+- [X] T099a Diagnose the selected-profile capacity regression on the original 20-ms/1-Gbit/s/netem-2048 topology before accepting T099/T100: prospectively compare default socket buffers, increased outer buffer only, and increased relay buffer only, three rotated repeats on the same executable/workload. Retain per-arm pre/post qdisc counters, requested/effective socket sizes, startup QUIC and local-drop evidence, clock/generator/resource validity and all failed repeats. Larger-qdisc and HyStart screens remain hypothesis evidence only. Change Remora only for an established mechanism, then rerun the original frozen regression and WAN gates; do not replace their topology or thresholds.
+- [X] T100 Complete applicable Rust/Python/traffic, property/fuzz, independent interoperability, existing performance/resource regression, 30-minute soak and requested read-only independent review. Record unresolved parallel fixture failures and distinguish laboratory evidence from future operator WAN acceptance. No installation/release/push is authorized by this phase.
+
+
+**Phase 15 completed (2026-10-24):** T096, T097, T098, T099, T099a and T100
+completed their implementation, failure-mode, controller/profile and nonwaived
+performance/WG checks. The owner explicitly accepted the approximately
+0.05–0.06-core CPU increase; the original paired-CPU failure remains failed,
+with retrospective acceptance under the separate Phase 15 v2 policy. Absolute
+CPU <=2 cores, RSS <=128 MiB, delivery/loss and latency gates are unchanged.
+The selected explicit WAN profile is CUBIC / 8192 packets / 8 MiB / 194 ms;
+generic defaults 32 packets / 20 ms remain unchanged. All 54 normal WG runs,
+21 disturbance runs, six rate-step runs and 12 fresh 194-ms profile pair arms
+pass applicable checks. The steps-100 reporter fix retains all old check values
+except the impossible 190-Mbit/s target during an intentionally offered
+20-Mbit/s phase; original failure and corrected assessment are separate.
+Pinned native tests passed 238 cases, the held-response shutdown case separately
+passed, and traffic/Python/independent-Go checks passed 30/144/29 cases. Four
+seeded noninstrumented fuzz smokes are not sanitizer qualification. Independent
+read-only implementation and completed-evidence audit found no confirmed
+P0–P3 defect. The final paired 1800-second WG soak passed: about 199.94 Mbit/s
+each way, maximum added one-way delay 194.610 ms, and 104 / 34 missing original
+sequence slots after the first two seconds. Whole-interval counts/resources and
+hashes reconcile; final independent read-only review is APPROVE for T100.
+The unknown parallel 1200-byte fixture failure remains unattributed; no ASAN
+qualification is inferred. The separate `laboratory-acceptance.json` records
+completion without rewriting raw screen reports or original failures. No live
+WAN qualification, installation, release, commit or push is claimed.

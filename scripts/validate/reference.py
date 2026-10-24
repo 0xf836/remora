@@ -301,6 +301,15 @@ def _run_once(
 
     check_budget(network)
     network.ensure_alive()
+    socket_overrides = {
+        field: profile[field]
+        for field in ['outer_socket_buffer_bytes', 'relay_socket_buffer_bytes']
+        if field in profile
+    }
+    if socket_overrides and mode != 'tunnel':
+        raise ValueError('socket-buffer hypothesis overrides require tunnel mode; matched baseline overrides are not implemented')
+    if any(type(value) is not int or not 1 <= value <= 2**31 - 1 for value in socket_overrides.values()):
+        raise ValueError('invalid socket-buffer hypothesis override')
     for name, digest in getattr(network, "expected_binaries", {}).items():
         if sha(ROOT / name) != digest:
             raise RuntimeError("benchmark executable changed after manifest freeze")
@@ -308,6 +317,7 @@ def _run_once(
     write(out / "collector-affinity.json", collector_placement)
     owned = []
     samples = []
+    wireguard = False
     try:
         with tempfile.TemporaryDirectory(prefix="remora-reference-") as tmp:
             f = Path(tmp) / "fixtures"
@@ -319,6 +329,11 @@ def _run_once(
             ports = json.loads((f / "ports.json").read_text())
             proxy = f'10.203.0.2:{ports["proxy"]}'
             address = lambda key: f"127.0.0.1:{ports[key]}"
+            inner_target = None
+            if profile.get('wireguard', False):
+                import wan_wireguard
+                inner_target = wan_wireguard.prepare(network, f, ports)
+                wireguard = True
             per_flow = total_pps // sessions
             actual_pps = per_flow * sessions
             for role in ["client", "server"]:
@@ -331,8 +346,24 @@ def _run_once(
                         f'connect_address = "{address("proxy")}"',
                         f'connect_address = "{proxy}"',
                     )
-                text += f'\n[io]\nmode = "{profile["io"]}"\nbatch_max = {profile["batch_max"]}\n\n[transport]\ncc = "{profile["cc"]}"\n\n[limits]\nmax_sessions = 32\nmax_sessions_per_identity = 32\nmax_sessions_per_connection = 32\n'
+                text += f'\n[io]\nmode = "{profile["io"]}"\nbatch_max = {profile["batch_max"]}\n'
+                for field, value in socket_overrides.items():
+                    text += f'{field} = {value}\n'
+                text += f'\n[transport]\ncc = "{profile["cc"]}"\n'
+                if 'hystart' in profile:
+                    text += f'hystart = {str(profile["hystart"]).lower()}\n'
+                text += '\n[limits]\nmax_sessions = 32\nmax_sessions_per_identity = 32\nmax_sessions_per_connection = 32\n'
+                # Opt-in WAN experiments retain the same pinned relay/generator
+                # and accounting, with explicit finite queue/deadline variants.
+                for field in ["session_queue_packets", "session_queue_bytes", "application_residence_ms"]:
+                    if field in profile:
+                        text += f'{field} = {int(profile[field])}\n'
                 path.write_text(machine_diagnostics(text))
+            write(out / 'configuration.json', dict(
+                profile=profile,
+                role_sha256={role: sha(f / f'{role}.toml') for role in ['client','server']},
+                loaded_warmup_seconds=warmup,
+            ))
             tool = str(ROOT / "tools/traffic/target/release/remora-traffic")
             binary_path = Path(remora_binary).resolve() if remora_binary is not None else ROOT / "target/release/remora"
             binary = str(binary_path)
@@ -352,6 +383,7 @@ def _run_once(
                         profile["io"],
                         "--batch-max",
                         str(profile["batch_max"]),
+                        *(["--relay-application-max-bytes", "1400", "--relay-outer-max-bytes", "1452"] if inner_target else []),
                     ]
                 )
                 proc = Owned(
@@ -369,10 +401,13 @@ def _run_once(
                 ]
                 if sha(Path(f"/proc/{proc.p.pid}/exe")) != expected:
                     raise RuntimeError("owned role executable identity mismatch")
+            if wireguard:
+                write(out / 'wireguard-ready.json', wan_wireguard.ready(network))
             # Every process has two seconds to bind before a common *loaded*
             # warmup. Warmup has disjoint sequence space and is not counted.
             start = int(time.time() * 1000) + (warmup + 2) * 1000
             common = [
+                *(["--rate-steps-pps", ",".join(map(str, profile['generator_rate_steps_pps']))] if profile.get('generator_rate_steps_pps') else []),
                 "--completion-guard-ms",
                 str(profile["generator_completion_guard_ms"]),
                 "--pacing-quantum-us",
@@ -399,7 +434,7 @@ def _run_once(
                     tool,
                     "responder",
                     "--listen",
-                    address("target"),
+                    inner_target or address("target"),
                     "--pps",
                     str(per_flow),
                     "--reverse-pps",
@@ -409,7 +444,7 @@ def _run_once(
                 out / "receiver",
             )
             owned.append(target)
-            wait_udp_bound(target, address("target"))
+            wait_udp_bound(target, inner_target or address("target"))
             for index in range(sessions):
                 owned.append(
                     Owned(
@@ -420,8 +455,9 @@ def _run_once(
                             str(affinity["tools"][index % len(affinity["tools"])]),
                             tool,
                             "sender",
+                            *(["--bind", "10.77.0.2:0"] if inner_target else []),
                             "--to",
-                            address("client"),
+                            inner_target or address("client"),
                             "--session",
                             str(index + 1),
                             "--pps",
@@ -449,6 +485,9 @@ def _run_once(
                 if sorted(os.sched_getaffinity(0)) != collector_placement["actual"]:
                     raise RuntimeError("collector affinity changed during measurement")
                 samples.append(sample)
+                hook = getattr(network, "measurement_hook", None)
+                if hook is not None:
+                    hook(sample, start, owned)
                 time.sleep(0.05)
             for proc in owned:
                 proc.stop()
@@ -459,6 +498,8 @@ def _run_once(
             rx = json.loads((out / "receiver.stdout.ndjson").read_text())
             if any(v.get("pacing_quantum_us") != profile["generator_pacing_quantum_us"] or v.get("completion_guard_ms") != profile["generator_completion_guard_ms"] for v in [rx, *tx]):
                 raise RuntimeError("generator pacing does not match frozen profile")
+            if any(v.get('rate_steps_pps') != profile.get('generator_rate_steps_pps') for v in [rx, *tx]):
+                raise RuntimeError('generator rate transitions do not match declared profile')
             measured = [
                 s for s in samples if start <= s["time_ms"] < start + seconds * 1000
             ]
@@ -560,6 +601,8 @@ def _run_once(
                 },
             )
             write(out / "diagnostics.json", diagnostics)
+            if wireguard:
+                write(out / 'wireguard.json', wan_wireguard.observe(network))
             write(out / "resources.json", resources)
             return result, actual_pps
     except BaseException as e:
@@ -568,6 +611,8 @@ def _run_once(
     finally:
         for proc in reversed(owned):
             proc.stop()
+        if wireguard:
+            wan_wireguard.close(network)
 
 
 def spread_report(pairs):

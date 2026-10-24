@@ -112,7 +112,8 @@ cannot guarantee correlation delivery.
 | local_drops{reason,direction} | Observable rejection at this process, each packet counted once at terminal drop boundary |
 | kernel_rx_overflow | SO_RXQ_OVFL cumulative deltas with wrap handling; per socket, no fabricated session attribution |
 | quic_packets_lost/retransmitted/PTO | Outer QUIC transport observations/estimates, never equated with inner UDP loss |
-| rtt/rttvar/cwnd/path_payload_limit | Current path stats sampled <=once/5 seconds; peer path ids bounded |
+| rtt/rttvar/cwnd/path_payload_limit | Current path stats sampled once/second; peer path ids bounded; active-connection spurious-loss and delivery-rate estimates are not endpoint loss or lifetime totals |
+| startup_exit_* | Active-path exit label counts and minimum exit cwnd in bytes. A HyStart/CSS label may also accompany loss during CSS in the pinned backend; correlate with loss/ENOBUFS rather than claiming a unique causal detector |
 | application_payload_lower_bound_min | Conservative local-send application bound across sampled connections, reserving an eight-byte association ID and Context ID; zero when unavailable or no samples; excludes peer application cap and target leg |
 | queue packets/bytes/age and pool capacities | Retained memory/accounting, high-water marks, pressure and expiration |
 | syscall/batch/offload counters | Partial progress, EAGAIN, logical segments and per-offload requested off/auto, effective off/on, fixed reason configured_off/not_implemented/capability_unavailable/path_ineligible/enabled; socket/path availability is separate from per-packet eligibility |
@@ -177,9 +178,14 @@ Application `local_drops.pmtu`, `kernel_rx_overflow` and sequence-based delivere
 loss remain separate. Error-queue quotes never enter diagnostics.
 
 The native burst characterization exposed synchronous ENOBUFS (errno 105)
-from runner-owned netem queue pressure. Preserve the association: drop only the
-unaccepted outer FIFO front, count `outer_send_pressure`, and allow QUIC control
-recovery. It is not a PMTU observation or fabricated Session application loss.
+from runner-owned netem queue pressure. ADR 0033 supersedes immediate outer
+FIFO-front discard with connection-local 1-ms retries, bounded by a 5-ms window
+anchored to the first failure of the same ciphertext generation/sequence.
+`outer_send_pressure` counts failed submissions; `outer_send_pressure_dropped`
+counts exact unaccepted fronts discarded when that window ends. Original
+ciphertext expiry can terminate earlier and is never renewed. Accepted prefixes
+are never replayed; POLLOUT alone cannot defeat backoff. These events are not
+PMTU observations or fabricated per-Session application loss.
 Relay ENOBUFS drops the exact application packet with `socket_error` without
 closing its Session. EAGAIN continues to retain its original suffix/deadline;
 hard errors retain numeric errno in the connection failure record. Adapter

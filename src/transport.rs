@@ -12,6 +12,7 @@ use boring::{
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::{
+    cell::Cell,
     collections::VecDeque,
     net::SocketAddr,
     time::{Duration, Instant},
@@ -101,6 +102,7 @@ pub fn config(settings: &ValidatedConfig) -> Result<quiche::Config, TransportErr
         CongestionControl::Bbr2Gcongestion => quiche::CongestionControlAlgorithm::Bbr2Gcongestion,
     });
     q.enable_pacing(true);
+    q.enable_hystart(settings.transport().hystart);
     // Deliberately never enable early data, session resumption or keylog.
     Ok(q)
 }
@@ -209,6 +211,7 @@ pub fn track_response<T>(send: impl FnOnce() -> T) -> (T, std::sync::Weak<()>) {
 struct Native {
     stream: u64,
     length: usize,
+    expires: Instant,
     _reservation: Reservation,
 }
 struct ClosedStream {
@@ -227,6 +230,7 @@ pub struct Connection {
     native: VecDeque<Native>,
     native_budget: Budget,
     native_expiry: Option<Instant>,
+    expired_native_pending: usize,
     received_expiry: Option<Instant>,
     next_sequence: u64,
     writable_cursor: crate::session::FairCursor,
@@ -235,6 +239,7 @@ pub struct Connection {
     closed_limit: usize,
     application_residence: Duration,
     output_residence: Duration,
+    generation_pacing: Option<Instant>,
     application_max: usize,
     outer_max: usize,
     started: Instant,
@@ -276,6 +281,7 @@ impl Connection {
     pub fn operational_stats(&self) -> crate::diagnostics::QuicSummary {
         let mut result = crate::diagnostics::QuicSummary {
             sampled_connections: 1,
+            spurious_lost_packets: self.quic.stats().spurious_lost,
             application_payload_lower_bound_min: self
                 .native_datagram_ceiling()
                 .saturating_sub(9)
@@ -283,8 +289,30 @@ impl Connection {
             ..Default::default()
         };
         for p in self.quic.path_stats().filter(|p| p.active) {
+            if let Some(exit) = p.startup_exit {
+                match exit.reason {
+                    quiche::StartupExitReason::ConservativeSlowStartRounds => {
+                        result.startup_exit_hystart_paths += 1
+                    }
+                    quiche::StartupExitReason::Loss => result.startup_exit_loss_paths += 1,
+                    _ => result.startup_exit_other_paths += 1,
+                }
+                result.startup_exit_cwnd_min_bytes = if result.startup_exit_cwnd_min_bytes == 0 {
+                    exit.cwnd
+                } else {
+                    result.startup_exit_cwnd_min_bytes.min(exit.cwnd)
+                };
+            }
             result.rtt_max_us = result.rtt_max_us.max(p.rtt.as_micros() as u64);
             result.rttvar_max_us = result.rttvar_max_us.max(p.rttvar.as_micros() as u64);
+            if let Some(next) = result
+                .delivery_rate_total_bytes_per_second
+                .checked_add(p.delivery_rate)
+            {
+                result.delivery_rate_total_bytes_per_second = next;
+            } else {
+                result.overflow = true;
+            }
             result.path_payload_limit_min = if result.path_payload_limit_min == 0 {
                 p.pmtu
             } else {
@@ -324,6 +352,7 @@ impl Connection {
                 settings.limits().connection_dgram_bytes / 2,
             ),
             native_expiry: None,
+            expired_native_pending: 0,
             received_expiry: None,
             next_sequence: 0,
             writable_cursor: crate::session::FairCursor::default(),
@@ -334,6 +363,7 @@ impl Connection {
                 settings.limits().application_residence_ms,
             ),
             output_residence: Duration::from_millis(settings.limits().ciphertext_residence_ms),
+            generation_pacing: None,
             application_max: settings.transport().application_max_bytes,
             outer_max: settings.transport().outer_udp_max_bytes,
             started: now,
@@ -643,9 +673,7 @@ impl Connection {
             .pmtu_drops
             .checked_add(count)
             .ok_or(TransportError::Capacity)?;
-        if self.native.is_empty() {
-            self.native_expiry = None;
-        }
+        self.refresh_native_expiry();
         Ok(())
     }
     pub fn take_pmtu_drops(&mut self) -> usize {
@@ -706,6 +734,7 @@ impl Connection {
         self.native.push_back(Native {
             stream,
             length: len,
+            expires: expiry,
             _reservation: reservation,
         });
         self.native_expiry = Some(self.native_expiry.map_or(expiry, |old| old.min(expiry)));
@@ -721,9 +750,7 @@ impl Connection {
             masque::decode_datagram(bytes).map_or(true, |d| d.is_none_or(|d| d.stream == stream))
         });
         self.native.retain(|n| n.stream != stream);
-        if self.native.is_empty() {
-            self.native_expiry = None;
-        }
+        self.refresh_native_expiry();
     }
     pub fn close_stream(&mut self, stream: u64, code: u64) {
         self.retain_cleanup(stream, None, None);
@@ -743,19 +770,43 @@ impl Connection {
             .stream_shutdown(stream, quiche::Shutdown::Write, code);
         // Immutable already-generated mixed ciphertext deliberately survives.
     }
-    pub fn expire_native(&mut self, now: Instant) -> usize {
+    fn refresh_native_expiry(&mut self) {
+        self.native_expiry = self.native.iter().map(|n| n.expires).min();
+    }
+    /// Expire only native datagrams whose original application deadline is due.
+    /// The informative return value must not be counted again by the owner;
+    /// `take_expired_datagrams` is the single diagnostic handoff, including
+    /// expirations performed inside generation or followed by an error/stop.
+    pub fn expire_native(&mut self, now: Instant) -> Result<usize, TransportError> {
         if self.closed_streams.iter().any(|s| s.expires <= now) {
             self.stop();
         }
         if self.native_expiry.is_some_and(|at| at <= now) {
-            let count = self.quic.dgram_send_queue_len();
-            self.quic.dgram_purge_outgoing(|_| true);
-            self.native.clear();
-            self.native_expiry = None;
-            count
+            let count = self.native.iter().filter(|n| n.expires <= now).count();
+            let pending = self
+                .expired_native_pending
+                .checked_add(count)
+                .ok_or(TransportError::Capacity)?;
+            // Pinned quiche DatagramQueue::purge uses VecDeque::retain in FIFO
+            // order. Match ordinal metadata, never bytes: identical payloads
+            // may have different deadlines. No wire tags or extra copies.
+            let index = Cell::new(0);
+            let native = &self.native;
+            self.quic.dgram_purge_outgoing(|_| {
+                let i = index.get();
+                index.set(i + 1);
+                native.get(i).is_none_or(|n| n.expires <= now)
+            });
+            self.native.retain(|n| n.expires > now);
+            self.refresh_native_expiry();
+            self.expired_native_pending = pending;
+            Ok(count)
         } else {
-            0
+            Ok(0)
         }
+    }
+    pub fn take_expired_datagrams(&mut self) -> usize {
+        std::mem::take(&mut self.expired_native_pending)
     }
     pub fn stop(&mut self) {
         self.stopped = true;
@@ -763,6 +814,7 @@ impl Connection {
         self.closed_streams.clear();
         self.native.clear();
         self.native_expiry = None;
+        self.generation_pacing = None;
         self.quic.dgram_purge_outgoing(|_| true);
         let _ = self.quic.close(true, 0x100, b"");
     }
@@ -796,6 +848,7 @@ impl Connection {
         [
             self.quic.timeout_instant(),
             self.native_expiry,
+            self.generation_pacing,
             self.closed_streams.iter().map(|s| s.expires).min(),
             self.received_expiry,
             self.output.front().map(|p| p.expires_at()),
@@ -816,7 +869,7 @@ impl Connection {
         now: Instant,
         quota: usize,
     ) -> Result<usize, TransportError> {
-        self.expire_native(now);
+        self.expire_native(now)?;
         self.prune_pmtu()?;
         if self
             .output
@@ -828,8 +881,33 @@ impl Connection {
         if !self.ready && now.duration_since(self.started) >= self.setup_timeout {
             return Err(TransportError::Expired);
         }
+        if quota == 0 {
+            return Ok(0);
+        }
         let mut produced = 0;
+        self.generation_pacing = None;
+        let gcongestion =
+            self.quic.pacing_enabled() && self.quic.gcongestion_enabled() == Some(true);
         while produced < quota && !self.output_full() && !self.stopped {
+            // gcongestion's SendInfo.at is read after on_packet_sent advances
+            // its pacer. Capture this packet's release decision before send,
+            // as the pinned tokio-quiche adapter does. Do not precommit an
+            // arbitrary FIFO of slow-paced packets that would expire while
+            // waiting for their own pacing slot. Classic CUBIC keeps SendInfo.
+            let release = gcongestion
+                .then(|| self.quic.get_next_release_time())
+                .flatten()
+                .and_then(|decision| decision.time(now));
+            if let Some(at) = release
+                && at.duration_since(now)
+                    >= self
+                        .quic
+                        .max_release_into_future()
+                        .min(self.output_residence / 2)
+            {
+                self.generation_pacing = Some(at);
+                break;
+            }
             let mut slab = match pool.acquire() {
                 Ok(s) => s,
                 Err(_) => break,
@@ -851,7 +929,11 @@ impl Connection {
                         length,
                         info.from,
                         info.to,
-                        info.at,
+                        if gcongestion {
+                            release.unwrap_or(now)
+                        } else {
+                            info.at
+                        },
                         self.generation,
                         sequence,
                         now,
@@ -863,9 +945,7 @@ impl Connection {
                     while self.native.len() > self.quic.dgram_send_queue_len() {
                         self.native.pop_front();
                     }
-                    if self.native.is_empty() {
-                        self.native_expiry = None;
-                    }
+                    self.refresh_native_expiry();
                 }
                 Err(quiche::Error::Done) => break,
                 Err(error) => return Err(TransportError::Native(native_error_code(error))),

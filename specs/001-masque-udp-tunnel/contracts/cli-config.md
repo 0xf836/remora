@@ -130,7 +130,7 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | limits.quiche_dgram_packets | 64 | Per connection/direction, explicit enable_dgram counts |
 | limits.connection_dgram_bytes | 262144 | Send+receive bytes cap including internal queued ownership |
 | limits.idle_session_ms | 120000 | Default two-minute UDP association inactivity timeout; positive finite; close stream and socket together; shorter override is a documented RFC SHOULD deviation |
-| limits.application_residence_ms | 20 | Includes native outgoing quiche queue; conservative purge-all at earliest queued expiry |
+| limits.application_residence_ms | 20 | Includes native outgoing quiche queue; each datagram keeps its original deadline and only expired entries are purged |
 | limits.ciphertext_residence_ms | 100 | Stuck generated output fails its connection, not recreated |
 | io.mode | mmsg | mmsg or single; batch_max default 32, range 1..64 |
 | io.gso / io.gro | off / off | off or auto; outer sockets only; unimplemented auto uses ordinary I/O with reason not_implemented; implemented auto probes capability |
@@ -138,6 +138,7 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | io.relay_socket_buffer_bytes | 131072 | Requested RX/TX buffers for client application listener and server relay sockets; report effective values/clamps; explicit 65536 retains the former default |
 | transport.cc | cubic | cubic, bbr2_gcongestion, reno; no generic bbr alias exposed |
 | transport.pacing | timerfd | Mandatory user-space deadlines; no off mode |
+| transport.hystart | true | Classic CUBIC/Reno HyStart++ setting; experimental false profile requires separate qualification; BBR2 does not use this detector |
 | transport.outer_udp_max_bytes | 1452 | >=1200; PMTU probes and peer/path limits still apply |
 | transport.application_max_bytes | 1400 | Actual limit may be smaller; empty payload supported |
 | transport.idle_timeout_ms | 5000 | Finite liveness profile; keepalive when active flows otherwise idle |
@@ -150,6 +151,14 @@ Initial tuning values are hypotheses for qualification, not proof of performance
 | diagnostics.snapshots | false | JSON only: true enables periodic metrics; false retains mandatory failure status in JSON. Text has no status stream |
 | diagnostics.snapshot_interval_ms | 1000 | Minimum 1000; JSON status cadence; operator lifecycle events do not wait for this interval |
 | diagnostics.qlog_directory | absent | Disabled by default; qlog build feature plus fresh empty owner-0700 directory; filtered NDJSON only, never raw H3 |
+
+Mandatory pacing includes deferred generation as well as committed output.
+For the pinned BBR2/gcongestion backend, capture the current release decision
+before generation and bound lookahead by the backend recommendation and half
+the configured ciphertext residence. Retained native input keeps its original
+application deadline; a connection-owned timer resumes generation. Classic
+CUBIC retains SendInfo timing. Neither path extends a committed deadline to
+accommodate batching; see ADR 0033.
 
 For each offload, accept `off` and `auto` even when its implementation is deferred. `off` uses ordinary selected single/mmsg I/O without an offload probe. Deferred `auto` also uses ordinary I/O, reports effective `off` with `not_implemented`, and must not claim a failed kernel/NIC probe. Once implemented, `auto` probes each applicable outer socket/path and permits effective `on` only when capability and eligibility checks pass; otherwise use the same baseline I/O. Export requested `off|auto`, effective `off|on` and a fixed reason `configured_off|not_implemented|capability_unavailable|path_ineligible|enabled`. Effective `on` describes offload availability on that socket/path; each individual packet/group still must satisfy metadata, segment-size and pacing constraints, with incompatible packets sent by baseline I/O. Bound and aggregate transitions; no per-packet event stream. An unsupported implementation/capability never silently alters payloads or pacing, and baseline fallback never resubmits an already accepted logical packet. Version/help and operator documentation distinguish implemented/qualified offloads from accepted settings with deferred implementation; no new mode or build framework is required.
 

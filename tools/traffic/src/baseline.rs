@@ -170,17 +170,24 @@ fn send(
 ) -> io::Result<bool> {
     queues.send(socket, bytes, to, outer)
 }
+pub struct Buffers {
+    pub application_pool_bytes: usize,
+    pub application_max_bytes: usize,
+    pub outer_udp_max_bytes: usize,
+}
 pub fn run(
     server: bool,
     listen: SocketAddr,
     peer: SocketAddr,
     mode: &str,
     batch_max: usize,
-    application_pool_bytes: usize,
+    buffers: Buffers,
     outer_socket_buffer_bytes: usize,
 ) -> io::Result<()> {
     if !(1..=64).contains(&batch_max)
-        || application_pool_bytes < 1200 * batch_max
+        || !(40..=1400).contains(&buffers.application_max_bytes)
+        || !(buffers.application_max_bytes + 8..=1452).contains(&buffers.outer_udp_max_bytes)
+        || buffers.application_pool_bytes < buffers.application_max_bytes * batch_max
         || !(1..=i32::MAX as usize).contains(&outer_socket_buffer_bytes)
     {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -232,9 +239,13 @@ pub fn run(
     if !server {
         outer.connect(peer)?;
     }
-    let application_pool =
-        BufferPool::new(1200, application_pool_bytes).map_err(|_| io::ErrorKind::OutOfMemory)?;
-    let pool = BufferPool::new(1350, 2 * 1024 * 1024).map_err(|_| io::ErrorKind::OutOfMemory)?;
+    let application_pool = BufferPool::new(
+        buffers.application_max_bytes,
+        buffers.application_pool_bytes,
+    )
+    .map_err(|_| io::ErrorKind::OutOfMemory)?;
+    let pool = BufferPool::new(buffers.outer_udp_max_bytes, 2 * 1024 * 1024)
+        .map_err(|_| io::ErrorKind::OutOfMemory)?;
     let mut sources: HashMap<SocketAddr, u64> = HashMap::new();
     let mut ids: HashMap<u64, SocketAddr> = HashMap::new();
     let mut relays: HashMap<u64, (SocketAddr, Udp)> = HashMap::new();
@@ -242,8 +253,8 @@ pub fn run(
     let mut sent = 0u64;
     let mut dropped = 0u64;
     let mut snapshot = Instant::now();
-    let ciphertext_pool =
-        BufferPool::new(1350, 4 * 1024 * 1024).map_err(|_| io::ErrorKind::OutOfMemory)?;
+    let ciphertext_pool = BufferPool::new(buffers.outer_udp_max_bytes, 4 * 1024 * 1024)
+        .map_err(|_| io::ErrorKind::OutOfMemory)?;
     let mut queues = Queues {
         pending: HashMap::new(),
         retained: 0,
@@ -286,7 +297,7 @@ pub fn run(
         }
         for (from, bytes) in receive(&mut outer, &pool, batch_max)? {
             if server {
-                if bytes.len() < 8 || bytes.len() > 1208 {
+                if bytes.len() < 8 || bytes.len() > buffers.application_max_bytes + 8 {
                     dropped += 1;
                     continue;
                 }
@@ -321,7 +332,7 @@ pub fn run(
                     dropped += 1;
                 }
             } else if from == peer {
-                if bytes.len() < 8 || bytes.len() > 1208 {
+                if bytes.len() < 8 || bytes.len() > buffers.application_max_bytes + 8 {
                     dropped += 1;
                     continue;
                 }
@@ -413,7 +424,11 @@ mod tests {
                 "127.0.0.1:9".parse().unwrap(),
                 "mmsg",
                 32,
-                8 * 1024 * 1024,
+                Buffers {
+                    application_pool_bytes: 8 * 1024 * 1024,
+                    application_max_bytes: 1200,
+                    outer_udp_max_bytes: 1350,
+                },
                 bytes,
             )
             .unwrap_err();

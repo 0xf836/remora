@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "scope": "Diagnostic only; no acceptance or default changes",
+  "repetitions": 3,
+  "order": "rotate default,outer,relay by repeat; preserve every repeat",
+  "topology": {
+    "rtt_ms": 20,
+    "rate": "1gbit",
+    "netem_limit": 2048
+  },
+  "workload": {
+    "sessions": 32,
+    "payload_bytes": 1200,
+    "total_pps": 91136,
+    "direction": "simultaneous",
+    "warmup_seconds": 3,
+    "measurement_seconds": 60
+  },
+  "application_profile": {
+    "session_queue_packets": 8192,
+    "session_queue_bytes": 8388608,
+    "application_residence_ms": 190
+  },
+  "variants": {
+    "default": {
+      "outer_socket_buffer_bytes": 1048576,
+      "relay_socket_buffer_bytes": 131072
+    },
+    "outer": {
+      "outer_socket_buffer_bytes": 4194304,
+      "relay_socket_buffer_bytes": 131072
+    },
+    "relay": {
+      "outer_socket_buffer_bytes": 1048576,
+      "relay_socket_buffer_bytes": 1048576
+    }
+  },
+  "measurement_validity": {
+    "generator_errors": 0,
+    "integrity_errors": 0,
+    "coverage_lost": 0,
+    "generator_cpu_max_exclusive": 0.9,
+    "clock_drift_abs_max_exclusive_ms": 10,
+    "exact_offered_and_submitted": true,
+    "effective_socket_size": "Require 2x requested on this Linux fixture; otherwise invalid"
+  },
+  "retain": [
+    "per-arm pre/post network snapshot including qdisc counters",
+    "configuration hashes and explicit buffer requests",
+    "per-role effective buffers",
+    "full startup diagnostic snapshots and final counters",
+    "clock, generator, delivery, RTT and resources"
+  ],
+  "interpretation": "Hypothesis comparison only; no averaging away bad repeats, no claim that a buffer sweep proves bounded latency or release acceptance"
+}
