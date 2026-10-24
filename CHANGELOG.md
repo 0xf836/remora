@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/0xf836/remora/compare/v0.3.0...v0.3.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **test:** isolate UDP fixtures and stabilize native CI ([7e201dd](https://github.com/0xf836/remora/commit/7e201dd4f9b5a147a63c85043664b211e397181a))
+* **transport:** prevent WAN datagram loss amplification ([b412d82](https://github.com/0xf836/remora/commit/b412d82c5ce058790a3ed628c4684605ed3e0a11))
+* **transport:** prevent WAN datagram loss amplification ([c2916f8](https://github.com/0xf836/remora/commit/c2916f8d8e07e1ba70dc3579db14d3dc005385ff))
+
 ## [0.3.0](https://github.com/0xf836/remora/compare/v0.2.0...v0.3.0) (2026-10-23)
 
 
