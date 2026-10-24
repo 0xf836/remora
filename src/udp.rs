@@ -151,6 +151,8 @@ pub struct Udp {
     stats: std::cell::Cell<IoStats>,
     pub receive_buffer: usize,
     pub send_buffer: usize,
+    #[cfg(test)]
+    next_send_error: Option<i32>,
 }
 fn set_int(fd: RawFd, level: i32, option: i32, value: i32) -> io::Result<()> {
     // SAFETY: fd is an owned live socket; value is a live aligned C int,
@@ -252,6 +254,8 @@ impl Udp {
             stats: std::cell::Cell::new(IoStats::default()),
             receive_buffer,
             send_buffer,
+            #[cfg(test)]
+            next_send_error: None,
         })
     }
     pub fn take_overflow(&mut self) -> u64 {
@@ -569,6 +573,12 @@ impl Udp {
         }
         retry_interrupted(|| {
             self.count(|s| &mut s.send_syscalls, 1);
+            // Socket-local, one-shot syscall failure for owner regressions.
+            // No packet or prefix is submitted; absent from production builds.
+            #[cfg(test)]
+            if let Some(errno) = self.next_send_error.take() {
+                return Err(io::Error::from_raw_os_error(errno));
+            }
             // SAFETY: Every header points into stable owned memory or a live
             // immutable packet slice. sendmsg never mutates payload bytes and
             // retains no userspace pointers. The accepted prefix is returned
@@ -614,6 +624,10 @@ impl Udp {
             self.count(|s| &mut s.send_eintr, 1);
             Err(error)
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn fail_next_send(&mut self, errno: i32) {
+        assert!(self.next_send_error.replace(errno).is_none());
     }
 }
 fn address(storage: &libc::sockaddr_storage, len: libc::socklen_t) -> Option<SocketAddr> {

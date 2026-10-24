@@ -1264,3 +1264,8 @@ The unknown parallel 1200-byte fixture failure remains unattributed; no ASAN
 qualification is inferred. The separate `laboratory-acceptance.json` records
 completion without rewriting raw screen reports or original failures. No live
 WAN qualification, installation, release, commit or push is claimed.
+
+## Phase 16: Native CI fixture isolation
+
+- [X] T101 Correct the PR 9 relay-error test's dependence on timely native ICMP with a socket-local test-only syscall failure; prevent configured fixture ports from entering ephemeral/cross-fixture reuse during a caller's lifetime; retain bounded secret-free E2E failure metadata and CI artifacts. Verify allocator concurrency/PID/namespace cases, both exact failing tests, full native/Python checks, bounded two-CPU parallel repeats and fuzz-adapter compilation. See [CI correction evidence](../../docs/validation/ci-wan-loss.md). The historical foreign packet remains unattributed; successful retries are not causal attribution.
+- [ ] T102 Verify both updated branch-push and PR-merge hosted CI after the correction reaches PR 9. Local passes do not close hosted verification or transfer earlier WAN qualification to new inputs.

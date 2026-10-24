@@ -6827,7 +6827,6 @@ mod tests {
                 )
                 .unwrap();
                 r.sessions.get_mut(&id).unwrap().state = State::Active;
-                drop(target);
                 let mut wire = [0; 128];
                 let len = masque::encode_datagram(stream, b"old-target", &mut wire).unwrap();
                 let expires = now + Duration::from_secs(2);
@@ -6836,20 +6835,21 @@ mod tests {
                     r.snapshot.counters.app_egress_by_direction.to_target, 1,
                     "initial submission"
                 );
-                // POLLERR is readiness too. Leave the native error undrained so
-                // send, rather than the receive/error-queue path, consumes it.
-                let relay = r.sessions[&id].relay.as_ref().unwrap();
-                let _ready = tokio::time::timeout(
-                    Duration::from_secs(1),
-                    relay.ready(tokio::io::Interest::ERROR),
-                )
-                .await
-                .unwrap()
-                .unwrap();
-                let target = std::net::UdpSocket::bind(address).unwrap();
+                // Check the initial real submission before injecting the next
+                // syscall result. Waiting for ICMP here depends on the shared
+                // host's error delivery/rate limits and freed-port reuse.
                 target
                     .set_read_timeout(Some(Duration::from_millis(100)))
                     .unwrap();
+                let mut initial = [0; 128];
+                let (n, _) = target.recv_from(&mut initial).unwrap();
+                assert_eq!(&initial[..n], b"old-target");
+                let relay = r.sessions[&id].relay.as_ref().unwrap();
+                relay
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .fail_next_send(libc::ECONNREFUSED);
                 let relay_local = relay.get_ref().0.borrow().local_addr();
                 if queued {
                     for payload in [b"unaccepted".as_slice(), b"fresh".as_slice()] {

@@ -44,6 +44,17 @@ jobs:
               cargo test --locked --manifest-path tools/safety/Cargo.toml
               python3 -m unittest discover -s tests -p "test_*.py"
             '
+      - name: Retain bounded test failure metadata
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-test-failures-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: |
+            target/test-failures/*/forwarding-failure.json
+            target/test-failures/*/manifest.json
+            target/test-failures/*/summary.json
+            target/test-failures/*/failure.json
       - name: Report qualification scope
         run: |
           echo 'Implemented-contract tests only; empty entry points are not coverage.' >> "$GITHUB_STEP_SUMMARY"

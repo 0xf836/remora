@@ -243,8 +243,13 @@ impl Fixtures {
             .create(&parent)?;
         let retained = parent.join(self.owned_root.file_name().unwrap());
         fs::DirBuilder::new().mode(0o700).create(&retained)?;
-        for name in ["manifest.json", "summary.json", "failure.json"] {
-            let source = self.file("concurrency-result").join(name);
+        for (relative, name) in [
+            ("concurrency-result/manifest.json", "manifest.json"),
+            ("concurrency-result/summary.json", "summary.json"),
+            ("concurrency-result/failure.json", "failure.json"),
+            ("forwarding-failure.json", "forwarding-failure.json"),
+        ] {
+            let source = self.file(relative);
             let mut file = match fs::File::open(source) {
                 Ok(f) => f,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -270,7 +275,10 @@ impl Fixtures {
 }
 impl Drop for Fixtures {
     fn drop(&mut self) {
-        if std::thread::panicking() && self.file("concurrency-result").is_dir() {
+        if std::thread::panicking()
+            && (self.file("concurrency-result").is_dir()
+                || self.file("forwarding-failure.json").is_file())
+        {
             match self.retain_concurrency_failure() {
                 Ok(path) => eprintln!("concurrency failure artifacts: {}", path.display()),
                 Err(_) => eprintln!("could not retain bounded concurrency failure artifacts"),
