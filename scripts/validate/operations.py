@@ -202,7 +202,7 @@ def main():
     shutil.copy2(binary, installed)
     installed.chmod(0o700)
     source_paths = [p for base in [ROOT / "src", ROOT / "tests", ROOT / "examples"] for p in base.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
-    source_paths += [ROOT / p for p in ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "scripts/validate/operations.py", "scripts/validate/operations.sh", "scripts/validate/fixtures.sh"]]
+    source_paths += [ROOT / p for p in ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "scripts/validate/operations.py", "scripts/validate/operations.sh", "scripts/validate/fixtures.sh", "scripts/validate/fixture_ports.py"]]
     manifest = {"schema_version": 1, "timestamp": datetime.now(timezone.utc).isoformat(),
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),

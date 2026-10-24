@@ -4,6 +4,22 @@ use remora_traffic::{
     packet,
 };
 #[test]
+fn delayed_duplicate_and_reordered_deliveries_keep_original_sequence_intervals() {
+    let mut c = Collection::with_limit(100).unwrap();
+    for seq in [0, 21, 10, 21, 29] {
+        c.observe_at(&packet(128, 7, 0, seq, 1000).unwrap(), 7, 0, 2500);
+    }
+    assert_eq!(c.sequence_seconds(10, 3).unwrap(), vec![1, 1, 2]);
+    assert_eq!((c.unique, c.duplicates, c.latency_samples), (4, 1, 4));
+    assert_eq!(c.one_way_delay_max_us, 1500);
+    assert_eq!(c.one_way_delay_min_us, Some(1500));
+    c.observe_at(&packet(128, 7, 0, 30, 5000).unwrap(), 7, 0, 4000);
+    assert_eq!(c.clock_errors, 1);
+    assert_eq!(c.latency_samples, 4);
+    assert!(c.sequence_seconds(10, 1801).is_err());
+    assert_eq!(c.sequence_intervals(&[1, 9, 20]).unwrap(), vec![1, 0, 3]);
+}
+#[test]
 fn baseline_cli_recognizes_and_validates_outer_buffer_override() {
     for value in ["0", "2147483648"] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_remora-traffic"))

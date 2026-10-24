@@ -26,8 +26,64 @@ pub(super) fn install(r: &mut Runner<'_>, transport: Connection) {
             receive_density: ReceiveDensity::default(),
             enqueue_pending: false,
             output_pending: false,
+            pressure_retry: None,
         },
     );
+}
+
+#[test]
+fn full_native_queue_does_not_spin_and_generation_expiry_is_counted_once() {
+    runtime().block_on(async {
+        let f = Fixtures::new();
+        let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+        let resolver = SystemResolver::new(1).unwrap();
+        let now = Instant::now();
+        let (diag, _rx) = Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+        let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+        let mut peer = Pair::new(true);
+        let (a, _) = peer.requests();
+        peer.client.generation = crate::buffers::Generation(2);
+        r.connections.clear();
+        install(&mut r, peer.client);
+        let now = Instant::now();
+        // Submit real encrypted packets without ACK delivery until congestion
+        // credit is exhausted, then fill the native DATAGRAM queue behind it.
+        for _ in 0..256 {
+            let c = &mut r.connections.get_mut(&2).unwrap().transport;
+            match c.enqueue(a, &[7; 1000], now, now, &mut [0; 1452]) {
+                Ok(()) => {
+                    c.generate(&r.pools.ciphertext, now, 1).unwrap();
+                    c.output.clear();
+                }
+                Err(TransportError::Capacity) => break,
+                other => panic!("unexpected admission result {other:?}"),
+            }
+        }
+        assert!(r.connections[&2].transport.quic.is_dgram_send_queue_full());
+        let id = r.create_session(2, a, None, now).unwrap();
+        r.sessions.get_mut(&id).unwrap().state = State::Active;
+        r.queue_outgoing(id, b"waiting", now).unwrap();
+        assert!(!r.schedule_datagrams(2, now).unwrap());
+        assert!(!r.packet_continuation());
+        assert_eq!(r.sessions[&id].queue.used().count, 1);
+        let count = r.connections[&2].transport.quic.dgram_send_queue_len() as u64;
+        r.connections
+            .get_mut(&2)
+            .unwrap()
+            .transport
+            .generate(&r.pools.ciphertext, now + Duration::from_millis(20), 0)
+            .unwrap();
+        r.service_output(2, Instant::now()).unwrap();
+        assert_eq!(
+            r.snapshot.counters.local_drops.queue_expired.to_target,
+            count
+        );
+        r.collect_transport_drops(2).unwrap();
+        assert_eq!(
+            r.snapshot.counters.local_drops.queue_expired.to_target,
+            count
+        );
+    });
 }
 
 #[test]
@@ -127,7 +183,7 @@ fn full_ciphertext_owner_parks_until_readiness_pacing_or_original_expiry() {
                 // polling: cached writable state must not defeat parking. Real
                 // subsequent writable notifications are deliberately eligible.
                 assert!(
-                    !r.poll_io(&mut cx),
+                    !r.poll_io(&mut cx, now),
                     "owner must await physical readiness or its timer"
                 );
                 assert_eq!(r.connections[&2].transport.quic.dgram_send_queue_len(), 0);
@@ -167,7 +223,8 @@ fn full_ciphertext_owner_parks_until_readiness_pacing_or_original_expiry() {
                             .get_mut(&2)
                             .unwrap()
                             .transport
-                            .expire_native(original[0].3),
+                            .expire_native(original[0].3)
+                            .unwrap(),
                         4
                     );
                 }
@@ -837,11 +894,29 @@ fn critical_stop_cancels_only_its_connection_and_preserves_close_generation() {
                 receive_density: ReceiveDensity::default(),
                 enqueue_pending: false,
                 output_pending: false,
+                pressure_retry: None,
             },
         );
         let unaffected = r.create_session(99, other_stream, None, now).unwrap();
         r.sessions.get_mut(&unaffected).unwrap().state = State::Active;
         r.sessions.get_mut(&unaffected).unwrap()._setup = None;
+        let pending = *r
+            .sessions
+            .iter()
+            .find(|(_, s)| s.connection.0 == 2)
+            .unwrap()
+            .0;
+        r.queue_outgoing(pending, b"pending-pressure", now).unwrap();
+        r.schedule_datagrams(2, now).unwrap();
+        let c = r.connections.get_mut(&2).unwrap();
+        assert!(c.transport.generate(&r.pools.ciphertext, now, 1).unwrap() > 0);
+        let front = c.transport.output.front().unwrap();
+        c.pressure_retry = Some(PressureRetry {
+            front: (front.connection(), front.sequence()),
+            started: now,
+            next: now + Duration::from_millis(1),
+        });
+        assert!(!c.output_ready(now));
         pair.client
             .quic
             .stream_shutdown(3, quiche::Shutdown::Read, 0x10c)
@@ -872,6 +947,10 @@ fn critical_stop_cancels_only_its_connection_and_preserves_close_generation() {
         let c = &mut r.connections.get_mut(&2).unwrap().transport;
         assert_eq!(c.quic.local_error().unwrap().error_code, 0x104);
         assert!(c.generate(&r.pools.ciphertext, now, 4).unwrap() > 0);
+        assert!(
+            r.connections[&2].retry_for_front().is_none(),
+            "close packet must not inherit discarded ciphertext backoff"
+        );
         // Another admitted connection continues actual tagged UDP delivery.
         let now = Instant::now();
         r.queue_outgoing(unaffected, b"unaffected", now).unwrap();
@@ -1041,6 +1120,7 @@ fn rejected_mapping_survives_sender_churn_and_fresh_connection_generation() {
                 receive_density: ReceiveDensity::default(),
                 enqueue_pending: false,
                 output_pending: false,
+                pressure_retry: None,
             },
         );
         let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -1083,12 +1163,12 @@ fn native_backpressure_commits_only_actual_fair_enqueue_progress() {
                 .enqueue(a, &[1; 1200], now, now, &mut scratch)
                 .unwrap();
         }
-        assert!(r.schedule_datagrams(2, now).unwrap());
+        assert!(!r.schedule_datagrams(2, now).unwrap());
         assert_eq!(r.sessions[&ids[0]].queue.used().count, 3);
         assert_eq!(r.sessions[&ids[1]].queue.used().count, 4);
         let committed = r.connections[&2].cursors[3];
         for _ in 0..8 {
-            assert!(r.schedule_datagrams(2, now).unwrap());
+            assert!(!r.schedule_datagrams(2, now).unwrap());
         }
         assert_eq!(r.connections[&2].cursors[3].last, committed.last);
         assert_eq!(r.connections[&2].cursors[3].ceiling, committed.ceiling);
@@ -1105,7 +1185,7 @@ fn native_backpressure_commits_only_actual_fair_enqueue_progress() {
             transport.quic.dgram_send_queue_len(),
             cfg.limits().quiche_dgram_packets - 1
         );
-        assert!(r.schedule_datagrams(2, Instant::now()).unwrap());
+        assert!(!r.schedule_datagrams(2, Instant::now()).unwrap());
         assert_eq!(r.sessions[&ids[0]].queue.used().count, 3);
         assert_eq!(
             r.sessions[&ids[1]].queue.used().count,

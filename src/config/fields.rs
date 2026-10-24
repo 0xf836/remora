@@ -109,6 +109,7 @@ pub(super) fn validate_document_fields(root: &toml::Table) -> Result<(), ConfigE
     });
     table!(root, "transport", {
         cc: CongestionControl => false, "expected cubic, reno or bbr2_gcongestion";
+        hystart: bool => false, "expected true or false";
         pacing: Pacing => false, "expected timerfd";
         outer_udp_max_bytes: usize => false, "expected a nonnegative integer";
         application_max_bytes: usize => false, "expected a nonnegative integer";

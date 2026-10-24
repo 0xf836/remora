@@ -16,18 +16,27 @@ pub struct Pair {
     pub pool: BufferPool,
     pub fixture: Fixtures,
     pub outer_caps: [usize; 2],
+    pub one_way_delay: Duration,
 }
 impl Pair {
     pub fn new(capabilities: bool) -> Self {
         Self::with_config(capabilities, |_| {})
     }
     pub fn with_config(capabilities: bool, change: impl FnOnce(&Fixtures)) -> Self {
+        Self::with_transport_config(capabilities, change, |_| {})
+    }
+    pub fn with_transport_config(
+        capabilities: bool,
+        change: impl FnOnce(&Fixtures),
+        transport_change: impl FnOnce(&mut quiche::Config),
+    ) -> Self {
         let fixture = Fixtures::new();
         change(&fixture);
         let client = ValidatedConfig::load(&fixture.file("client.toml")).unwrap();
         let server = ValidatedConfig::load(&fixture.file("server.toml")).unwrap();
         let mut cc = transport::config(&client).unwrap();
         let mut sc = transport::config(&server).unwrap();
+        transport_change(&mut cc);
         if !capabilities {
             sc.enable_dgram(false, 0, 0);
         }
@@ -67,9 +76,11 @@ impl Pair {
             pool: BufferPool::new(largest, largest * 128).unwrap(),
             fixture,
             outer_caps,
+            one_way_delay: Duration::ZERO,
         }
     }
     pub fn pump(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
         for direction in 0..2 {
             let (from, to) = if direction == 0 {
                 (&mut self.client, &mut self.server)
@@ -85,8 +96,31 @@ impl Pair {
             }
             let mut buffer = vec![0; self.outer_caps[direction]];
             for _ in 0..32 {
+                // Slow gcongestion fixtures must advance physical time before
+                // delivery, rather than ACK packets whose recovery timestamp
+                // still lies in the future. Capture the pre-send decision.
+                if from.quic.pacing_enabled()
+                    && from.quic.gcongestion_enabled() == Some(true)
+                    && let Some(at) = from
+                        .quic
+                        .get_next_release_time()
+                        .and_then(|decision| decision.time(Instant::now()))
+                {
+                    assert!(
+                        at <= deadline,
+                        "fixture pacing exceeds bounded pump deadline"
+                    );
+                    std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                }
                 match from.quic.send(&mut buffer) {
                     Ok((n, info)) => {
+                        assert!(
+                            Instant::now() + self.one_way_delay <= deadline,
+                            "fixture delivery exceeds bounded pump deadline"
+                        );
+                        if !self.one_way_delay.is_zero() {
+                            std::thread::sleep(self.one_way_delay);
+                        }
                         assert!(
                             n <= self.outer_caps[1 - direction],
                             "output exceeds advertised peer cap"
@@ -108,7 +142,9 @@ impl Pair {
         }
     }
     pub fn negotiate(&mut self) -> Result<(), TransportError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
         for _ in 0..300 {
+            assert!(Instant::now() < deadline, "fixture negotiation deadline");
             self.pump();
             let cr = self.client.negotiate()?;
             let sr = self.server.negotiate()?;
@@ -126,6 +162,7 @@ impl Pair {
     }
     pub fn requests(&mut self) -> (u64, u64) {
         self.negotiate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
         let token = std::fs::read_to_string(self.fixture.file("client.token")).unwrap();
         let headers = masque::request_headers(
             "remora.test",
@@ -140,6 +177,7 @@ impl Pair {
             .send_request(&mut self.client.quic, &headers, false)
             .unwrap();
         for _ in 0..20 {
+            assert!(Instant::now() < deadline, "fixture request deadline");
             self.pump();
             while self
                 .server

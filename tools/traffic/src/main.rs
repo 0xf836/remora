@@ -1,4 +1,6 @@
 use remora_traffic::{Collection, baseline, decode, measurement, packet};
+mod schedule;
+mod timeline;
 use std::{
     collections::HashMap,
     io,
@@ -32,6 +34,19 @@ fn millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+fn micros() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64
+}
+fn record_arrival(counts: &mut [u64], start_ms: u64, received_us: u64) {
+    if let Some(relative) = received_us.checked_sub(start_ms * 1000)
+        && let Some(slot) = counts.get_mut((relative / 1_000_000) as usize)
+    {
+        *slot += 1;
+    }
 }
 fn slot_offset(tick: u64, rate: u64, quantum_us: u64) -> Duration {
     let nanos = tick * 1_000_000_000 / rate;
@@ -111,6 +126,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "--io",
         "--seconds",
         "--pps",
+        "--rate-steps-pps",
         "--reverse-pps",
         "--pacing-quantum-us",
         "--completion-guard-ms",
@@ -121,6 +137,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "--sessions",
         "--batch-max",
         "--application-pool-bytes",
+        "--relay-application-max-bytes",
+        "--relay-outer-max-bytes",
         "--outer-socket-buffer-bytes",
         "--warmup-seconds",
         "--input",
@@ -161,7 +179,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             required(&a, "--to")?.parse()?,
             a.get("--io").map_or("mmsg", String::as_str),
             number(&a, "--batch-max", 32)? as usize,
-            number(&a, "--application-pool-bytes", 8 * 1024 * 1024)? as usize,
+            baseline::Buffers {
+                application_pool_bytes: number(&a, "--application-pool-bytes", 8 * 1024 * 1024)?
+                    as usize,
+                application_max_bytes: number(&a, "--relay-application-max-bytes", 1200)? as usize,
+                outer_udp_max_bytes: number(&a, "--relay-outer-max-bytes", 1350)? as usize,
+            },
             usize::try_from(number(
                 &a,
                 "--outer-socket-buffer-bytes",
@@ -184,9 +207,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let session = number(&a, "--session", 1)?;
     let drain = number(&a, "--drain-ms", 200)?;
     if ![0, 20].contains(&completion_guard)
-        || ![0, 100].contains(&pacing_quantum)
+        || ![0, 100, 1000].contains(&pacing_quantum)
         || seconds == 0
-        || seconds > 300
+        || seconds > 1800
         || warmup > 60
         || ![1, 32].contains(&sessions)
         || pps > 1_000_000 / sessions
@@ -197,13 +220,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("bounded traffic profile exceeded".into());
     }
+    let steps = a
+        .get("--rate-steps-pps")
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    if steps.is_some() && (warmup != 0 || completion_guard != 0) {
+        return Err("rate steps require zero warmup and completion guard".into());
+    }
+    let schedule = steps
+        .as_ref()
+        .map(|steps| schedule::Schedule::steps(seconds, steps, pps.max(reverse)))
+        .transpose()?;
     let start_ms = number(&a, "--start-ms", millis() + 1000)?;
-    let wall = millis();
-    if start_ms < wall || start_ms > wall + 120_000 {
+    let epoch_us = micros();
+    let base = Instant::now();
+    let wall = epoch_us / 1000;
+    if start_ms <= wall || start_ms > wall + 120_000 {
         return Err("start clock outside bounded window".into());
     }
-    let base = Instant::now();
-    let start = base + Duration::from_millis(start_ms - wall);
+    let start = base + Duration::from_micros(start_ms * 1000 - epoch_us);
     let warm_start = start
         .checked_sub(Duration::from_secs(warmup))
         .ok_or("warmup clock range")?;
@@ -232,6 +272,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let sequence_limit = (pps.max(reverse) * seconds + 1).max(1);
     let mut reverse_collection = Collection::with_limit(sequence_limit)?;
     let mut rtt = Vec::new();
+    let mut steady_rtt = Vec::new();
+    let mut arrival_seconds = vec![0u64; (seconds + drain.div_ceil(1000)) as usize];
+    let timeline_seconds = (seconds + drain.div_ceil(1000)).min(30);
+    let mut offered_10ms = timeline::Bins::new(start_ms * 1000, timeline_seconds);
+    let mut arrival_10ms = timeline::Bins::new(start_ms * 1000, timeline_seconds);
+    let mut rtt_max_10ms = timeline::Bins::new(start_ms * 1000, timeline_seconds);
     let mut sent = 0u64;
     let mut enqueue_failures = 0u64;
     let mut offered = 0u64;
@@ -279,6 +325,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let measured = next_send >= start;
                 if sender {
+                    let stamp = epoch_us + base.elapsed().as_micros() as u64;
                     let bytes = packet(
                         size,
                         session,
@@ -288,10 +335,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             WARM | warm_sequence
                         },
-                        base.elapsed().as_micros() as u64,
+                        stamp,
                     )?;
                     if measured {
                         offered += 1;
+                        offered_10ms.increment(stamp);
                     } else {
                         warm_offered += 1;
                     }
@@ -322,10 +370,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             warm_sequences.entry(*id).or_default()
                         };
-                        let bytes =
-                            packet(size, *id, 1, if measured { *seq } else { WARM | *seq }, 0)?;
+                        let stamp = epoch_us + base.elapsed().as_micros() as u64;
+                        let bytes = packet(
+                            size,
+                            *id,
+                            1,
+                            if measured { *seq } else { WARM | *seq },
+                            stamp,
+                        )?;
                         if measured {
                             offered += 1;
+                            offered_10ms.increment(stamp);
                         } else {
                             warm_offered += 1;
                         }
@@ -351,14 +406,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send_ticks += 1;
                 next_send = warm_start
-                    + scheduled_offset(
-                        send_ticks,
-                        rate,
-                        warmup,
-                        seconds,
-                        pacing_quantum,
-                        completion_guard,
-                    );
+                    + if let Some(schedule) = &schedule {
+                        schedule.offset(send_ticks, pacing_quantum)
+                    } else {
+                        scheduled_offset(
+                            send_ticks,
+                            rate,
+                            warmup,
+                            seconds,
+                            pacing_quantum,
+                            completion_guard,
+                        )
+                    };
             }
         }
         for _ in 0..32 {
@@ -375,18 +434,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         match decode(bytes) {
                             Ok(h) if h.direction == 2 && h.session == session => {
                                 let age = base.elapsed().as_micros() as u64;
+                                let Some(probe_stamp) =
+                                    timeline::probe_epoch(epoch_us, h.stamp, age)
+                                else {
+                                    reverse_collection.corrupt += 1;
+                                    continue;
+                                };
                                 if now >= start
                                     && h.stamp >= (start - base).as_micros() as u64
                                     && rtt.len() < 65536
                                 {
                                     rtt.push(age.saturating_sub(h.stamp));
+                                    rtt_max_10ms.maximum(probe_stamp, age - h.stamp);
+                                    // Use submission, not delayed arrival, to
+                                    // keep startup probes out of steady RTT.
+                                    if h.stamp >= (start - base).as_micros() as u64 + 2_000_000 {
+                                        steady_rtt.push(age.saturating_sub(h.stamp));
+                                    }
                                 }
                             }
                             Ok(h)
                                 if h.sequence & WARM != 0
                                     && h.direction == 1
                                     && h.session == session => {}
-                            _ => reverse_collection.observe(bytes, session, 1),
+                            _ => {
+                                let before = reverse_collection.unique;
+                                let received = epoch_us + base.elapsed().as_micros() as u64;
+                                reverse_collection.observe_at(bytes, session, 1, received);
+                                if reverse_collection.unique > before {
+                                    record_arrival(&mut arrival_seconds, start_ms, received);
+                                    arrival_10ms.increment(received);
+                                }
+                            }
                         }
                     } else if let Ok(h) = decode(bytes) {
                         if peers.len() < sessions as usize || peers.contains_key(&h.session) {
@@ -400,12 +479,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if h.direction == 2 {
                             socket.send_to(bytes, from)?;
                         } else if h.sequence & WARM == 0 {
-                            collected
-                                .entry(h.session)
-                                .or_insert_with(|| {
-                                    Collection::with_limit(sequence_limit).expect("validated bound")
-                                })
-                                .observe(bytes, h.session, 0);
+                            let c = collected.entry(h.session).or_insert_with(|| {
+                                Collection::with_limit(sequence_limit).expect("validated bound")
+                            });
+                            let before = c.unique;
+                            let received = epoch_us + base.elapsed().as_micros() as u64;
+                            c.observe_at(bytes, h.session, 0, received);
+                            if c.unique > before {
+                                record_arrival(&mut arrival_seconds, start_ms, received);
+                                arrival_10ms.increment(received);
+                            }
                         }
                     } else if cmd == "responder" {
                         socket.send_to(bytes, from)?;
@@ -423,12 +506,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let rate = if sender { pps } else { reverse };
-    let expected = rate * seconds * if sender { 1 } else { peers.len() as u64 };
+    let expected = (if rate == 0 {
+        0
+    } else {
+        schedule.as_ref().map_or(rate * seconds, |s| s.total())
+    }) * if sender { 1 } else { peers.len() as u64 };
     let generator_unscheduled = expected.saturating_sub(offered);
     let p95 = measurement::percentile(&mut rtt.clone(), 95);
+    let steady_p95 = measurement::percentile(&mut steady_rtt, 95);
+    let forward_sequence_seconds: HashMap<_, _> = collected
+        .iter()
+        .map(|(id, c)| {
+            (
+                *id,
+                (if let Some(schedule) = &schedule {
+                    c.sequence_intervals(&schedule.rates)
+                } else {
+                    c.sequence_seconds(pps, seconds as usize)
+                })
+                .expect("validated duration"),
+            )
+        })
+        .collect();
+    let reverse_sequence_seconds = (if let Some(schedule) = &schedule {
+        reverse_collection.sequence_intervals(&schedule.rates)
+    } else {
+        reverse_collection.sequence_seconds(reverse, seconds as usize)
+    })
+    .expect("validated duration");
     println!(
         "{}",
-        serde_json::json!({"schema_version":1,"completion_guard_ms":completion_guard,"tail_max_visit_gap_us":tail_max_visit_gap_us,"last_measured_submission_remaining_us":last_measured_submission_remaining_us,"pacing_quantum_us":pacing_quantum,"role":cmd,"size":size,"sessions":if sender{1}else{peers.len()},"interval_seconds":seconds,"drain_ms":drain,"warmup_seconds":warmup,"warmup_offered":warm_offered,"warmup_failures":warm_failures,"offered":offered,"submitted":sent,"enqueue_failures":enqueue_failures,"generator_unscheduled":generator_unscheduled,"generator_excess":offered.saturating_sub(expected),"reverse_received":reverse_collection,"forward_received":collected,"rtt_samples_us":rtt,"rtt_p95_us":p95,"start_ms":start_ms,"elapsed_ms":base.elapsed().as_millis()})
+        serde_json::json!({"timeline_bin_us":timeline::BIN_US,"timeline_seconds":timeline_seconds,"offered_10ms":offered_10ms.values,"arrival_10ms":arrival_10ms.values,"rtt_max_10ms_us":rtt_max_10ms.values,"rate_steps_pps":steps,"steady_rtt_samples":steady_rtt.len(),"steady_rtt_p95_us":steady_p95,"clock_mapping":"startup_epoch_plus_monotonic_elapsed","arrival_seconds":arrival_seconds,"forward_sequence_seconds":forward_sequence_seconds,"reverse_sequence_seconds":reverse_sequence_seconds,"schema_version":1,"completion_guard_ms":completion_guard,"tail_max_visit_gap_us":tail_max_visit_gap_us,"last_measured_submission_remaining_us":last_measured_submission_remaining_us,"pacing_quantum_us":pacing_quantum,"role":cmd,"size":size,"sessions":if sender{1}else{peers.len()},"interval_seconds":seconds,"drain_ms":drain,"warmup_seconds":warmup,"warmup_offered":warm_offered,"warmup_failures":warm_failures,"offered":offered,"submitted":sent,"enqueue_failures":enqueue_failures,"generator_unscheduled":generator_unscheduled,"generator_excess":offered.saturating_sub(expected),"reverse_received":reverse_collection,"forward_received":collected,"rtt_samples_us":rtt,"rtt_p95_us":p95,"start_ms":start_ms,"elapsed_ms":base.elapsed().as_millis()})
     );
     Ok(())
 }

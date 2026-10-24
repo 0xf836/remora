@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "scope": "Prospective bounded local ENOBUFS retry experiment; no acceptance waiver",
+  "interval_ms": 1,
+  "window_ms": 5,
+  "identity": "original ciphertext generation and sequence",
+  "expiry": "Original ciphertext expiry remains in force; no timestamp reset",
+  "exhaustion": "Discard only exact still-unaccepted FIFO front and count separately",
+  "buffers": "Original requested outer1048576/relay131072",
+  "topology": "Original20ms/1Gbit/netem2048",
+  "comparison": "Same-executable pre-retry control versus retry candidate; 3 alternating pairs of32x1200 at91136pps for60s plus3s loaded warmup",
+  "followup": "Original frozen code/profile regression, WAN matrix and delay/fault/resource/soak gates remain required"
+}

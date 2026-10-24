@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Test-only provisioning; never edits networking or an existing directory.
 set -euo pipefail
-exec python3 - "$@" <<'PY'
+fixture_script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+exec python3 - "$fixture_script_dir" "$@" <<'PY'
 import argparse
 import hashlib
 import json
@@ -9,9 +10,11 @@ import os
 from pathlib import Path
 import secrets
 import shutil
-import socket
 import subprocess
 import sys
+
+sys.path.insert(0, sys.argv.pop(1))
+from fixture_ports import reserve_ports
 
 parser = argparse.ArgumentParser(description="Generate private, isolated Remora fixtures")
 parser.add_argument("--output", required=True)
@@ -28,14 +31,9 @@ try:
     host = "::1" if args.family == "ipv6" else "127.0.0.1"
     bracketed = f"[{host}]" if args.family == "ipv6" else host
     prefix = 128 if args.family == "ipv6" else 32
-    for _ in range(3):
-        sock = socket.socket(socket.AF_INET6 if args.family == "ipv6" else socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind((host, 0))
-        if sock.getsockname()[1] < 1024:
-            raise RuntimeError("invalid ephemeral port")
-        sockets.append(sock)
-    client_port, proxy_port, target_port = [s.getsockname()[1] for s in sockets]
-    # Hold all sockets until provisioning completes, keeping selected ports distinct.
+    (client_port, proxy_port, target_port), sockets = reserve_ports(args.family)
+    # Hold both-family sockets while provisioning; caller-lifetime leases also
+    # protect the later handoff, intentional restarts and fixture cleanup.
     def openssl(*options):
         subprocess.run(["openssl", *options], cwd=root, check=True, timeout=10,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -85,8 +83,7 @@ credentials_file = "credentials.toml"
     (root / "ports.json").write_text(json.dumps({"client": client_port, "proxy": proxy_port, "target": target_port}) + "\n")
     for path in root.iterdir():
         path.chmod(0o600)
-    # Ephemeral ports are selections, not reservations after this script exits.
-    # Future process runners bind immediately and retry only with fresh fixtures.
+    # The caller-lifetime lease outlives these temporary socket reservations.
 except FileExistsError:
     print("fixture output already exists; refusing overwrite", file=sys.stderr)
     sys.exit(2)

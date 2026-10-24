@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "frozen_before_refined_candidate_measurements": true,
+  "scope": "Prospective local residence refinement; no numeric acceptance threshold changes",
+  "reason": "One60ms/1000byteforward190ms repeat lost1.0064% cold, with0steady/kernelRX/outerQUIC loss and5034queue expirations. Retain this failure. Compare194/195ms within unchanged200ms added-delay gate.",
+  "profiles": {
+    "bounded194": {
+      "session_queue_packets": 8192,
+      "session_queue_bytes": 8388608,
+      "application_residence_ms": 194,
+      "reserve_ms": 6
+    },
+    "bounded195": {
+      "session_queue_packets": 8192,
+      "session_queue_bytes": 8388608,
+      "application_residence_ms": 195,
+      "reserve_ms": 5
+    }
+  },
+  "selection": "All3repetitions pass unchanged cold/steady/delay/resource gates, then lower latency among declared sufficient candidates. Arithmetic reserve alone is not proof of the delay gate.",
+  "constraints": "Same binary/controller/buffers and8MiB global pool; no default promotion; full selected WG grid/fault/soak plus targeted32-session selected-profile regression remain required"
+}

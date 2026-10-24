@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "frozen_before_new_acceptance_measurements": true,
+  "authorization": "Owner selected keeping <=200 ms added delay and separately normalizing cold startup at RTT 100 ms on 2026-10-24",
+  "scope": "New measurements only. Earlier 100 ms runs remain failed under wan-loss.json; this does not relabel them.",
+  "cold_loss_max_percent_by_rtt_ms": {"55": 1.0, "60": 1.0, "100": 4.0},
+  "rtt100_startup_loss_payload_bytes_max": 20000000,
+  "rtt100_startup_recovery_required": true,
+  "rationale": "14,520-byte initial window at 100 ms RTT has an optimistic ordinary slow-start deficit of about 11.3 MB under a 200 ms queue-age budget; existing 20-second runs lost about 14.2-15.5 MB. Freeze a finite 20 MB cold-start budget (4% at 200 Mbit/s over 20 seconds) before new measurements, with the original >=190 Mbit/s within 2 seconds for 3 seconds and unchanged steady loss/delay/resource checks.",
+  "unchanged": ["200 ms added one-way maximum", "5 ms steady added RTT p95", "0.1 percentage point steady added loss", "198 Mbit/s steady delivery", "all existing SC-003/004/005/007 gates", "no loaded warmup", "no live installation"]
+}

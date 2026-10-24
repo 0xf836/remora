@@ -15,6 +15,26 @@ fn invalid(f: &Fixtures, file: &str) -> remora::config::ConfigError {
 }
 
 #[test]
+fn classic_startup_profile_is_explicit_and_defaults_remain_compatible() {
+    let f = Fixtures::new();
+    let path = f.file("client.toml");
+    let base = fs::read_to_string(&path).unwrap();
+    assert!(ValidatedConfig::load(&path).unwrap().transport().hystart);
+    for value in [true, false] {
+        fs::write(&path, format!("{base}\n[transport]\nhystart = {value}\n")).unwrap();
+        let config = ValidatedConfig::load(&path).unwrap();
+        assert_eq!(config.transport().hystart, value);
+        assert!(remora::transport::config(&config).is_ok());
+    }
+    fs::write(
+        &path,
+        format!("{base}\n[transport]\nhystart = \"private-invalid-value\"\n"),
+    )
+    .unwrap();
+    assert!(!format!("{}", invalid(&f, "client.toml")).contains("private-invalid-value"));
+}
+
+#[test]
 fn logging_controls_validate_without_echoing_invalid_values() {
     use remora::config::{Level, LogFormat};
     let f = Fixtures::new();

@@ -38,8 +38,9 @@ a future public commitment receipt can replace it with the same guarantees.
 ## Queue and scheduler rules
 
 Application residence is 20 ms by default. Native outgoing DATAGRAM queues have
-count/byte reservations and a conservative earliest expiry; expiration purges
-the entire cancellable queue. The native incoming queue also inherits its oldest
+count/byte reservations and original per-datagram expiry. ADR 0033 supersedes
+the former purge-all outgoing rule: expiration removes only due entries and
+recomputes the next deadline after send, close and PMTU pruning. The native incoming queue inherits its oldest
 receive epoch until emptied. A socket-backpressure queue retains that original
 expiry, rather than starting a fresh residence interval. Wire validation still
 precedes expired-payload discard.

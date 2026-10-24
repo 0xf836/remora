@@ -21,6 +21,19 @@ The full workload, three bounded-reference-v2 paired runs, 32-session/resource/r
 
 ## Prospective regression comparisons
 
+The WAN loss-remediation increment additionally uses
+[`wan-loss.json`](../../../benchmarks/policies/wan-loss.json) and the
+prospective [candidate expansion](../../../benchmarks/policies/wan-loss-candidates-v2.json).
+These are extra workload gates, not replacements for SC-003/004/005/007 or
+their reference workloads. The [current validation record](../../../docs/validation/wan-loss.md)
+separates individual screen results, invalid/missing evidence and full acceptance.
+No default controller/queue change or live installation follows from an isolated
+passing result. Every comparative metric requires a valid matched baseline.
+In a 20/50/100/200-Mbit/s offered-rate transition test, the >=190-Mbit/s
+recovery target applies at the final transition to 200 Mbit/s. It does not
+apply to the deliberately offered 20-Mbit/s initial phase; constant-200-Mbit/s
+cold-start recovery retains its original target and deadline.
+
 The matching unencrypted relay establishes release throughput/loss/latency criteria; a recorded **pre-change Remora revision** establishes performance regression comparisons. Preserve both references. The first MVP measurements need no prior Remora reference or invented tolerance and cannot claim a regression pass.
 
 After the first MVP measurements, before implementing a critical-path change or measuring its candidate, freeze a regression policy in a new comparison manifest; never rewrite the immutable baseline run to add later decisions. Identify the pre-change revision and manifest hash, the currently implemented workload/profile/platform coverage, and the metric bounds: maximum throughput decrease and maximum increases in delivered loss, p95 RTT, CPU and RSS, with explicit units and absolute/relative interpretation. Declare matching offered load/directions/session counts, repetition/interval/pair-order and noise-handling method. Justify tolerances using reference variability and the intended trade-off; do not invent universal percentages before evidence exists. If reference evidence is insufficient, collect additional declared pre-change samples in normal incremental work. New workloads require their own reference before an improvement/regression claim; they do not require a full release matrix or ARM64 evidence before x86_64 development.

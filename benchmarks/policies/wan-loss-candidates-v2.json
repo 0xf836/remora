@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "frozen_before_these_candidate_measurements": true,
+  "scope": "Prospective candidate expansion only; all wan-loss.json acceptance thresholds unchanged",
+  "profile": "bounded",
+  "session_queue_packets": 8192,
+  "session_queue_bytes": 8388608,
+  "application_residence_ms": 190,
+  "reason": "Reserve 10 ms of the existing 200 ms end-to-end added-delay budget for local service and bounded BBR generation lookahead. The earlier 200 ms residence leaves no such reserve.",
+  "selection": "No default change without all original WAN and regression gates. This expansion does not accept failed cold-start or delay measurements."
+}

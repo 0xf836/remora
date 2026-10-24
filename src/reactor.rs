@@ -28,6 +28,15 @@ use tokio::{
 // Generation and physical submission share one 32-item owner visit.
 const OUTPUT_QUOTA: usize = 16;
 const DENSITY_HISTORY: usize = 32;
+const PRESSURE_RETRY_INTERVAL: Duration = Duration::from_millis(1);
+const PRESSURE_RETRY_WINDOW: Duration = Duration::from_millis(5);
+
+#[derive(Clone, Copy)]
+struct PressureRetry {
+    front: (crate::buffers::Generation, u64),
+    started: Instant,
+    next: Instant,
+}
 
 /// Recent nonempty outer-packet observations, local to one connection owner.
 /// ACK-only packets and queue drains must not age out coalescing evidence.
@@ -78,8 +87,36 @@ struct OwnedConnection {
     receive_density: ReceiveDensity,
     enqueue_pending: bool,
     output_pending: bool,
+    pressure_retry: Option<PressureRetry>,
 }
 impl OwnedConnection {
+    fn retry_for_front(&self) -> Option<PressureRetry> {
+        self.pressure_retry.filter(|retry| {
+            self.transport
+                .output
+                .front()
+                .is_some_and(|packet| (packet.connection(), packet.sequence()) == retry.front)
+        })
+    }
+    fn output_ready(&self, now: Instant) -> bool {
+        self.transport
+            .output
+            .front()
+            .is_some_and(|packet| packet.at() <= now)
+            && self
+                .retry_for_front()
+                .is_none_or(|retry| now >= retry.next.min(retry.started + PRESSURE_RETRY_WINDOW))
+    }
+    fn pressure_deadline(&self, now: Instant) -> Option<Instant> {
+        self.retry_for_front().map(|retry| {
+            let end = retry.started + PRESSURE_RETRY_WINDOW;
+            if retry.next > now {
+                retry.next.min(end)
+            } else {
+                end
+            }
+        })
+    }
     fn generate_output(
         &mut self,
         pool: &crate::buffers::BufferPool,
@@ -725,6 +762,7 @@ impl<'a> Runner<'a> {
                 receive_density: ReceiveDensity::default(),
                 enqueue_pending: false,
                 output_pending: false,
+                pressure_retry: None,
             },
         );
         self.primary = Some(generation.0);
@@ -787,6 +825,7 @@ impl<'a> Runner<'a> {
         self.client_state(ClientState::Rejected, now)
     }
     fn remove_connection(&mut self, id: u64, now: Instant) -> Result<(), RuntimeError> {
+        self.collect_transport_drops(id)?;
         // A draining, non-primary connection can still carry accepted streams.
         // Losing it is real loss even when its replacement is already ready.
         if (self.primary == Some(id)
@@ -820,6 +859,7 @@ impl<'a> Runner<'a> {
                 .checked_add(c.transport.output.len() as u64)
                 .ok_or(RuntimeError::Diagnostics)?;
             c.transport.stop();
+            c.pressure_retry = None;
             if !self.server {
                 self.retired_io = self
                     .retired_io
@@ -839,6 +879,7 @@ impl<'a> Runner<'a> {
         Ok(())
     }
     fn stop_connection(&mut self, id: u64) -> Result<(), RuntimeError> {
+        self.collect_transport_drops(id)?;
         if let Some(c) = self.connections.get_mut(&id) {
             self.snapshot.recovery.discarded_ciphertext = self
                 .snapshot
@@ -847,6 +888,7 @@ impl<'a> Runner<'a> {
                 .checked_add(c.transport.output.len() as u64)
                 .ok_or(RuntimeError::Diagnostics)?;
             c.transport.stop();
+            c.pressure_retry = None;
         }
         Ok(())
     }
@@ -1279,6 +1321,7 @@ impl<'a> Runner<'a> {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             generation.0
@@ -2223,10 +2266,12 @@ impl<'a> Runner<'a> {
                             .get_mut(&connection)
                             .ok_or(RuntimeError::Transport)?;
                         c.cursors[3] = previous;
-                        // A full committed FIFO needs physical/pacing progress,
-                        // not an immediate application-enqueue continuation.
-                        // Original queue expiries remain owner deadlines.
-                        return Ok(!c.transport.output_full());
+                        // Both full native input and full committed output
+                        // need transport/socket/pacing progress, not another
+                        // identical enqueue attempt. Previously admitted input
+                        // already carries output_pending until generation is
+                        // attempted; ACKs, timers and original expiries wake us.
+                        return Ok(false);
                     }
                     Err(error) => {
                         s.queue.pop(direction);
@@ -3080,6 +3125,29 @@ impl<'a> Runner<'a> {
         }
     }
     fn service_output(&mut self, connection: u64, now: Instant) -> Result<bool, OutputError> {
+        let result = self.service_output_inner(connection, now);
+        // Generation may expire input before returning an error. Consume its
+        // ledger on both exits, before teardown can retire this connection.
+        self.collect_transport_drops(connection)
+            .map_err(OutputError::Socket)?;
+        result
+    }
+    fn service_output_inner(&mut self, connection: u64, now: Instant) -> Result<bool, OutputError> {
+        let c = self
+            .connections
+            .get_mut(&connection)
+            .ok_or(OutputError::Socket(RuntimeError::Transport))?;
+        if c.retry_for_front().is_some() {
+            // Preserve original expiry/setup/PMTU checks while a pressure
+            // deadline suppresses physical submission and generation.
+            c.transport
+                .generate(&self.pools.ciphertext, now, 0)
+                .map_err(OutputError::Transport)?;
+            if c.retry_for_front().is_some() && !c.output_ready(now) {
+                c.output_pending = false;
+                return Ok(false);
+            }
+        }
         let ready = self
             .connections
             .get(&connection)
@@ -3091,8 +3159,6 @@ impl<'a> Runner<'a> {
         let mut remaining = OUTPUT_QUOTA;
         let mut more = false;
         if ready {
-            // A zero-generation preparation preserves expiry, setup and PMTU
-            // checks before any committed packet is physically submitted.
             self.connections
                 .get_mut(&connection)
                 .ok_or(OutputError::Socket(RuntimeError::Transport))?
@@ -3112,6 +3178,13 @@ impl<'a> Runner<'a> {
             // Spend the descriptors offered, including unaccepted suffixes.
             // Partial sends/errors cannot enlarge this visit's send budget.
             remaining -= offered;
+            if self.connections[&connection].retry_for_front().is_some() {
+                self.connections
+                    .get_mut(&connection)
+                    .unwrap()
+                    .output_pending = false;
+                return Ok(false);
+            }
         }
         let generated = self
             .connections
@@ -3123,6 +3196,13 @@ impl<'a> Runner<'a> {
             more |= self
                 .flush_limit(connection, Instant::now(), remaining)
                 .map_err(OutputError::Socket)?;
+        }
+        if self.connections[&connection].retry_for_front().is_some() {
+            self.connections
+                .get_mut(&connection)
+                .unwrap()
+                .output_pending = false;
+            return Ok(false);
         }
         Ok(more || generated == OUTPUT_QUOTA)
     }
@@ -3140,6 +3220,26 @@ impl<'a> Runner<'a> {
             .connections
             .get_mut(&connection)
             .ok_or(RuntimeError::Transport)?;
+        if let Some(retry) = c.retry_for_front() {
+            if now >= retry.started + PRESSURE_RETRY_WINDOW {
+                // Bounded local retry never renews ciphertext residence. A
+                // delayed owner may observe exhaustion before another syscall.
+                c.transport.output.pop_front();
+                c.pressure_retry = None;
+                self.snapshot.counters.outer_send_pressure_dropped = self
+                    .snapshot
+                    .counters
+                    .outer_send_pressure_dropped
+                    .checked_add(1)
+                    .ok_or(RuntimeError::Diagnostics)?;
+                return Ok(true);
+            }
+            if now < retry.next {
+                return Ok(false);
+            }
+        } else {
+            c.pressure_retry = None;
+        }
         let mut socket = self.outer[c.socket].get_ref().0.borrow_mut();
         let packets: Vec<_> = c
             .transport
@@ -3169,6 +3269,9 @@ impl<'a> Runner<'a> {
         drop(packets);
         match result {
             Ok(n) => {
+                if n != 0 {
+                    c.pressure_retry = None;
+                }
                 self.snapshot.counters.outer_socket_sent = self
                     .snapshot
                     .counters
@@ -3229,6 +3332,7 @@ impl<'a> Runner<'a> {
                 // Exact failed FIFO front only; no accepted-prefix replay and
                 // no invented per-Session attribution for encrypted packets.
                 c.transport.output.pop_front();
+                c.pressure_retry = None;
                 // EMSGSIZE can also be an old shared-socket error. Only the
                 // checked error-queue destination may revalidate a QUIC path.
                 self.snapshot.counters.outer_pmtu_errors = self
@@ -3240,18 +3344,23 @@ impl<'a> Runner<'a> {
                 Ok(true)
             }
             Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => {
-                // Native netem/qdisc pressure can reject a send synchronously.
-                // None of this FIFO front was accepted. Let QUIC observe normal
-                // unreliable loss and recover its control frames; keep peers
-                // and unaffected Sessions alive, with bounded owner work.
-                c.transport.output.pop_front();
+                // No prefix was accepted. Retain this exact ciphertext and
+                // wait on a connection-local timer, not shared POLLOUT. The
+                // first failure anchors the finite window across retries.
+                let packet = c.transport.output.front().ok_or(RuntimeError::Transport)?;
+                let started = c.retry_for_front().map_or(now, |retry| retry.started);
+                c.pressure_retry = Some(PressureRetry {
+                    front: (packet.connection(), packet.sequence()),
+                    started,
+                    next: (now + PRESSURE_RETRY_INTERVAL).min(started + PRESSURE_RETRY_WINDOW),
+                });
                 self.snapshot.counters.outer_send_pressure = self
                     .snapshot
                     .counters
                     .outer_send_pressure
                     .checked_add(1)
                     .ok_or(RuntimeError::Diagnostics)?;
-                Ok(true)
+                Ok(false)
             }
             Err(e) if crate::udp::is_peer_error(&e) => {
                 // Shared outer sockets can report an ICMP for destination A
@@ -3260,6 +3369,7 @@ impl<'a> Runner<'a> {
                 // The bounded error-queue path alone has checked destination
                 // metadata. Remaining records are serviced on later turns.
                 c.transport.output.pop_front();
+                c.pressure_retry = None;
                 self.snapshot.counters.outer_async_errors = self
                     .snapshot
                     .counters
@@ -3273,11 +3383,41 @@ impl<'a> Runner<'a> {
                 .map_or(RuntimeError::Socket, RuntimeError::SocketErrno)),
         }
     }
+    fn collect_transport_drops(&mut self, connection: u64) -> Result<(), RuntimeError> {
+        if let Some(c) = self.connections.get_mut(&connection) {
+            let direction = if self.server {
+                Direction::ToClient
+            } else {
+                Direction::ToTarget
+            };
+            for (reason, count) in [
+                (
+                    crate::diagnostics::DropReason::QueueExpired,
+                    c.transport.take_expired_datagrams(),
+                ),
+                (
+                    crate::diagnostics::DropReason::Pmtu,
+                    c.transport.take_pmtu_drops(),
+                ),
+            ] {
+                self.snapshot
+                    .counters
+                    .local_drops
+                    .add(reason, direction, count as u64)
+                    .map_err(|_| RuntimeError::Diagnostics)?;
+            }
+        }
+        Ok(())
+    }
     fn service_transport_timers(&mut self, now: Instant) -> Result<bool, RuntimeError> {
         let mut more = false;
-        let mut expired_native = 0usize;
-        for c in self.connections.values_mut() {
-            expired_native += c.transport.expire_native(now);
+        let ids: Vec<_> = self.connections.keys().copied().collect();
+        for id in ids {
+            let c = self
+                .connections
+                .get_mut(&id)
+                .ok_or(RuntimeError::Transport)?;
+            let expiry_result = c.transport.expire_native(now);
             let lost = c
                 .transport
                 .take_lost_packets()
@@ -3288,34 +3428,9 @@ impl<'a> Runner<'a> {
                 .outer_quic_lost_packets
                 .checked_add(lost as u64)
                 .ok_or(RuntimeError::Diagnostics)?;
-            let pmtu = c.transport.take_pmtu_drops();
-            self.snapshot
-                .counters
-                .local_drops
-                .add(
-                    crate::diagnostics::DropReason::Pmtu,
-                    if self.server {
-                        Direction::ToClient
-                    } else {
-                        Direction::ToTarget
-                    },
-                    pmtu as u64,
-                )
-                .map_err(|_| RuntimeError::Diagnostics)?;
+            self.collect_transport_drops(id)?;
+            expiry_result.map_err(|_| RuntimeError::Transport)?;
         }
-        self.snapshot
-            .counters
-            .local_drops
-            .add(
-                crate::diagnostics::DropReason::QueueExpired,
-                if self.server {
-                    Direction::ToClient
-                } else {
-                    Direction::ToTarget
-                },
-                expired_native as u64,
-            )
-            .map_err(|_| RuntimeError::Diagnostics)?;
         for c in self.connections.values_mut() {
             if c.transport
                 .quic
@@ -3496,6 +3611,19 @@ impl<'a> Runner<'a> {
                 (&mut total.cwnd_total_bytes, v.cwnd_total_bytes),
                 (&mut total.retransmitted_packets, v.retransmitted_packets),
                 (&mut total.pto_count, v.pto_count),
+                (&mut total.spurious_lost_packets, v.spurious_lost_packets),
+                (
+                    &mut total.startup_exit_hystart_paths,
+                    v.startup_exit_hystart_paths,
+                ),
+                (
+                    &mut total.startup_exit_loss_paths,
+                    v.startup_exit_loss_paths,
+                ),
+                (
+                    &mut total.startup_exit_other_paths,
+                    v.startup_exit_other_paths,
+                ),
             ] {
                 if let Some(next) = slot.checked_add(n) {
                     *slot = next;
@@ -3504,6 +3632,23 @@ impl<'a> Runner<'a> {
                 }
             }
             total.overflow |= v.overflow;
+            if v.startup_exit_cwnd_min_bytes != 0 {
+                total.startup_exit_cwnd_min_bytes = if total.startup_exit_cwnd_min_bytes == 0 {
+                    v.startup_exit_cwnd_min_bytes
+                } else {
+                    total
+                        .startup_exit_cwnd_min_bytes
+                        .min(v.startup_exit_cwnd_min_bytes)
+                };
+            }
+            if let Some(next) = total
+                .delivery_rate_total_bytes_per_second
+                .checked_add(v.delivery_rate_total_bytes_per_second)
+            {
+                total.delivery_rate_total_bytes_per_second = next;
+            } else {
+                total.overflow = true;
+            }
         }
         self.snapshot.quic = total;
     }
@@ -3667,8 +3812,9 @@ impl<'a> Runner<'a> {
         for id in ids {
             self.close_session(id, 0x100);
         }
-        for c in self.connections.values_mut() {
-            c.transport.stop();
+        let ids: Vec<_> = self.connections.keys().copied().collect();
+        for id in ids {
+            self.stop_connection(id)?;
         }
         Ok(())
     }
@@ -3713,7 +3859,7 @@ impl<'a> Runner<'a> {
     }
     /// Poll physical readiness independently of staged continuation. A retained
     /// application queue alone cannot wake an owner blocked on ciphertext output.
-    fn poll_io(&self, cx: &mut std::task::Context<'_>) -> bool {
+    fn poll_io(&self, cx: &mut std::task::Context<'_>, now: Instant) -> bool {
         let mut ready = false;
         if poll_timer(&self.timer, cx).is_ready() {
             ready = true;
@@ -3754,12 +3900,7 @@ impl<'a> Runner<'a> {
             }
         }
         for c in self.connections.values() {
-            if c.transport
-                .output
-                .front()
-                .is_some_and(|p| p.at() <= Instant::now())
-                && self.outer[c.socket].poll_write_ready(cx).is_ready()
-            {
+            if c.output_ready(now) && self.outer[c.socket].poll_write_ready(cx).is_ready() {
                 ready = true;
             }
         }
@@ -3953,7 +4094,7 @@ impl<'a> Runner<'a> {
             }
             if now >= self.next_quic_sample {
                 self.sample_quic();
-                self.next_quic_sample = now + Duration::from_secs(5);
+                self.next_quic_sample = now + Duration::from_secs(1);
             }
             if now >= self.next_snapshot {
                 self.record_resources();
@@ -3982,6 +4123,11 @@ impl<'a> Runner<'a> {
                             .any(|s| s.connection.0 == *id && s.state == State::Active),
                     )
                 })
+                .chain(
+                    self.connections
+                        .values()
+                        .filter_map(|c| c.pressure_deadline(now)),
+                )
                 .chain(self.sessions.values().map(|s| {
                     s.deadline(
                         Duration::from_millis(self.cfg.limits().idle_session_ms),
@@ -4045,7 +4191,7 @@ impl<'a> Runner<'a> {
                 } else {
                     0
                 };
-                ready |= self.poll_io(cx);
+                ready |= self.poll_io(cx, Instant::now());
                 if ready {
                     Poll::Ready(false)
                 } else {
@@ -4466,6 +4612,7 @@ mod tests {
                     receive_density: density,
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             assert_eq!(
@@ -4672,6 +4819,20 @@ mod tests {
                     r.service_output(2, now).unwrap();
                     let calls = offered.borrow();
                     assert_eq!(calls[0].len(), old_count.min(OUTPUT_QUOTA as u64) as usize);
+                    if first_result == Err(libc::ENOBUFS) {
+                        assert_eq!(
+                            calls.len(),
+                            1,
+                            "pressure cannot retry in the same owner visit"
+                        );
+                        assert_eq!(
+                            r.connections[&2].transport.output.front().unwrap().bytes(),
+                            &[0]
+                        );
+                        assert!(r.connections[&2].transport.output.len() <= 32);
+                        assert!(!r.packet_continuation());
+                        return;
+                    }
                     assert_eq!(
                         calls.iter().map(Vec::len).sum::<usize>(),
                         OUTPUT_QUOTA,
@@ -5019,6 +5180,7 @@ mod tests {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             let id = r.create_session(2, 0, None, now).unwrap();
@@ -5149,6 +5311,7 @@ mod tests {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             let cases = [
@@ -5278,6 +5441,7 @@ mod tests {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             let token = std::fs::read_to_string(f.file("client.token")).unwrap();
@@ -5366,6 +5530,7 @@ mod tests {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             let id = r.create_session(2, stream, None, now).unwrap();
@@ -5484,6 +5649,7 @@ mod tests {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             let id = r.create_session(2, stream, None, Instant::now()).unwrap();
@@ -5542,7 +5708,8 @@ mod tests {
                     {
                         assert_eq!(masque::response(&list, false), Ok(Response::Rejected(401)));
                         p.server
-                            .expire_native(Instant::now() + Duration::from_secs(61));
+                            .expire_native(Instant::now() + Duration::from_secs(61))
+                            .unwrap();
                         assert!(p.server.is_stopped());
                         assert_eq!(p.server.cleanup_count(), 0);
                         assert_eq!(r.budgets.sessions.used().count, 0);
@@ -5584,6 +5751,7 @@ mod tests {
                     receive_density: ReceiveDensity::default(),
                     enqueue_pending: false,
                     output_pending: false,
+                    pressure_retry: None,
                 },
             );
             let now = Instant::now();
@@ -5759,17 +5927,270 @@ mod tests {
     }
 
     #[test]
-    fn outer_pmtu_or_pressure_discards_only_failed_front_without_application_attribution() {
+    fn outer_pressure_retries_exact_unaccepted_suffix_without_busy_continuation() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        for errno in [
-            libc::EMSGSIZE,
-            libc::ENOBUFS,
-            libc::ECONNREFUSED,
-            libc::EHOSTUNREACH,
-        ] {
+        rt.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            let mut p = Pair::new(true);
+            let (a, _) = p.requests();
+            let now = Instant::now();
+            let generation = *r.connections.keys().next().unwrap();
+            for index in 0..3 {
+                let at = now + Duration::from_millis(index);
+                p.client
+                    .enqueue(a, &[index as u8], at, at, &mut [0; 1350])
+                    .unwrap();
+                assert_eq!(p.client.generate(&p.pool, at, 1).unwrap(), 1);
+            }
+            r.connections.get_mut(&generation).unwrap().transport = p.client;
+            let describe = |packet: &crate::buffers::Ciphertext| {
+                (
+                    packet.bytes().to_vec(),
+                    packet.connection(),
+                    packet.sequence(),
+                    packet.at(),
+                    packet.generated_at(),
+                    packet.expires_at(),
+                )
+            };
+            let original: Vec<_> = r.connections[&generation]
+                .transport
+                .output
+                .iter()
+                .map(&describe)
+                .collect();
+            let due = original.iter().map(|p| p.3).max().unwrap();
+            let calls = Rc::new(std::cell::Cell::new(0));
+            let accepted = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = calls.clone();
+            let capture = accepted.clone();
+            r.outer_send_hook = Some(Box::new(move |packets| {
+                let call = seen.get();
+                seen.set(call + 1);
+                if call == 1 {
+                    return Err(io::Error::from_raw_os_error(libc::ENOBUFS));
+                }
+                let n = if call == 0 { 1 } else { packets.len() };
+                capture
+                    .borrow_mut()
+                    .extend(packets.iter().take(n).map(|p| p.bytes.to_vec()));
+                Ok(n)
+            }));
+            assert!(!r.flush(generation, due).unwrap());
+            assert!(
+                !r.flush(generation, due).unwrap(),
+                "pressure must wait for a deadline"
+            );
+            assert_eq!(
+                r.connections[&generation]
+                    .transport
+                    .output
+                    .iter()
+                    .map(&describe)
+                    .collect::<Vec<_>>(),
+                original[1..]
+            );
+            r.connections.get_mut(&generation).unwrap().output_pending = true;
+            assert!(
+                !r.service_output(generation, due + Duration::from_micros(500))
+                    .unwrap()
+            );
+            assert!(!r.packet_continuation());
+            let mut other = Pair::new(true);
+            let (stream, _) = other.requests();
+            other.client.generation = crate::buffers::Generation(99);
+            other
+                .client
+                .enqueue(stream, b"unaffected", due, due, &mut [0; 1350])
+                .unwrap();
+            assert_eq!(other.client.generate(&other.pool, due, 1).unwrap(), 1);
+            let permit = r.budgets.connections.reserve(1, 0).unwrap();
+            let id = r.diagnostics.next_id().unwrap();
+            r.connections.insert(
+                99,
+                OwnedConnection {
+                    transport: other.client,
+                    socket: 0,
+                    _permit: permit,
+                    _socket_permit: None,
+                    id,
+                    initial_cid: vec![],
+                    cursors: [FairCursor::default(); 7],
+                    commitment_remaining: None,
+                    receive_density: ReceiveDensity::default(),
+                    enqueue_pending: false,
+                    output_pending: false,
+                    pressure_retry: None,
+                },
+            );
+            let due_other = r.connections[&99].transport.output.front().unwrap().at();
+            let script = r.outer_send_hook.take();
+            r.outer_send_hook = Some(Box::new(|packets| Ok(packets.len())));
+            assert!(r.flush(99, due_other).unwrap());
+            assert_eq!(calls.get(), 2);
+            assert!(r.connections[&generation].retry_for_front().is_some());
+            r.outer_send_hook = script;
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                !r.poll_io(&mut cx, due + Duration::from_micros(500)),
+                "POLLOUT alone must not defeat pressure backoff"
+            );
+            assert!(
+                !r.flush(generation, due + Duration::from_micros(999))
+                    .unwrap()
+            );
+            assert_eq!(calls.get(), 2);
+            assert_eq!(
+                r.connections[&generation]
+                    .transport
+                    .output
+                    .iter()
+                    .map(&describe)
+                    .collect::<Vec<_>>(),
+                original[1..]
+            );
+            assert!(r.flush(generation, due + Duration::from_millis(1)).unwrap());
+            assert_eq!(calls.get(), 3);
+            assert_eq!(
+                *accepted.borrow(),
+                original.iter().map(|p| p.0.clone()).collect::<Vec<_>>()
+            );
+            assert!(r.connections[&generation].transport.output.is_empty());
+            assert_eq!(r.snapshot.counters.outer_socket_sent, 4);
+            assert_eq!(r.snapshot.counters.outer_send_pressure, 1);
+        });
+    }
+
+    #[test]
+    fn outer_pressure_window_does_not_refresh_and_original_expiry_still_wins() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for near_expiry in [false, true] {
+            rt.block_on(async {
+                let f = Fixtures::new();
+                let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+                let resolver = SystemResolver::new(1).unwrap();
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut p = Pair::new(true);
+                let (a, _) = p.requests();
+                let now = Instant::now();
+                let generation = *r.connections.keys().next().unwrap();
+                for index in 0..2 {
+                    let at = now + Duration::from_millis(index);
+                    p.client
+                        .enqueue(a, &[index as u8], at, at, &mut [0; 1350])
+                        .unwrap();
+                    assert_eq!(p.client.generate(&p.pool, at, 1).unwrap(), 1);
+                }
+                r.connections.get_mut(&generation).unwrap().transport = p.client;
+                let original: Vec<_> = r.connections[&generation]
+                    .transport
+                    .output
+                    .iter()
+                    .map(|p| (p.bytes().to_vec(), p.sequence(), p.expires_at()))
+                    .collect();
+                let start = if near_expiry {
+                    original[0].2 - Duration::from_micros(500)
+                } else {
+                    r.connections[&generation]
+                        .transport
+                        .output
+                        .iter()
+                        .map(|p| p.at())
+                        .max()
+                        .unwrap()
+                };
+                let calls = Rc::new(std::cell::Cell::new(0));
+                let count = calls.clone();
+                r.outer_send_hook = Some(Box::new(move |_| {
+                    count.set(count.get() + 1);
+                    Err(io::Error::from_raw_os_error(libc::ENOBUFS))
+                }));
+                assert!(!r.flush(generation, start).unwrap());
+                if near_expiry {
+                    assert!(matches!(
+                        r.service_output(generation, original[0].2),
+                        Err(OutputError::Transport(TransportError::Expired))
+                    ));
+                    assert_eq!(calls.get(), 1);
+                    assert_eq!(r.snapshot.counters.outer_send_pressure_dropped, 0);
+                    r.stop_connection(generation).unwrap();
+                    assert!(r.connections[&generation].pressure_retry.is_none());
+                    assert!(r.connections[&generation].transport.output.is_empty());
+                } else {
+                    for offset in 1..4 {
+                        assert!(
+                            !r.flush(generation, start + Duration::from_millis(offset))
+                                .unwrap()
+                        );
+                        assert_eq!(
+                            r.connections[&generation]
+                                .retry_for_front()
+                                .unwrap()
+                                .started,
+                            start
+                        );
+                    }
+                    // A later EAGAIN must still leave the maximum-window timer armed.
+                    r.outer_send_hook = Some(Box::new(|_| Err(io::ErrorKind::WouldBlock.into())));
+                    assert!(
+                        !r.flush(generation, start + Duration::from_millis(4))
+                            .unwrap()
+                    );
+                    assert_eq!(
+                        r.connections[&generation]
+                            .pressure_deadline(start + Duration::from_millis(4)),
+                        Some(start + Duration::from_millis(5))
+                    );
+                    assert!(
+                        r.flush(generation, start + Duration::from_millis(5))
+                            .unwrap()
+                    );
+                    assert_eq!(calls.get(), 4);
+                    assert_eq!(r.snapshot.counters.outer_send_pressure_dropped, 1);
+                    let front = r.connections[&generation].transport.output.front().unwrap();
+                    assert_eq!(
+                        (front.bytes().to_vec(), front.sequence(), front.expires_at()),
+                        original[1]
+                    );
+                    assert!(r.connections[&generation].retry_for_front().is_none());
+                    // Replacing a connection cannot inherit retry state.
+                    r.connections.get_mut(&generation).unwrap().pressure_retry =
+                        Some(PressureRetry {
+                            front: (crate::buffers::Generation(99), original[1].1),
+                            started: start,
+                            next: start + Duration::from_secs(1),
+                        });
+                    assert!(r.connections[&generation].retry_for_front().is_none());
+                    assert!(
+                        r.connections[&generation].output_ready(start + Duration::from_millis(5))
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn outer_pmtu_or_peer_error_discards_only_failed_front_without_application_attribution() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for errno in [libc::EMSGSIZE, libc::ECONNREFUSED, libc::EHOSTUNREACH] {
             rt.block_on(async {
                 let f = Fixtures::new();
                 let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
@@ -5867,6 +6288,7 @@ mod tests {
                         receive_density: ReceiveDensity::default(),
                         enqueue_pending: false,
                         output_pending: false,
+                        pressure_retry: None,
                     },
                 );
                 let id = r.create_session(generation, stream, None, now).unwrap();
@@ -6387,6 +6809,7 @@ mod tests {
                         receive_density: ReceiveDensity::default(),
                         enqueue_pending: false,
                         output_pending: false,
+                        pressure_retry: None,
                     },
                 );
                 let id = r.create_session(2, stream, None, now).unwrap();
@@ -6404,7 +6827,6 @@ mod tests {
                 )
                 .unwrap();
                 r.sessions.get_mut(&id).unwrap().state = State::Active;
-                drop(target);
                 let mut wire = [0; 128];
                 let len = masque::encode_datagram(stream, b"old-target", &mut wire).unwrap();
                 let expires = now + Duration::from_secs(2);
@@ -6413,20 +6835,21 @@ mod tests {
                     r.snapshot.counters.app_egress_by_direction.to_target, 1,
                     "initial submission"
                 );
-                // POLLERR is readiness too. Leave the native error undrained so
-                // send, rather than the receive/error-queue path, consumes it.
-                let relay = r.sessions[&id].relay.as_ref().unwrap();
-                let _ready = tokio::time::timeout(
-                    Duration::from_secs(1),
-                    relay.ready(tokio::io::Interest::ERROR),
-                )
-                .await
-                .unwrap()
-                .unwrap();
-                let target = std::net::UdpSocket::bind(address).unwrap();
+                // Check the initial real submission before injecting the next
+                // syscall result. Waiting for ICMP here depends on the shared
+                // host's error delivery/rate limits and freed-port reuse.
                 target
                     .set_read_timeout(Some(Duration::from_millis(100)))
                     .unwrap();
+                let mut initial = [0; 128];
+                let (n, _) = target.recv_from(&mut initial).unwrap();
+                assert_eq!(&initial[..n], b"old-target");
+                let relay = r.sessions[&id].relay.as_ref().unwrap();
+                relay
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .fail_next_send(libc::ECONNREFUSED);
                 let relay_local = relay.get_ref().0.borrow().local_addr();
                 if queued {
                     for payload in [b"unaccepted".as_slice(), b"fresh".as_slice()] {
