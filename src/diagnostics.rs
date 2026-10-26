@@ -422,6 +422,8 @@ pub struct Counters {
     pub outer_socket_received: u64,
     pub outer_socket_received_bytes: u64,
     pub kernel_rx_overflow: u64,
+    pub kernel_rx_overflow_read_errors: u64,
+    pub kernel_rx_overflow_incomplete: bool,
     pub outer_pmtu_errors: u64,
     pub outer_send_pressure: u64,
     pub outer_send_pressure_dropped: u64,
@@ -984,7 +986,7 @@ pub struct Diagnostics {
     minimum_level: Level,
     format: LogFormat,
     snapshots: bool,
-    reported_health: (u64, u64, u64, bool),
+    reported_health: (u64, u64, u64, bool, bool),
     important_bucket: EventBucket,
     journal: bool,
     size_warned: bool,
@@ -1019,7 +1021,7 @@ impl Diagnostics {
                 minimum_level: Level::Trace,
                 format: LogFormat::Json,
                 snapshots: true,
-                reported_health: (0, 0, 0, false),
+                reported_health: (0, 0, 0, false, false),
                 important_bucket: EventBucket::new(now),
                 journal: false,
                 size_warned: false,
@@ -1326,6 +1328,7 @@ impl Diagnostics {
             self.queue.shared.write_failures.load(Ordering::Relaxed),
             self.coverage_lost,
             counter_overflow,
+            counters.counters.kernel_rx_overflow_incomplete,
         );
         if !final_status
             && !self.snapshots

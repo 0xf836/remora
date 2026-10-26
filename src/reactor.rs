@@ -13,7 +13,7 @@ use crate::{
     udp::{MonotonicTimer, ReceiveFault, SendPacket, Udp},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     future::Future,
     io,
     net::SocketAddr,
@@ -235,6 +235,16 @@ struct SourceBucket {
 }
 #[cfg(test)]
 type OuterSendHook = Box<dyn for<'p> FnMut(&[SendPacket<'p>]) -> io::Result<usize>>;
+// Stable logical keys, never raw fd numbers or renumbered client indices.
+// The registry contains only live sockets and is bounded by existing fd/session limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RxDropSocket {
+    ServerOuter(usize),
+    ClientOuter(u64),
+    Listener,
+    Relay(u64),
+}
+
 struct Runner<'a> {
     cfg: &'a ValidatedConfig,
     server: bool,
@@ -263,6 +273,9 @@ struct Runner<'a> {
     setup_cursor: usize,
     next_snapshot: Instant,
     next_quic_sample: Instant,
+    next_rx_drop_sample: Option<Instant>,
+    rx_drop_sockets: BTreeSet<RxDropSocket>,
+    rx_drop_sweep: Option<(Option<RxDropSocket>, RxDropSocket)>,
     recovery_started: Option<Instant>,
     qlog: Option<crate::diagnostics::qlog::Pool>,
     stopping: bool,
@@ -414,6 +427,9 @@ impl<'a> Runner<'a> {
                 RoleConfig::Client(_) => Vec::new(),
             },
             pools,
+            next_rx_drop_sample: (!diagnostics.is_operator()).then_some(now),
+            rx_drop_sockets: BTreeSet::new(),
+            rx_drop_sweep: None,
             diagnostics,
             snapshot: Snapshot::default(),
             retired_io: crate::udp::IoStats::default(),
@@ -475,6 +491,14 @@ impl<'a> Runner<'a> {
                 .snapshot
                 .socket_buffers
                 .application_send_max_per_socket = udp.send_buffer;
+        }
+        if !runner.diagnostics.is_operator() {
+            runner
+                .rx_drop_sockets
+                .extend((0..runner.outer.len()).map(RxDropSocket::ServerOuter));
+            if runner.listener.is_some() {
+                runner.rx_drop_sockets.insert(RxDropSocket::Listener);
+            }
         }
         resource(runner.connections.try_reserve(cfg.limits().max_connections))?;
         resource(runner.sessions.try_reserve(cfg.limits().max_sessions))?;
@@ -765,6 +789,10 @@ impl<'a> Runner<'a> {
                 pressure_retry: None,
             },
         );
+        if !self.diagnostics.is_operator() {
+            self.rx_drop_sockets
+                .insert(RxDropSocket::ClientOuter(generation.0));
+        }
         self.primary = Some(generation.0);
         self.client_state(ClientState::Handshaking, now)
     }
@@ -861,9 +889,15 @@ impl<'a> Runner<'a> {
             c.transport.stop();
             c.pressure_retry = None;
             if !self.server {
+                record_rx_drops(
+                    !self.diagnostics.is_operator(),
+                    &mut self.snapshot,
+                    &self.outer[c.socket],
+                );
                 self.retired_io = self
                     .retired_io
                     .merge(self.outer[c.socket].get_ref().0.borrow().stats());
+                self.rx_drop_sockets.remove(&RxDropSocket::ClientOuter(id));
                 self.outer.remove(c.socket);
                 for other in self.connections.values_mut() {
                     if other.socket > c.socket {
@@ -962,6 +996,8 @@ impl<'a> Runner<'a> {
     }
     fn retire_session(&mut self, generation: u64, code: u64, abort_write: bool) {
         if let Some(mut s) = self.sessions.remove(&generation) {
+            self.rx_drop_sockets
+                .remove(&RxDropSocket::Relay(generation));
             self.snapshot.resources.session_queue_packets_peak = self
                 .snapshot
                 .resources
@@ -989,6 +1025,7 @@ impl<'a> Runner<'a> {
                 }
             }
             if let Some(relay) = &s.relay {
+                record_rx_drops(!self.diagnostics.is_operator(), &mut self.snapshot, relay);
                 self.retired_io = self.retired_io.merge(relay.get_ref().0.borrow().stats());
             }
             if [masque::H3_MESSAGE_ERROR, masque::H3_DATAGRAM_ERROR].contains(&code) {
@@ -1435,13 +1472,6 @@ impl<'a> Runner<'a> {
         let result = read_io(&self.outer[index], |inner| {
             inner.0.borrow_mut().recv_batch(&mut slabs, &mut packets)
         });
-        let overflow = self.outer[index].get_ref().0.borrow_mut().take_overflow();
-        self.snapshot.counters.kernel_rx_overflow = self
-            .snapshot
-            .counters
-            .kernel_rx_overflow
-            .checked_add(overflow)
-            .ok_or(RuntimeError::Diagnostics)?;
         match result {
             Ok(n) => {
                 self.snapshot.counters.outer_socket_received = self
@@ -1545,13 +1575,6 @@ impl<'a> Runner<'a> {
         let result = read_io(listener, |inner| {
             inner.0.borrow_mut().recv_batch(&mut slabs, &mut packets)
         });
-        let overflow = listener.get_ref().0.borrow_mut().take_overflow();
-        self.snapshot.counters.kernel_rx_overflow = self
-            .snapshot
-            .counters
-            .kernel_rx_overflow
-            .checked_add(overflow)
-            .ok_or(RuntimeError::Diagnostics)?;
         match result {
             Ok(n) => {
                 for p in packets {
@@ -1987,6 +2010,9 @@ impl<'a> Runner<'a> {
         s.relay_peer = Some(address);
         s._relay = Some(relay);
         s._fd = Some(fd);
+        if !self.diagnostics.is_operator() {
+            self.rx_drop_sockets.insert(RxDropSocket::Relay(id));
+        }
         s.state = State::AwaitingCommitment;
         s.udp_activity(now);
         let c = self
@@ -3056,13 +3082,6 @@ impl<'a> Runner<'a> {
         let result = read_io(relay, |inner| {
             inner.0.borrow_mut().recv_batch(&mut slabs, &mut packets)
         });
-        let overflow = relay.get_ref().0.borrow_mut().take_overflow();
-        self.snapshot.counters.kernel_rx_overflow = self
-            .snapshot
-            .counters
-            .kernel_rx_overflow
-            .checked_add(overflow)
-            .ok_or(RuntimeError::Diagnostics)?;
         match result {
             Ok(n) => {
                 for p in packets {
@@ -3585,6 +3604,73 @@ impl<'a> Runner<'a> {
         }
         pending
     }
+    /// Periodic collection visits at most 16 live logical socket keys per turn.
+    /// Ordered range lookup resumes without re-walking a HashMap prefix. Freeze
+    /// the sweep endpoint so newly appended relays cannot extend this sweep.
+    fn sample_rx_drops(&mut self, now: Instant) -> bool {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        if self.next_rx_drop_sample.is_none_or(|at| now < at) {
+            return false;
+        }
+        let (after, end) = match self.rx_drop_sweep {
+            Some(sweep) => sweep,
+            None => match self.rx_drop_sockets.last().copied() {
+                Some(end) => (None, end),
+                None => {
+                    self.next_rx_drop_sample = Some(now + Duration::from_secs(1));
+                    return false;
+                }
+            },
+        };
+        let mut keys = [None; 16];
+        for (slot, key) in keys.iter_mut().zip(
+            self.rx_drop_sockets
+                .range((after.map_or(Unbounded, Excluded), Included(end))),
+        ) {
+            *slot = Some(*key);
+        }
+        let mut last = after;
+        for key in keys.into_iter().flatten() {
+            let socket = match key {
+                RxDropSocket::ServerOuter(index) => self.outer.get(index),
+                RxDropSocket::ClientOuter(id) => self
+                    .connections
+                    .get(&id)
+                    .and_then(|c| self.outer.get(c.socket)),
+                RxDropSocket::Listener => self.listener.as_ref(),
+                RxDropSocket::Relay(id) => self.sessions.get(&id).and_then(|s| s.relay.as_ref()),
+            };
+            if let Some(socket) = socket {
+                record_rx_drops(true, &mut self.snapshot, socket);
+            }
+            last = Some(key);
+        }
+        if let Some(last) = last
+            && self
+                .rx_drop_sockets
+                .range((Excluded(last), Included(end)))
+                .next()
+                .is_some()
+        {
+            self.rx_drop_sweep = Some((Some(last), end));
+            true
+        } else {
+            self.rx_drop_sweep = None;
+            self.next_rx_drop_sample = Some(now + Duration::from_secs(1));
+            false
+        }
+    }
+    /// Shutdown path: sample and retire every remaining UDP socket exactly once.
+    fn close_udp_sockets(&mut self) {
+        for socket in self.outer.iter().chain(self.listener.iter()) {
+            record_rx_drops(!self.diagnostics.is_operator(), &mut self.snapshot, socket);
+            self.retired_io = self.retired_io.merge(socket.get_ref().0.borrow().stats());
+        }
+        self.outer.clear();
+        self.listener = None;
+        self.rx_drop_sockets.clear();
+        self.rx_drop_sweep = None;
+    }
     fn sample_quic(&mut self) {
         let mut total = crate::diagnostics::QuicSummary::default();
         for c in self.connections.values() {
@@ -4092,6 +4178,7 @@ impl<'a> Runner<'a> {
                     self.remove_connection(id, Instant::now())?;
                 }
             }
+            more |= self.sample_rx_drops(now);
             if now >= self.next_quic_sample {
                 self.sample_quic();
                 self.next_quic_sample = now + Duration::from_secs(1);
@@ -4141,6 +4228,7 @@ impl<'a> Runner<'a> {
                         .min()
                 }))
                 .chain([self.next_snapshot, self.next_quic_sample])
+                .chain(self.next_rx_drop_sample)
                 .chain(self.reconnect.deadline())
                 .chain(self.setup_retry.deadline())
                 .filter(|at| *at > now)
@@ -4267,13 +4355,9 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
         runner.close_session(id, 0x100);
     }
     runner.sample_quic();
-    for socket in runner.outer.iter().chain(runner.listener.iter()) {
-        runner.retired_io = runner.retired_io.merge(socket.get_ref().0.borrow().stats());
-    }
+    runner.close_udp_sockets();
     runner.connections.clear();
     runner.sample_quic();
-    runner.outer.clear();
-    runner.listener = None;
     // One shared final-collection deadline, independent of periodic cadence.
     // This bounded wait occurs only after sessions/sockets and packet work end.
     let now = Instant::now();
@@ -4307,8 +4391,367 @@ pub async fn run(settings: &ValidatedConfig) -> Result<(), RuntimeError> {
     }
     result
 }
+// Telemetry cannot terminate forwarding. Failed reads retain the per-socket
+// baseline and explicitly make the aggregate incomplete, rather than claiming 0.
+fn record_rx_drops(enabled: bool, snapshot: &mut Snapshot, socket: &AsyncFd<PollSocket>) {
+    if !enabled {
+        return;
+    }
+    let counters = &mut snapshot.counters;
+    match socket.get_ref().0.borrow_mut().sample_rx_drops() {
+        Ok(delta) => match counters.kernel_rx_overflow.checked_add(delta) {
+            Some(value) => counters.kernel_rx_overflow = value,
+            None => {
+                counters.kernel_rx_overflow = u64::MAX;
+                counters.kernel_rx_overflow_incomplete = true;
+            }
+        },
+        Err(_) => {
+            counters.kernel_rx_overflow_read_errors =
+                counters.kernel_rx_overflow_read_errors.saturating_add(1);
+            counters.kernel_rx_overflow_incomplete = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rx_drop_sampling_format_budget_errors_and_final_collection() {
+        use super::*;
+        use crate::{
+            common::Fixtures,
+            config::{IoSettings, LogFormat},
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let resolver = SystemResolver::new(1).unwrap();
+            for format in [LogFormat::Text, LogFormat::Json] {
+                for snapshots in [false, true] {
+                    let f = Fixtures::new();
+                    let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+                    let now = Instant::now();
+                    let (mut diagnostics, receiver) =
+                        Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+                    diagnostics.set_output(format, snapshots);
+                    let mut r = Runner::new(&cfg, &resolver, diagnostics).unwrap();
+                    r.outer.clear(); // isolate the sampling budget from startup sockets
+                    r.rx_drop_sockets.clear();
+                    for index in 0..17 {
+                        let mut socket = Udp::bind(
+                            "127.0.0.1:0".parse().unwrap(),
+                            &IoSettings::default(),
+                            false,
+                        )
+                        .unwrap();
+                        socket.inject_rx_drops(Ok(7));
+                        r.outer.push(PollSocket::register(socket).unwrap());
+                        if format == LogFormat::Json {
+                            r.rx_drop_sockets.insert(RxDropSocket::ServerOuter(index));
+                        }
+                    }
+                    let at = now + Duration::from_secs(1);
+                    if format == LogFormat::Text {
+                        assert!(!r.sample_rx_drops(at));
+                        record_rx_drops(false, &mut r.snapshot, &r.outer[0]);
+                        assert!(
+                            r.outer
+                                .iter()
+                                .all(|s| s.get_ref().0.borrow().stats().rx_drop_queries == 0)
+                        );
+                        continue;
+                    }
+                    assert!(r.sample_rx_drops(at));
+                    assert_eq!(r.snapshot.counters.kernel_rx_overflow, 16 * 7);
+                    assert!(!r.sample_rx_drops(at));
+                    assert_eq!(r.snapshot.counters.kernel_rx_overflow, 17 * 7);
+                    assert!(!r.sample_rx_drops(at)); // no repeated polling before the deadline
+                    r.outer[0]
+                        .get_ref()
+                        .0
+                        .borrow_mut()
+                        .inject_rx_drops(Err(io::Error::from_raw_os_error(libc::ENOPROTOOPT)));
+                    record_rx_drops(true, &mut r.snapshot, &r.outer[0]);
+                    assert_eq!(r.snapshot.counters.kernel_rx_overflow_read_errors, 1);
+                    assert!(r.snapshot.counters.kernel_rx_overflow_incomplete);
+                    r.outer[0].get_ref().0.borrow_mut().inject_rx_drops(Ok(10));
+                    record_rx_drops(true, &mut r.snapshot, &r.outer[0]); // final collection catches up
+                    assert_eq!(r.snapshot.counters.kernel_rx_overflow, 17 * 7 + 3);
+                    assert!(r.diagnostics.snapshot(at, r.snapshot).unwrap());
+                    let mut output = Vec::new();
+                    while receiver.write_one(&mut output, &mut Vec::new()).unwrap() {}
+                    assert!(r.diagnostics.final_status_complete());
+                    assert!(
+                        String::from_utf8(output)
+                            .unwrap()
+                            .contains("\"kernel_rx_overflow_incomplete\":true")
+                    );
+                    if !snapshots {
+                        r.outer[0]
+                            .get_ref()
+                            .0
+                            .borrow_mut()
+                            .inject_rx_drops(Err(io::Error::from_raw_os_error(libc::ENOPROTOOPT)));
+                        record_rx_drops(true, &mut r.snapshot, &r.outer[0]);
+                        assert!(
+                            !r.diagnostics
+                                .snapshot(at + Duration::from_secs(1), r.snapshot)
+                                .unwrap()
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn rx_drop_real_client_connection_retirement_preserves_other_socket_keys() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            for failed in [false, true] {
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                if r.primary.is_none() {
+                    r.connect_client_address("127.0.0.1:443".parse().unwrap(), now)
+                        .unwrap();
+                }
+                let first = r.primary.unwrap();
+                r.connect_client_address("127.0.0.1:443".parse().unwrap(), now)
+                    .unwrap();
+                let second = r.primary.unwrap();
+                let index = r.connections[&first].socket;
+                r.outer[index]
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .inject_rx_drops(Ok(5));
+                assert!(!r.sample_rx_drops(now + Duration::from_secs(1)));
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow, 5);
+                r.outer[index]
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .inject_rx_drops(if failed {
+                        Err(io::Error::from_raw_os_error(libc::EIO))
+                    } else {
+                        Ok(9)
+                    });
+                r.remove_connection(first, now).unwrap();
+                assert!(
+                    !r.rx_drop_sockets
+                        .contains(&RxDropSocket::ClientOuter(first))
+                );
+                assert!(
+                    r.rx_drop_sockets
+                        .contains(&RxDropSocket::ClientOuter(second))
+                );
+                assert_eq!(r.connections[&second].socket, 0);
+                assert_eq!(r.retired_io.rx_drop_queries, 2);
+                assert_eq!(
+                    r.snapshot.counters.kernel_rx_overflow,
+                    if failed { 5 } else { 9 }
+                );
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow_incomplete, failed);
+                r.outer[0].get_ref().0.borrow_mut().inject_rx_drops(Ok(11));
+                assert!(!r.sample_rx_drops(now + Duration::from_secs(2)));
+                assert_eq!(
+                    r.snapshot.counters.kernel_rx_overflow,
+                    if failed { 16 } else { 20 }
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn rx_drop_real_relay_retirement_samples_final_delta_and_error() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            for failed in [false, true] {
+                let now = Instant::now();
+                let (diag, _receiver) =
+                    Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                let mut pair = Pair::new(true);
+                let (stream, _) = pair.requests();
+                session_tests::install(&mut r, pair.server);
+                let id = r.create_session(2, stream, None, now).unwrap();
+                let key = SetupKey {
+                    connection: crate::buffers::Generation(2),
+                    session: crate::buffers::Generation(id),
+                };
+                r.setup_done(
+                    id,
+                    key,
+                    Ok((
+                        0,
+                        policy::ResolvedTarget {
+                            address: "127.0.0.1:9".parse().unwrap(),
+                            key,
+                        },
+                    )),
+                    now,
+                )
+                .unwrap();
+                assert!(r.rx_drop_sockets.contains(&RxDropSocket::Relay(id)));
+                r.sessions[&id]
+                    .relay
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .inject_rx_drops(Ok(5));
+                assert!(!r.sample_rx_drops(now + Duration::from_secs(1)));
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow, 5);
+                r.sessions[&id]
+                    .relay
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .inject_rx_drops(if failed {
+                        Err(io::Error::from_raw_os_error(libc::EIO))
+                    } else {
+                        Ok(9)
+                    });
+                r.close_session(id, 0x100);
+                assert!(!r.sessions.contains_key(&id));
+                assert!(!r.rx_drop_sockets.contains(&RxDropSocket::Relay(id)));
+                assert_eq!(r.retired_io.rx_drop_queries, 2);
+                assert_eq!(
+                    r.snapshot.counters.kernel_rx_overflow,
+                    if failed { 5 } else { 9 }
+                );
+                assert_eq!(
+                    r.snapshot.counters.kernel_rx_overflow_read_errors,
+                    u64::from(failed)
+                );
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow_incomplete, failed);
+            }
+        });
+    }
+
+    #[test]
+    fn rx_drop_shutdown_closes_remaining_sockets_and_records_failure() {
+        use crate::config::LogFormat;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("client.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            for format in [LogFormat::Text, LogFormat::Json] {
+                let now = Instant::now();
+                let (mut diag, _receiver) =
+                    Diagnostics::new(Role::Client, now, Duration::from_secs(1)).unwrap();
+                diag.set_output(format, false);
+                let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+                if r.primary.is_none() {
+                    r.connect_client_address("127.0.0.1:443".parse().unwrap(), now)
+                        .unwrap();
+                }
+                r.outer[0].get_ref().0.borrow_mut().inject_rx_drops(Ok(13));
+                r.listener
+                    .as_ref()
+                    .unwrap()
+                    .get_ref()
+                    .0
+                    .borrow_mut()
+                    .inject_rx_drops(Err(io::Error::from_raw_os_error(libc::EIO)));
+                r.close_udp_sockets();
+                assert!(r.outer.is_empty());
+                assert!(r.listener.is_none());
+                assert!(r.rx_drop_sockets.is_empty());
+                let json = format == LogFormat::Json;
+                assert_eq!(
+                    r.snapshot.counters.kernel_rx_overflow,
+                    if json { 13 } else { 0 }
+                );
+                assert_eq!(r.retired_io.rx_drop_queries, if json { 2 } else { 0 });
+                assert_eq!(r.snapshot.counters.kernel_rx_overflow_incomplete, json);
+                r.close_udp_sockets(); // repeated cleanup must not query or add again
+                assert_eq!(r.retired_io.rx_drop_queries, if json { 2 } else { 0 });
+            }
+        });
+    }
+
+    #[test]
+    fn rx_drop_sweep_keeps_endpoint_and_progress_across_churn() {
+        use crate::config::IoSettings;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let f = Fixtures::new();
+            let cfg = ValidatedConfig::load(&f.file("server.toml")).unwrap();
+            let resolver = SystemResolver::new(1).unwrap();
+            let now = Instant::now();
+            let (diag, _receiver) =
+                Diagnostics::new(Role::Server, now, Duration::from_secs(1)).unwrap();
+            let mut r = Runner::new(&cfg, &resolver, diag).unwrap();
+            r.close_udp_sockets();
+            for index in 0..33 {
+                let mut socket = Udp::bind(
+                    "127.0.0.1:0".parse().unwrap(),
+                    &IoSettings::default(),
+                    false,
+                )
+                .unwrap();
+                socket.inject_rx_drops(Ok(1));
+                r.outer.push(PollSocket::register(socket).unwrap());
+                r.rx_drop_sockets.insert(RxDropSocket::ServerOuter(index));
+            }
+            let at = now + Duration::from_secs(1);
+            assert!(r.sample_rx_drops(at));
+            assert_eq!(r.snapshot.counters.kernel_rx_overflow, 16);
+            // Removing a visited key cannot shift the cursor; a newly appended
+            // key must wait for the next sweep instead of extending this one.
+            r.rx_drop_sockets.remove(&RxDropSocket::ServerOuter(0));
+            r.rx_drop_sockets.insert(RxDropSocket::ServerOuter(33));
+            let mut socket = Udp::bind(
+                "127.0.0.1:0".parse().unwrap(),
+                &IoSettings::default(),
+                false,
+            )
+            .unwrap();
+            socket.inject_rx_drops(Ok(7));
+            r.outer.push(PollSocket::register(socket).unwrap());
+            assert!(r.sample_rx_drops(at));
+            assert_eq!(r.snapshot.counters.kernel_rx_overflow, 32);
+            assert!(!r.sample_rx_drops(at));
+            assert_eq!(r.snapshot.counters.kernel_rx_overflow, 33);
+            assert_eq!(r.outer[33].get_ref().0.borrow().stats().rx_drop_queries, 0);
+            for socket in r.outer.iter().skip(1).take(32) {
+                socket.get_ref().0.borrow_mut().inject_rx_drops(Ok(1));
+            }
+            assert!(r.sample_rx_drops(at + Duration::from_secs(1)));
+            assert!(r.sample_rx_drops(at + Duration::from_secs(1)));
+            assert!(!r.sample_rx_drops(at + Duration::from_secs(1)));
+            assert_eq!(r.outer[33].get_ref().0.borrow().stats().rx_drop_queries, 1);
+        });
+    }
+
     #[test]
     fn operator_two_minutes_of_retry_transitions_emit_one_outage_and_one_permanent_refusal() {
         use super::*;

@@ -14,7 +14,7 @@ import re
 import subprocess
 import tempfile
 import time
-from benchmark import ROOT, Owned, resource, sha, wait_udp_bound, write, last_snapshot, machine_diagnostics
+from benchmark import ROOT, Owned, resource, sha, wait_udp_bound, write, last_snapshot, machine_diagnostics, kernel_rx_overflow_complete
 from quiche_inputs import input_hashes
 
 
@@ -582,6 +582,8 @@ def _run_once(
                     or d.get("profile", {}).get("factory", {}).get("overflowed", False)
                     for d in diagnostics.values()
                 ),
+                mode=mode,
+                kernel_rx_overflow_complete=kernel_rx_overflow_complete(diagnostics, mode),
                 sample_count=len(measured),
                 rtt_samples_per_session=[len(t["rtt_samples_us"]) for t in tx],
                 rtt_p95_ms=(
@@ -687,8 +689,10 @@ def calibration_invalid_reasons(row):
         "clock_drift_ms": row["clock_drift_ms"] < 10,
         "coverage_lost": row["coverage_lost"] == 0,
         "counter_overflow": not row["counter_overflow"],
+        "kernel_rx_overflow_complete": ("kernel_rx_overflow_complete" in row
+            and (row["kernel_rx_overflow_complete"] is True or (row["kernel_rx_overflow_complete"] is None and row.get("mode") in ("baseline", "direct")))),
     }
-    return [f"{key}={row[key]}" for key, valid in checks.items() if not valid]
+    return [f"{key}={row.get(key, 'missing')}" for key, valid in checks.items() if not valid]
 
 
 def write_progress(out, data):

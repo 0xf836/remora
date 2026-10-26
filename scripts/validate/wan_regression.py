@@ -20,7 +20,7 @@ from wan_loss import snapshot_sources, frozen_input_paths, validate_frozen_input
 def shape_errors(measurement,sessions,expected):
     if not isinstance(measurement,dict):return ['missing measurement']
     required={'generator_errors','integrity_errors','generator_cpu_max','clock_drift_ms',
-              'coverage_lost','counter_overflow','offered','submitted','unique','unique_per_session',
+              'coverage_lost','counter_overflow','kernel_rx_overflow_complete','offered','submitted','unique','unique_per_session',
               'rtt_samples_per_session','rtt_p95_ms','resources'}
     if not required <= measurement.keys():return ['missing mandatory measurement fields']
     errors=[]
@@ -75,6 +75,8 @@ def evaluate(current, workload, policy):
             reasons += [label+':'+reason for reason in malformed]
             continue
         reasons += [label+':'+reason for reason in calibration_invalid_reasons(measurement)]
+        if label != 'direct' and measurement['kernel_rx_overflow_complete'] is not True:
+            reasons.append(label+':kernel socket drop telemetry incomplete or unknown')
         if abs(measurement['clock_drift_ms']) >= 10:
             reasons.append(label+':unstable clock mapping')
         if measurement['offered'] != [expected,expected] or measurement['submitted'] != [expected,expected]:

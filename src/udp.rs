@@ -35,6 +35,7 @@ pub struct IoStats {
     pub send_syscalls: u64,
     pub error_queue_syscalls: u64,
     pub mtu_queries: u64,
+    pub rx_drop_queries: u64,
     pub received_datagrams: u64,
     pub sent_datagrams: u64,
     pub send_enobufs: u64,
@@ -61,6 +62,7 @@ impl IoStats {
         add!(send_syscalls);
         add!(error_queue_syscalls);
         add!(mtu_queries);
+        add!(rx_drop_queries);
         add!(received_datagrams);
         add!(sent_datagrams);
         add!(send_enobufs);
@@ -144,7 +146,6 @@ pub struct Udp {
     mode: IoMode,
     max: usize,
     overflow_last: u32,
-    overflow_pending: u64,
     memory: Box<BatchMemory>,
     peer: Option<SocketAddr>,
     outer: bool,
@@ -153,6 +154,8 @@ pub struct Udp {
     pub send_buffer: usize,
     #[cfg(test)]
     next_send_error: Option<i32>,
+    #[cfg(test)]
+    next_rx_drops: Option<io::Result<u32>>,
 }
 fn set_int(fd: RawFd, level: i32, option: i32, value: i32) -> io::Result<()> {
     // SAFETY: fd is an owned live socket; value is a live aligned C int,
@@ -235,7 +238,6 @@ impl Udp {
                 set_int(fd, libc::IPPROTO_IPV6, libc::IPV6_RECVERR, 1)?;
             }
         }
-        set_int(fd, libc::SOL_SOCKET, libc::SO_RXQ_OVFL, 1)?;
         socket.bind(&address.into())?;
         let receive_buffer = socket.recv_buffer_size()?;
         let send_buffer = socket.send_buffer_size()?;
@@ -247,7 +249,6 @@ impl Udp {
             mode: settings.mode,
             max: settings.batch_max,
             overflow_last: 0,
-            overflow_pending: 0,
             memory: Box::new(BatchMemory::new()),
             peer: None,
             outer: !relay,
@@ -256,10 +257,47 @@ impl Udp {
             send_buffer,
             #[cfg(test)]
             next_send_error: None,
+            #[cfg(test)]
+            next_rx_drops: None,
         })
     }
-    pub fn take_overflow(&mut self) -> u64 {
-        std::mem::take(&mut self.overflow_pending)
+    /// Read the socket lifetime drop counter without requesting skb ancillary data.
+    /// Failure leaves the baseline intact; a later successful read catches up.
+    pub fn sample_rx_drops(&mut self) -> io::Result<u64> {
+        self.count(|s| &mut s.rx_drop_queries, 1);
+        let current = self.read_rx_drops()?;
+        let delta = overflow_delta(self.overflow_last, current);
+        self.overflow_last = current;
+        Ok(u64::from(delta))
+    }
+    fn read_rx_drops(&mut self) -> io::Result<u32> {
+        #[cfg(test)]
+        if let Some(result) = self.next_rx_drops.take() {
+            return result;
+        }
+        // Request the stable prefix through SK_MEMINFO_DROPS. Future kernel
+        // fields are irrelevant; a shorter response must not look like zero loss.
+        let mut values = [0u32; libc::SK_MEMINFO_DROPS as usize + 1];
+        let mut length = size_of_val(&values) as libc::socklen_t;
+        // SAFETY: the owned socket is live; values and length are initialized,
+        // aligned writable storage of the advertised sizes. No pointer escapes.
+        let result = unsafe {
+            libc::getsockopt(
+                self.socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_MEMINFO,
+                values.as_mut_ptr().cast(),
+                &mut length,
+            )
+        };
+        if result == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        decode_rx_drops(&values, length)
+    }
+    #[cfg(test)]
+    pub(crate) fn inject_rx_drops(&mut self, result: io::Result<u32>) {
+        self.next_rx_drops = Some(result);
     }
     pub fn stats(&self) -> IoStats {
         self.stats.get()
@@ -495,15 +533,6 @@ impl Udp {
                 self.local,
             );
             let fault = receive_fault(h.msg_hdr.msg_flags, ancillary, peer.is_some());
-            if fault.is_none()
-                && let Some(value) = overflow
-            {
-                self.overflow_pending = self
-                    .overflow_pending
-                    .checked_add(u64::from(overflow_delta(self.overflow_last, value)))
-                    .ok_or(io::ErrorKind::Other)?;
-                self.overflow_last = value;
-            }
             output.push(Received {
                 index: i,
                 length: h.msg_len as usize,
@@ -1022,3 +1051,89 @@ pub fn receive_fault(
 #[cfg(test)]
 #[path = "../tests/io/interrupted.rs"]
 mod interrupted_tests;
+
+fn decode_rx_drops(
+    values: &[u32; libc::SK_MEMINFO_DROPS as usize + 1],
+    length: libc::socklen_t,
+) -> io::Result<u32> {
+    if (length as usize) < size_of_val(values) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "short SO_MEMINFO response",
+        ));
+    }
+    Ok(values[libc::SK_MEMINFO_DROPS as usize])
+}
+
+#[cfg(test)]
+mod rx_drop_tests {
+    use super::*;
+
+    #[test]
+    fn rx_drop_counter_wrap_failure_and_short_response() {
+        let mut socket =
+            Udp::bind("127.0.0.1:0".parse().unwrap(), &IoSettings::default(), true).unwrap();
+        socket.inject_rx_drops(Ok(u32::MAX - 2));
+        assert_eq!(socket.sample_rx_drops().unwrap(), u64::from(u32::MAX - 2));
+        socket.inject_rx_drops(Err(io::Error::from_raw_os_error(libc::ENOPROTOOPT)));
+        assert!(socket.sample_rx_drops().is_err());
+        socket.inject_rx_drops(Ok(3));
+        assert_eq!(socket.sample_rx_drops().unwrap(), 6);
+        socket.inject_rx_drops(Ok(3));
+        assert_eq!(socket.sample_rx_drops().unwrap(), 0);
+        let values = [0; libc::SK_MEMINFO_DROPS as usize + 1];
+        assert!(decode_rx_drops(&values, (size_of_val(&values) - 4) as _).is_err());
+        assert_eq!(
+            decode_rx_drops(&values, size_of_val(&values) as _).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn rx_drop_native_pressure_without_ancillary_option() {
+        for mode in [IoMode::Single, IoMode::Mmsg] {
+            for relay in [false, true] {
+                let settings = IoSettings {
+                    mode,
+                    outer_socket_buffer_bytes: 4096,
+                    relay_socket_buffer_bytes: 4096,
+                    ..IoSettings::default()
+                };
+                let mut socket =
+                    Udp::bind("127.0.0.1:0".parse().unwrap(), &settings, relay).unwrap();
+                let mut enabled: libc::c_int = -1;
+                let mut length = size_of_val(&enabled) as libc::socklen_t;
+                // SAFETY: live owned fd and aligned initialized integer storage;
+                // getsockopt writes at most the advertised size and retains nothing.
+                assert_eq!(
+                    unsafe {
+                        libc::getsockopt(
+                            socket.as_raw_fd(),
+                            libc::SOL_SOCKET,
+                            libc::SO_RXQ_OVFL,
+                            (&mut enabled as *mut libc::c_int).cast(),
+                            &mut length,
+                        )
+                    },
+                    0
+                );
+                assert_eq!(enabled, 0);
+                assert_eq!(socket.sample_rx_drops().unwrap(), 0);
+                let sender = StdUdp::bind("127.0.0.1:0").unwrap();
+                for _ in 0..256 {
+                    sender.send_to(&[42; 512], socket.local_addr()).unwrap();
+                }
+                // No receive is needed to observe drops, including an idle full socket.
+                assert!(socket.sample_rx_drops().unwrap() > 0);
+                assert_eq!(socket.sample_rx_drops().unwrap(), 0);
+                let pool = crate::buffers::BufferPool::new(1024, 1024).unwrap();
+                let mut slabs = vec![pool.acquire().unwrap()];
+                let mut received = Vec::new();
+                assert_eq!(socket.recv_batch(&mut slabs, &mut received).unwrap(), 1);
+                assert_eq!(received[0].overflow, None);
+                assert_eq!(received[0].fault, None);
+                assert_eq!(&slabs[0].bytes()[..512], &[42; 512]);
+            }
+        }
+    }
+}

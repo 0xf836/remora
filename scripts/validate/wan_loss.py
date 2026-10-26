@@ -101,6 +101,8 @@ def invalid_reasons(result, tx, rx, sequences, collections, direction, rate, sec
     reasons = ['resources: ' + reason for reason in resource_errors(result)]
     if result['generator_errors'] or result['integrity_errors'] or result['coverage_lost'] or result['counter_overflow']:
         reasons.append('generator/integrity/diagnostic failure')
+    if result.get('kernel_rx_overflow_complete') is not True:
+        reasons.append('kernel socket drop telemetry incomplete or unknown')
     if result['generator_cpu_max'] >= 0.9:
         reasons.append('generator lacks CPU headroom')
     if abs(result['clock_drift_ms']) >= 10:
@@ -282,7 +284,7 @@ def worker(a):
                                    steady_rtt_samples=tx.get('steady_rtt_samples', 0),
                                    delivered_mbit_s=[u*a.size*8/a.seconds/1e6 for u in result['unique']],
                                    generator_errors=result['generator_errors'], generator_cpu_max=result['generator_cpu_max'], clock_drift_ms=result['clock_drift_ms'], integrity_errors=result['integrity_errors'],
-                                   coverage_lost=result['coverage_lost'], resources=result['resources'],
+                                   coverage_lost=result['coverage_lost'], kernel_rx_overflow_complete=result['kernel_rx_overflow_complete'], resources=result['resources'],
                                    rtt_p95_ms=result['rtt_p95_ms'], path=str(path))
                         reasons = invalid_reasons(result, tx, rx, sequences, collections, a.direction, actual_pps, a.seconds, intervals)
                         reasons += timeline_invalid_reasons(tx,rx,result,a.seconds)

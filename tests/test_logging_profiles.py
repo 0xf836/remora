@@ -6,7 +6,7 @@ import tomllib
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/validate"))
-from benchmark import machine_diagnostics, last_snapshot, runtime_failures
+from benchmark import machine_diagnostics, last_snapshot, runtime_failures, kernel_rx_overflow_complete
 
 
 class LoggingProfiles(unittest.TestCase):
@@ -24,6 +24,31 @@ class LoggingProfiles(unittest.TestCase):
         self.assertEqual(config["diagnostics"], dict(format="json", snapshots=True,
                          level="error", snapshot_interval_ms=10000))
         self.assertEqual(config["client"]["listen"], "127.0.0.1:1234")
+
+    def test_kernel_drop_coverage_preserves_incomplete_and_unknown_status(self):
+        complete = dict(counters=dict(kernel_rx_overflow_incomplete=False,
+                                      kernel_rx_overflow_read_errors=0))
+        self.assertTrue(kernel_rx_overflow_complete(dict(client=complete, server=complete)))
+        self.assertIsNone(kernel_rx_overflow_complete({}, "direct"))
+        self.assertIsNone(kernel_rx_overflow_complete({}, "baseline"))
+        for counters in [{}, dict(kernel_rx_overflow_incomplete=True, kernel_rx_overflow_read_errors=1),
+                         dict(kernel_rx_overflow_incomplete=False, kernel_rx_overflow_read_errors=1),
+                         dict(kernel_rx_overflow_incomplete=0, kernel_rx_overflow_read_errors=0)]:
+            self.assertFalse(kernel_rx_overflow_complete(dict(client=complete, server=dict(counters=counters))))
+        self.assertFalse(kernel_rx_overflow_complete({}))
+        self.assertFalse(kernel_rx_overflow_complete(dict(server=complete)))
+
+    def test_snapshot_parser_preserves_gap_for_summary_gate(self):
+        snapshot = dict(schema_version=1, event="snapshot", failures=[],
+                        counters=dict(kernel_rx_overflow_incomplete=True, kernel_rx_overflow_read_errors=1),
+                        coverage_lost=0, status_write_failures=0, diagnostics_dropped=0, counter_overflow=False)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stdout.ndjson"
+            path.write_text(json.dumps(snapshot) + "\n")
+            parsed = last_snapshot(path)
+            self.assertFalse(kernel_rx_overflow_complete(dict(client=parsed, server=parsed)))
+            self.assertEqual(parsed["coverage_lost"], 0)
+            self.assertFalse(parsed["counter_overflow"])
 
     def test_collector_requires_real_snapshots_instead_of_silent_empty_metrics(self):
         snapshot = dict(schema_version=1, event="snapshot", counters={}, failures=[],

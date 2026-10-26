@@ -40,6 +40,23 @@ def last_snapshot(path, allow_incomplete=False):
     return records[-1] if records else {}
 
 
+def kernel_rx_overflow_complete(statuses, mode="tunnel"):
+    """Separate socket telemetry coverage from lost diagnostic records.
+
+    None means not applicable to the direct baseline. Missing/legacy fields
+    remain unknown, never evidence of zero socket drops.
+    """
+    if mode != "tunnel":
+        return None
+    return set(statuses) == {"client", "server"} and all(
+        type(s.get("counters", {}).get("kernel_rx_overflow_incomplete")) is bool
+        and not s["counters"]["kernel_rx_overflow_incomplete"]
+        and type(s["counters"].get("kernel_rx_overflow_read_errors")) is int
+        and s["counters"]["kernel_rx_overflow_read_errors"] == 0
+        for s in statuses.values()
+    )
+
+
 def runtime_failures(path):
     """Legacy executable markers, not English operator-message parsing."""
     return [line.removeprefix("runtime failed: ") for line in path.read_text().splitlines()
@@ -682,6 +699,7 @@ def main():
                         qlog_files = {role: [p.stat().st_size for p in (run / f"{role}-qlog").glob("*.ndjson")] for role in ["client", "server"]}
                         exits = {role: proc.p.returncode for role, proc in zip(["server", "client"], owned)}
                         stops = {role: proc.stop_seconds for role, proc in zip(["server", "client"], owned)}
+                        kernel_coverage = kernel_rx_overflow_complete(diagnostic_last, mode)
                         summary = {
                             "mode": mode,
                             "direction": direction,
@@ -692,6 +710,7 @@ def main():
                                 and integrity == 0
                                 and tx["rtt_p95_us"] is not None
                                 and clock_drift_ms < 10
+                                and kernel_coverage is not False
                                 else "invalid"
                             ),
                             "errors": errors,
@@ -722,6 +741,7 @@ def main():
                             "release_acceptance_claim": False,
                             "regression_claim": False,
                             "diagnostic_last": diagnostic_last,
+                            "kernel_rx_overflow_complete": kernel_coverage,
                             "role_exit_codes": exits,
                             "role_runtime_failures": {
                                 role: runtime_failures(run / f"{role}.stderr.ndjson")
