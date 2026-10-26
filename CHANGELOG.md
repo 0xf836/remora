@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/0xf836/remora/compare/v0.3.1...v0.3.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **udp:** avoid SO_RXQ_OVFL kernel crashes ([fa7ea9a](https://github.com/0xf836/remora/commit/fa7ea9ad843db8628326530364f9b901b34c0e7b))
+* **udp:** avoid SO_RXQ_OVFL kernel crashes ([dada085](https://github.com/0xf836/remora/commit/dada08513dc5836f72a511197dd52b574f5f9b54))
+
 ## [0.3.1](https://github.com/0xf836/remora/compare/v0.3.0...v0.3.1) (2026-10-24)
 
 
