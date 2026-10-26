@@ -9,7 +9,7 @@ import tempfile
 class WanValidity(unittest.TestCase):
     def setUp(self):
         self.result = dict(generator_errors=0, integrity_errors=0, coverage_lost=0,
-                           counter_overflow=False, generator_cpu_max=.2, clock_drift_ms=0,
+                           counter_overflow=False, kernel_rx_overflow_complete=True, generator_cpu_max=.2, clock_drift_ms=0,
                            offered=[0,200], submitted=[0,200], unique=[0,200],
                            resources=[dict(average_cpu_cores=.2,owner_average_cpu_cores=.19,peak_rss_bytes=10000000) for _ in range(2)])
         self.rx = {'sessions':1}
@@ -21,6 +21,12 @@ class WanValidity(unittest.TestCase):
         for values in [[],self.result['resources'][:1]]:
             self.result['resources']=values
             self.assertTrue(any(reason.startswith('resources: ') for reason in self.check()))
+    def test_incomplete_kernel_telemetry_invalidates_loss_evidence(self):
+        for value in [False, None]:
+            self.result['kernel_rx_overflow_complete'] = value
+            self.assertIn('kernel socket drop telemetry incomplete or unknown', self.check())
+        del self.result['kernel_rx_overflow_complete']
+        self.assertIn('kernel socket drop telemetry incomplete or unknown', self.check())
     def test_complete_reverse_measurement(self):
         self.assertEqual(self.check(), [])
     def test_missing_reverse_peer_and_load_is_invalid_even_without_generator_errors(self):

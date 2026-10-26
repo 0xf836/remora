@@ -309,3 +309,16 @@ The nominal plan becomes 4965 seconds (82m45s), adding 270 seconds to 4695;
 the total deadline remains 5400 seconds with 30 seconds reserved for cleanup.
 Insufficient RTT samples still invalidate a run. Historical failures cannot
 be relabelled. See [ADR 0020](../../../docs/adr/0020-capacity-rtt-measurement-window.md).
+
+## Kernel socket drop telemetry coverage
+
+Current collectors emit `kernel_rx_overflow_complete` separately from
+`coverage_lost` and `counter_overflow`. For tunnel measurements it is true only
+when both role snapshots explicitly contain a false
+`counters.kernel_rx_overflow_incomplete` and zero
+`counters.kernel_rx_overflow_read_errors`. A failed/missing/unknown counter makes
+coverage false and invalidates qualification without altering endpoint delivery
+or latency samples. Historical snapshots without these fields remain readable,
+but are unknown coverage and cannot support a zero-kernel-drop conclusion.
+For the unencrypted direct (`baseline`) arm the summary value is null (not
+applicable). Missing summary coverage is not silently treated as successful.

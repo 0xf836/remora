@@ -110,7 +110,9 @@ cannot guarantee correlation delivery.
 | outer_socket_sent/received | Successfully submitted/received UDP packets and bytes; GSO counts logical segments separately from syscall count |
 | relay_socket_sent | UDP syscall accepted message; not target delivery proof |
 | local_drops{reason,direction} | Observable rejection at this process, each packet counted once at terminal drop boundary |
-| kernel_rx_overflow | SO_RXQ_OVFL cumulative deltas with wrap handling; per socket, no fabricated session attribution |
+| kernel_rx_overflow | SO_MEMINFO / SK_MEMINFO_DROPS cumulative deltas with u32 wrap handling; per socket, no fabricated session attribution |
+| kernel_rx_overflow_read_errors | Failed socket drop-counter queries, including short responses |
+| kernel_rx_overflow_incomplete | Sticky flag: a query failed or the aggregate saturated; zero must not be interpreted as verified absence of drops |
 | quic_packets_lost/retransmitted/PTO | Outer QUIC transport observations/estimates, never equated with inner UDP loss |
 | rtt/rttvar/cwnd/path_payload_limit | Current path stats sampled once/second; peer path ids bounded; active-connection spurious-loss and delivery-rate estimates are not endpoint loss or lifetime totals |
 | startup_exit_* | Active-path exit label counts and minimum exit cwnd in bytes. A HyStart/CSS label may also accompany loss during CSS in the pinned backend; correlate with loss/ENOBUFS rather than claiming a unique causal detector |
@@ -274,3 +276,43 @@ metadata and files contain reconstructed Remora NDJSON, never raw qlog.
 These functional/privacy changes have no measured diagnostics-overhead claim.
 T071 is explicitly excluded; its prospective comparison policy/reference and
 measurements, plus final release/security review, remain required separately.
+
+### Linux socket drop collection
+
+Remora never enables `SO_RXQ_OVFL`. JSON diagnostics read the same socket-lifetime
+`sk_drops` counter via `getsockopt(SOL_SOCKET, SO_MEMINFO)`, without per-packet
+ancillary drop messages. Text output performs no drop-counter queries. Collection
+remains enabled for JSON with `snapshots = false`, because failure/health reports
+also contain counters. The first transition to incomplete coverage triggers a
+health report; repeated query failures alone do not generate a report each second.
+
+A sweep starts approximately once per second, with at most 16 periodic queries
+per reactor turn; idle sockets are included. A bounded registry of live logical
+socket keys resumes ordered range lookup without rescanning a HashMap prefix.
+Its size is bounded by the existing connection/session/socket limits. No raw fd
+is used as an identity. Each sweep freezes its final key; sockets added beyond
+that boundary wait for the next sweep. Removed keys disappear immediately and
+cannot accumulate stale work. Client socket index changes do not change keys.
+The ordered registry traversal costs O(log N + 16), followed by at most 16
+logical socket lookups, rather than scanning previously visited sessions. Normal socket retirement performs
+a final query before merging I/O statistics. These final queries are additional
+to the periodic quota: mass retirement/shutdown is bounded by configured socket
+limits, not by 16 queries in total. A failed query preserves its baseline so a
+later success catches up. `profile.io.rx_drop_queries` counts attempted queries.
+Query failure and aggregate saturation never terminate forwarding. Coverage
+remains marked incomplete even after subsequent successful queries.
+
+Benchmark summaries carry a separate `kernel_rx_overflow_complete` value: true
+only when both role snapshots explicitly report complete coverage and zero query
+errors; false for incomplete, malformed or unknown/legacy socket telemetry; null
+for the direct baseline where Remora socket telemetry does not apply. Missing
+coverage cannot be used to qualify a tunnel measurement or claim zero kernel
+drops. This does not change `coverage_lost`, which describes diagnostic record
+coverage rather than availability of a kernel metric.
+
+Samples describe query time, not the arrival time of an individual datagram.
+The first sample includes drops since creation; a wrap contributes the unsigned
+32-bit delta. Multiple complete wraps between successful samples cannot be
+reconstructed. Abrupt termination and packets arriving after the final query may
+leave unobserved drops. These counters do not measure end-to-end loss or identify
+an affected session on a shared socket. No configuration migration is required.

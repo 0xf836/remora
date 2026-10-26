@@ -430,12 +430,24 @@ class BoundedBudget(unittest.TestCase):
 
     def test_calibration_failure_names_exact_invalid_evidence(self):
         row = dict(generator_errors=174, integrity_errors=0, generator_cpu_max=.245,
-                   clock_drift_ms=.000268, coverage_lost=0, counter_overflow=False)
+                   clock_drift_ms=.000268, coverage_lost=0, counter_overflow=False, kernel_rx_overflow_complete=True)
         self.assertEqual(reference.calibration_invalid_reasons(row), ["generator_errors=174"])
         row["generator_errors"] = 0
         self.assertEqual(reference.calibration_invalid_reasons(row), [])
         row["clock_drift_ms"] = float("nan")
         self.assertEqual(reference.calibration_invalid_reasons(row), ["clock_drift_ms=nan"])
+
+    def test_kernel_drop_coverage_is_separate_and_fails_closed(self):
+        row = dict(generator_errors=0, integrity_errors=0, generator_cpu_max=.2,
+                   clock_drift_ms=0, coverage_lost=0, counter_overflow=False,
+                   kernel_rx_overflow_complete=False)
+        self.assertEqual(reference.calibration_invalid_reasons(row), ["kernel_rx_overflow_complete=False"])
+        del row["kernel_rx_overflow_complete"]
+        self.assertEqual(reference.calibration_invalid_reasons(row), ["kernel_rx_overflow_complete=missing"])
+        row["kernel_rx_overflow_complete"] = None
+        self.assertTrue(reference.calibration_invalid_reasons(row))
+        row["mode"] = "baseline"  # direct baseline: not applicable
+        self.assertEqual(reference.calibration_invalid_reasons(row), [])
 
     def test_completion_guard_cannot_be_changed_or_omitted_from_new_method(self):
         profile = tomllib.loads((ROOT / "benchmarks/reference-x86_64.toml").read_text())

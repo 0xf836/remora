@@ -79,7 +79,7 @@ inputs. A deterministic kernel-induced EINTR, control truncation or RX overflow
 requires a dedicated runner: arrange a blocked/interruptible syscall rather
 than the nonblocking DONTWAIT path, reduce ancillary capacity in a test-only
 adapter, or pause a small-buffer receiver during a bounded burst and inspect
-SO_RXQ_OVFL. Record which kernel path actually occurred; injected flags are not
+SO_MEMINFO drop sampling (do not enable SO_RXQ_OVFL). Record which kernel path actually occurred; injected flags are not
 kernel observations. Controlled PMTU/path changes require runner-owned namespaces,
 MTU/qdisc capabilities and recorded topology (T048/T049/T056). No host network
 configuration is changed by this increment.
